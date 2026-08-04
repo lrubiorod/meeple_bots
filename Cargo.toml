@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/simulation",
+    "crates/catalog",
+    "crates/python-bindings",
+    "games/tic-tac-toe",
+    "agents/random",
+    "agents/mcts",
+]
