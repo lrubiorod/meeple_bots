@@ -1,14 +1,15 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Strongly typed contracts shared by games, agents, and simulations.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod agent;
+mod capabilities;
+mod error;
+mod game;
+mod player;
+mod random;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use agent::{Agent, DecisionContext};
+pub use capabilities::{DeterministicGame, PerfectInformationGame, TwoPlayerZeroSumGame};
+pub use error::{AgentError, IllegalAction};
+pub use game::{Game, PositionStatus};
+pub use player::PlayerId;
+pub use random::RandomSource;

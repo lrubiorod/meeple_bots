@@ -5,6 +5,12 @@ version = 4
 [[package]]
 name = "meeple_bots_catalog"
 version = "0.1.0"
+dependencies = [
+ "meeple_bots_mcts_agent",
+ "meeple_bots_random_agent",
+ "meeple_bots_simulation",
+ "meeple_bots_tic_tac_toe",
+]
 
 [[package]]
 name = "meeple_bots_core"
@@ -13,19 +19,39 @@ version = "0.1.0"
 [[package]]
 name = "meeple_bots_mcts_agent"
 version = "0.1.0"
+dependencies = [
+ "meeple_bots_core",
+ "meeple_bots_random_agent",
+ "meeple_bots_simulation",
+ "meeple_bots_tic_tac_toe",
+]
 
 [[package]]
 name = "meeple_bots_python_bindings"
 version = "0.1.0"
+dependencies = [
+ "meeple_bots_catalog",
+]
 
 [[package]]
 name = "meeple_bots_random_agent"
 version = "0.1.0"
+dependencies = [
+ "meeple_bots_core",
+ "meeple_bots_simulation",
+ "meeple_bots_tic_tac_toe",
+]
 
 [[package]]
 name = "meeple_bots_simulation"
 version = "0.1.0"
+dependencies = [
+ "meeple_bots_core",
+]
 
 [[package]]
 name = "meeple_bots_tic_tac_toe"
 version = "0.1.0"
+dependencies = [
+ "meeple_bots_core",
+]
