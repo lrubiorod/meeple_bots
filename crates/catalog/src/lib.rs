@@ -2,12 +2,15 @@
 
 use std::{error::Error, fmt, num::NonZeroU32};
 
-use meeple_bots_mcts_agent::{MctsAgent, MctsConfig};
+use meeple_bots_mcts_agent::MctsAgent;
+pub use meeple_bots_mcts_agent::MctsConfig;
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{
-    BatchConfig, MatchConfig, MatchError, MatchResult, play_batch, play_match,
+    BatchConfig, MatchError, TracedMatchResult, play_batch, play_match,
+    play_match_with_trace as play_typed_match_with_trace,
 };
-use meeple_bots_tic_tac_toe::TicTacToe;
+pub use meeple_bots_simulation::{MatchConfig, MatchResult};
+use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GameId {
@@ -18,6 +21,26 @@ pub enum GameId {
 pub enum AgentConfig {
     Random,
     Mcts(MctsConfig),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatalogAction {
+    TicTacToe { row: u8, column: u8 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordedMove {
+    pub player: usize,
+    pub action: CatalogAction,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatalogMatchReport {
+    pub seed: u64,
+    pub plies: u32,
+    pub utilities: Vec<f32>,
+    pub winner: Option<usize>,
+    pub moves: Vec<RecordedMove>,
 }
 
 #[derive(Debug)]
@@ -48,6 +71,17 @@ pub fn run_match(
     }
 }
 
+pub fn run_match_with_trace(
+    game: GameId,
+    first: AgentConfig,
+    second: AgentConfig,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError> {
+    match game {
+        GameId::TicTacToe => run_tic_tac_toe_with_trace(first, second, config),
+    }
+}
+
 fn run_tic_tac_toe(
     first: AgentConfig,
     second: AgentConfig,
@@ -72,6 +106,63 @@ fn run_tic_tac_toe(
         ),
     }?;
     Ok(result)
+}
+
+fn run_tic_tac_toe_with_trace(
+    first: AgentConfig,
+    second: AgentConfig,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError> {
+    let game = TicTacToe;
+    let traced = match (first, second) {
+        (AgentConfig::Random, AgentConfig::Random) => {
+            play_typed_match_with_trace(&game, &mut RandomAgent, &mut RandomAgent, config)
+        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_typed_match_with_trace(
+            &game,
+            &mut RandomAgent,
+            &mut MctsAgent::new(second),
+            config,
+        ),
+        (AgentConfig::Mcts(first), AgentConfig::Random) => {
+            play_typed_match_with_trace(&game, &mut MctsAgent::new(first), &mut RandomAgent, config)
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_typed_match_with_trace(
+            &game,
+            &mut MctsAgent::new(first),
+            &mut MctsAgent::new(second),
+            config,
+        ),
+    }?;
+
+    Ok(tic_tac_toe_report(traced))
+}
+
+fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatchReport {
+    let winner = match traced.result.utilities.as_slice() {
+        [first, second] if first > second => Some(0),
+        [first, second] if second > first => Some(1),
+        _ => None,
+    };
+    let moves = traced
+        .actions
+        .into_iter()
+        .map(|(player, action)| RecordedMove {
+            player: player.index(),
+            action: CatalogAction::TicTacToe {
+                row: action.row(),
+                column: action.column(),
+            },
+        })
+        .collect();
+
+    CatalogMatchReport {
+        seed: traced.result.seed,
+        plies: traced.result.plies,
+        utilities: traced.result.utilities,
+        winner,
+        moves,
+    }
 }
 
 pub fn run_batch(
@@ -127,5 +218,24 @@ mod tests {
 
         assert_eq!(result.utilities.len(), 2);
         assert!((5..=9).contains(&result.plies));
+    }
+
+    #[test]
+    fn traced_match_contains_every_typed_move() {
+        let report = run_match_with_trace(
+            GameId::TicTacToe,
+            AgentConfig::Random,
+            AgentConfig::Random,
+            MatchConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(report.moves.len(), report.plies as usize);
+        for (ply, recorded) in report.moves.iter().enumerate() {
+            assert_eq!(recorded.player, ply % 2);
+            let CatalogAction::TicTacToe { row, column } = recorded.action;
+            assert!(row < 3);
+            assert!(column < 3);
+        }
     }
 }

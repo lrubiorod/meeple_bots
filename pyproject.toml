@@ -1,16 +1,19 @@
 [build-system]
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.9.4,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "meeple-bots"
 version = "0.1.0"
-description = "Framework modular para simular juegos de mesa con agentes inteligentes"
+description = "Modular framework for simulating board games with intelligent agents"
 readme = "README.md"
 requires-python = ">=3.11"
 
-[tool.setuptools]
-package-dir = {"" = "python/src"}
+[project.scripts]
+meeple-bots = "meeple_bots.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["python/src"]
+[tool.maturin]
+bindings = "pyo3"
+manifest-path = "crates/python-bindings/Cargo.toml"
+module-name = "meeple_bots._native"
+python-source = "python/src"

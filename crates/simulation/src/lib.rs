@@ -102,6 +102,12 @@ pub struct ActionTrace<A> {
     pub actions: Vec<(PlayerId, A)>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TracedMatchResult<A> {
+    pub result: MatchResult,
+    pub actions: Vec<(PlayerId, A)>,
+}
+
 impl<A> Default for ActionTrace<A> {
     fn default() -> Self {
         Self {
@@ -154,6 +160,27 @@ where
     B: Agent<G>,
 {
     play_match_with_observer(game, first, second, config, &mut NoopObserver)
+}
+
+pub fn play_match_with_trace<G, A, B>(
+    game: &G,
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+) -> Result<TracedMatchResult<G::Action>, MatchError>
+where
+    G: DeterministicGame,
+    G::Action: Clone,
+    A: Agent<G>,
+    B: Agent<G>,
+{
+    let mut trace = ActionTrace::default();
+    let result = play_match_with_observer(game, first, second, config, &mut trace)?;
+
+    Ok(TracedMatchResult {
+        result,
+        actions: trace.actions,
+    })
 }
 
 pub fn play_match_with_observer<G, A, B, O>(
