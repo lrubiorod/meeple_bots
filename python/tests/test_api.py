@@ -5,6 +5,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from meeple_bots import (
+    Boop,
+    BoopAction,
+    BoopPiece,
+    BoopPieceKind,
     ConnectFour,
     ConnectFourAction,
     HumanAgent,
@@ -101,6 +105,53 @@ class MatchApiTests(unittest.TestCase):
         self.assertTrue(
             all(isinstance(move.action, ConnectFourAction) for move in result.moves)
         )
+
+    def test_random_agents_can_finish_boop(self) -> None:
+        result = Match(
+            game=Boop(),
+            first=RandomAgent(),
+            second=RandomAgent(),
+            seed=9,
+            max_plies=1_000,
+        ).run()
+
+        self.assertIsNotNone(result.winner)
+        self.assertTrue(all(isinstance(move.action, BoopAction) for move in result.moves))
+        self.assertEqual(len(result.final_board), 6)
+        self.assertTrue(
+            all(
+                cell is None or isinstance(cell, BoopPiece)
+                for row in result.final_board
+                for cell in row
+            )
+        )
+        self.assertIsNotNone(result.pools)
+
+    def test_human_boop_selector_receives_pools_and_typed_actions(self) -> None:
+        observed_turns = []
+
+        def inspect_turn(turn):
+            observed_turns.append(turn)
+            raise RuntimeError("inspection complete")
+
+        with self.assertRaisesRegex(RuntimeError, "inspection complete"):
+            Match(
+                game=Boop(),
+                first=HumanAgent(inspect_turn),
+                second=RandomAgent(),
+            ).run()
+
+        turn = observed_turns[0]
+        self.assertIsInstance(turn.game, Boop)
+        self.assertEqual(len(turn.legal_actions), 36)
+        self.assertTrue(
+            all(
+                action.piece is BoopPieceKind.KITTEN
+                for action in turn.legal_actions
+            )
+        )
+        self.assertEqual(turn.pools[0].kittens, 8)
+        self.assertEqual(turn.pools[0].cats, 0)
 
     def test_cli_prompts_for_human_moves(self) -> None:
         output = io.StringIO()
@@ -209,6 +260,32 @@ class MatchApiTests(unittest.TestCase):
         self.assertGreaterEqual(payload["plies"], 7)
         self.assertTrue(
             all(move["action"]["type"] == "connect_four" for move in payload["moves"])
+        )
+
+    def test_cli_can_run_boop(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "match",
+                    "--game",
+                    "boop",
+                    "--first",
+                    "random",
+                    "--second",
+                    "random",
+                    "--seed",
+                    "9",
+                    "--max-plies",
+                    "1000",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(
+            all(move["action"]["type"] == "boop" for move in payload["moves"])
         )
 
 

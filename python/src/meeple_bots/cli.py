@@ -8,6 +8,12 @@ import sys
 from collections.abc import Sequence
 
 from .api import (
+    Boop,
+    BoopAction,
+    BoopGraduateLine,
+    BoopPiece,
+    BoopPieceKind,
+    BoopRecoverPiece,
     ConnectFour,
     ConnectFourAction,
     HumanAgent,
@@ -25,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     match = commands.add_parser("match", help="run and display one match")
     match.add_argument(
-        "--game", choices=["connect-four", "tic-tac-toe"], default="tic-tac-toe"
+        "--game", choices=["boop", "connect-four", "tic-tac-toe"], default="tic-tac-toe"
     )
     match.add_argument("--first", choices=["human", "mcts", "random"], default="mcts")
     match.add_argument("--second", choices=["human", "mcts", "random"], default="random")
@@ -50,7 +56,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             exploration=args.mcts_exploration,
             rollout_depth=args.mcts_rollout_depth,
         )
-        game = ConnectFour() if args.game == "connect-four" else TicTacToe()
+        if args.game == "boop":
+            game = Boop()
+        elif args.game == "connect-four":
+            game = ConnectFour()
+        else:
+            game = TicTacToe()
         result = Match(
             game=game,
             first=_agent(args.first, mcts),
@@ -65,7 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.json:
         print(json.dumps(_result_dict(result), indent=2))
     else:
-        _print_result(result, game, args.first, args.second)
+        _print_result(result, args.first, args.second)
     return 0
 
 
@@ -94,19 +105,28 @@ def _result_dict(result: MatchResult) -> dict[str, object]:
     }
 
 
-def _action_dict(action: TicTacToeAction | ConnectFourAction) -> dict[str, object]:
+def _action_dict(
+    action: TicTacToeAction | ConnectFourAction | BoopAction,
+) -> dict[str, object]:
     if isinstance(action, TicTacToeAction):
         return {
             "type": "tic_tac_toe",
             "row": action.row,
             "column": action.column,
         }
-    return {"type": "connect_four", "column": action.column}
+    if isinstance(action, ConnectFourAction):
+        return {"type": "connect_four", "column": action.column}
+    return {
+        "type": "boop",
+        "piece": action.piece.value,
+        "row": action.row,
+        "column": action.column,
+        "resolution": _resolution_dict(action),
+    }
 
 
 def _print_result(
     result: MatchResult,
-    game: TicTacToe | ConnectFour,
     first: str,
     second: str,
 ) -> None:
@@ -116,12 +136,23 @@ def _print_result(
     for ply, move in enumerate(result.moves, start=1):
         if isinstance(move.action, TicTacToeAction):
             selected = f"row {move.action.row}, column {move.action.column}"
-        else:
+        elif isinstance(move.action, ConnectFourAction):
             selected = f"column {move.action.column}"
+        else:
+            selected = (
+                f"{move.action.piece.value} at row {move.action.row}, "
+                f"column {move.action.column}"
+            )
+            resolution = _resolution_text(move.action)
+            if resolution:
+                selected += f"; {resolution}"
         print(f"{ply}. Player {move.player} -> {selected}")
     print()
     print("Final board:")
-    _print_board(_replay_board(result, game))
+    _print_board(result.final_board)
+    if result.pools is not None:
+        for player, pool in enumerate(result.pools):
+            print(f"Player {player} pool: {pool.kittens} kittens, {pool.cats} cats")
     print()
     print("Result: draw" if result.winner is None else f"Winner: player {result.winner}")
     print(f"Utilities: {list(result.utilities)}")
@@ -129,29 +160,50 @@ def _print_result(
     print(f"Seed: {result.seed}")
 
 
-def _replay_board(
-    result: MatchResult, game: TicTacToe | ConnectFour
-) -> list[list[int | None]]:
-    rows, columns = (3, 3) if isinstance(game, TicTacToe) else (6, 7)
-    board: list[list[int | None]] = [[None] * columns for _ in range(rows)]
-
-    for move in result.moves:
-        if isinstance(move.action, TicTacToeAction):
-            board[move.action.row][move.action.column] = move.player
-            continue
-
-        row = next(
-            row
-            for row in range(rows - 1, -1, -1)
-            if board[row][move.action.column] is None
-        )
-        board[row][move.action.column] = move.player
-
-    return board
-
-
-def _print_board(board: list[list[int | None]]) -> None:
-    symbols = {None: ".", 0: "X", 1: "O"}
+def _print_board(board) -> None:
     print("    " + " ".join(str(column) for column in range(len(board[0]))))
     for row, cells in enumerate(board):
-        print(f"{row} | " + " ".join(symbols[cell] for cell in cells))
+        print(f"{row} | " + " ".join(_piece_symbol(cell) for cell in cells))
+
+
+def _piece_symbol(piece) -> str:
+    if piece is None:
+        return "."
+    if isinstance(piece, int):
+        return "X" if piece == 0 else "O"
+    if not isinstance(piece, BoopPiece):
+        raise TypeError("unknown board piece")
+    if piece.player == 0:
+        return "x" if piece.kind is BoopPieceKind.KITTEN else "X"
+    return "o" if piece.kind is BoopPieceKind.KITTEN else "O"
+
+
+def _resolution_dict(action: BoopAction) -> dict[str, object]:
+    if isinstance(action.resolution, BoopGraduateLine):
+        return {
+            "type": "graduate",
+            "positions": [
+                {"row": position.row, "column": position.column}
+                for position in action.resolution.positions
+            ],
+        }
+    if isinstance(action.resolution, BoopRecoverPiece):
+        return {
+            "type": "recover",
+            "row": action.resolution.position.row,
+            "column": action.resolution.position.column,
+        }
+    return {"type": "none"}
+
+
+def _resolution_text(action: BoopAction) -> str:
+    if isinstance(action.resolution, BoopGraduateLine):
+        positions = ", ".join(
+            f"({position.row}, {position.column})"
+            for position in action.resolution.positions
+        )
+        return f"graduate {positions}"
+    if isinstance(action.resolution, BoopRecoverPiece):
+        position = action.resolution.position
+        return f"recover ({position.row}, {position.column})"
+    return ""

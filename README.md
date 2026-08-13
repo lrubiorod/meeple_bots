@@ -31,8 +31,7 @@ randomness and hidden information through future capability traits.
 
 ## Current Implementations
 
-- Games: tic-tac-toe and standard 6x7 Connect Four, both with allocation-free legal-action
-  iterators.
+- Games: tic-tac-toe, standard 6x7 Connect Four, and standard two-player boop.
 - Agents: uniform random and Monte Carlo Tree Search.
 - Simulation: reproducible seeds, independent RNG streams per player, turn limits, observers, and
   sequential batches.
@@ -110,6 +109,30 @@ for move in result.moves:
     print(move.player, move.action.column)
 ```
 
+Select boop. with `Boop`. An action includes the piece rank, its zero-based row and column, and an
+optional mandatory resolution. The final board uses `BoopPiece` values so kitten and cat ranks are
+preserved:
+
+```python
+from meeple_bots import Boop, Match, RandomAgent
+
+result = Match(
+    game=Boop(),
+    first=RandomAgent(),
+    second=RandomAgent(),
+    seed=42,
+).run()
+
+print(result.final_board)
+print(result.pools)
+```
+
+The implementation follows the standard rules: each player starts with eight kittens; a placement
+boops adjacent pieces one space directly away; kittens cannot boop cats; blocked pieces do not move;
+and pieces pushed off the bed return to their owner's pool. Three aligned pieces graduate, while
+three aligned cats win. When several graduation or eight-pieces-on-board recovery choices exist,
+each choice is represented as a separate legal action so agents can evaluate it.
+
 Use `HumanAgent` to collect moves from a Python function. Calling it without arguments uses an
 interactive terminal prompt:
 
@@ -153,7 +176,7 @@ The command accepts these options:
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--game` | `tic-tac-toe` | Game to run: `tic-tac-toe` or `connect-four`. |
+| `--game` | `tic-tac-toe` | Game to run: `tic-tac-toe`, `connect-four`, or `boop`. |
 | `--first` | `mcts` | Agent for player 0: `human`, `mcts`, or `random`. |
 | `--second` | `random` | Agent for player 1: `human`, `mcts`, or `random`. |
 | `--seed` | `0` | Seed controlling the reproducible random streams. |
@@ -180,6 +203,20 @@ For Connect Four, a human enters only the zero-based column:
 ```bash
 meeple-bots match --game connect-four --first human --second mcts --seed 42
 ```
+
+For boop., use `k` for a kitten or `c` for a cat followed by row and column. Lowercase `x`/`o`
+symbols on the displayed board are kittens and uppercase `X`/`O` symbols are cats. If a placement
+creates several legal graduation or recovery choices, the CLI prompts for the desired resolution:
+
+```bash
+meeple-bots match --game boop --first human --second mcts --seed 42 \
+  --mcts-iterations 20 --mcts-rollout-depth 128
+# Example move: k 2 3
+```
+
+boop. has a much wider action tree than tic-tac-toe or Connect Four. Low MCTS iteration counts are
+useful for quick interactive tests in a development build; increase them when stronger play matters
+more than response time.
 
 Use `meeple-bots match --help` to display the available options from the installed version.
 

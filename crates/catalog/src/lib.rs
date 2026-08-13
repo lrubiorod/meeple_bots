@@ -2,8 +2,11 @@
 
 use std::{error::Error, fmt, num::NonZeroU32};
 
+use meeple_bots_boop::{
+    Boop, BoopAction, PieceKind as BoopPieceKind, Resolution as BoopResolution,
+};
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
-use meeple_bots_core::Agent;
+use meeple_bots_core::{Agent, Game};
 use meeple_bots_mcts_agent::MctsAgent;
 pub use meeple_bots_mcts_agent::MctsConfig;
 use meeple_bots_random_agent::RandomAgent;
@@ -16,6 +19,7 @@ use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GameId {
+    Boop,
     ConnectFour,
     TicTacToe,
 }
@@ -28,8 +32,51 @@ pub enum AgentConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogAction {
-    ConnectFour { column: u8 },
-    TicTacToe { row: u8, column: u8 },
+    Boop {
+        piece: CatalogBoopPieceKind,
+        row: u8,
+        column: u8,
+        resolution: CatalogBoopResolution,
+    },
+    ConnectFour {
+        column: u8,
+    },
+    TicTacToe {
+        row: u8,
+        column: u8,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatalogBoopPieceKind {
+    Kitten,
+    Cat,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatalogBoopResolution {
+    None,
+    Graduate { positions: [(u8, u8); 3] },
+    Recover { row: u8, column: u8 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatalogPieceKind {
+    Token,
+    Kitten,
+    Cat,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CatalogPiece {
+    pub player: usize,
+    pub kind: CatalogPieceKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CatalogPool {
+    pub kittens: u8,
+    pub cats: u8,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,6 +92,8 @@ pub struct CatalogMatchReport {
     pub utilities: Vec<f32>,
     pub winner: Option<usize>,
     pub moves: Vec<RecordedMove>,
+    pub final_board: Vec<Option<CatalogPiece>>,
+    pub pools: Option<[CatalogPool; 2]>,
 }
 
 #[derive(Debug)]
@@ -71,6 +120,7 @@ pub fn run_match(
     config: MatchConfig,
 ) -> Result<MatchResult, CatalogError> {
     match game {
+        GameId::Boop => run_boop(first, second, config),
         GameId::ConnectFour => run_connect_four(first, second, config),
         GameId::TicTacToe => run_tic_tac_toe(first, second, config),
     }
@@ -83,9 +133,23 @@ pub fn run_match_with_trace(
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
     match game {
+        GameId::Boop => run_boop_with_trace(first, second, config),
         GameId::ConnectFour => run_connect_four_with_trace(first, second, config),
         GameId::TicTacToe => run_tic_tac_toe_with_trace(first, second, config),
     }
+}
+
+pub fn run_boop_match_with_trace<A, B>(
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError>
+where
+    A: Agent<Boop>,
+    B: Agent<Boop>,
+{
+    let traced = play_typed_match_with_trace(&Boop, first, second, config)?;
+    Ok(boop_report(traced))
 }
 
 pub fn run_connect_four_match_with_trace<A, B>(
@@ -138,6 +202,55 @@ fn run_connect_four(
         ),
     }?;
     Ok(result)
+}
+
+fn run_boop(
+    first: AgentConfig,
+    second: AgentConfig,
+    config: MatchConfig,
+) -> Result<MatchResult, CatalogError> {
+    let game = Boop;
+    let result = match (first, second) {
+        (AgentConfig::Random, AgentConfig::Random) => {
+            play_match(&game, &mut RandomAgent, &mut RandomAgent, config)
+        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
+            play_match(&game, &mut RandomAgent, &mut MctsAgent::new(second), config)
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Random) => {
+            play_match(&game, &mut MctsAgent::new(first), &mut RandomAgent, config)
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_match(
+            &game,
+            &mut MctsAgent::new(first),
+            &mut MctsAgent::new(second),
+            config,
+        ),
+    }?;
+    Ok(result)
+}
+
+fn run_boop_with_trace(
+    first: AgentConfig,
+    second: AgentConfig,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError> {
+    match (first, second) {
+        (AgentConfig::Random, AgentConfig::Random) => {
+            run_boop_match_with_trace(&mut RandomAgent, &mut RandomAgent, config)
+        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
+            run_boop_match_with_trace(&mut RandomAgent, &mut MctsAgent::new(second), config)
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Random) => {
+            run_boop_match_with_trace(&mut MctsAgent::new(first), &mut RandomAgent, config)
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => run_boop_match_with_trace(
+            &mut MctsAgent::new(first),
+            &mut MctsAgent::new(second),
+            config,
+        ),
+    }
 }
 
 fn run_connect_four_with_trace(
@@ -213,6 +326,12 @@ fn run_tic_tac_toe_with_trace(
 }
 
 fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogMatchReport {
+    let game = ConnectFour;
+    let mut state = game.initial_state();
+    for (_, action) in &traced.actions {
+        game.apply_action(&mut state, action)
+            .expect("trace contains actions accepted by the game");
+    }
     let winner = winner_from_utilities(&traced.result.utilities);
     let moves = traced
         .actions
@@ -231,10 +350,27 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
         utilities: traced.result.utilities,
         winner,
         moves,
+        final_board: state
+            .board()
+            .iter()
+            .map(|piece| {
+                piece.map(|player| CatalogPiece {
+                    player: player.index(),
+                    kind: CatalogPieceKind::Token,
+                })
+            })
+            .collect(),
+        pools: None,
     }
 }
 
 fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatchReport {
+    let game = TicTacToe;
+    let mut state = game.initial_state();
+    for (_, action) in &traced.actions {
+        game.apply_action(&mut state, action)
+            .expect("trace contains actions accepted by the game");
+    }
     let winner = winner_from_utilities(&traced.result.utilities);
     let moves = traced
         .actions
@@ -254,6 +390,84 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
         utilities: traced.result.utilities,
         winner,
         moves,
+        final_board: state
+            .board()
+            .iter()
+            .map(|piece| {
+                piece.map(|player| CatalogPiece {
+                    player: player.index(),
+                    kind: CatalogPieceKind::Token,
+                })
+            })
+            .collect(),
+        pools: None,
+    }
+}
+
+fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
+    let game = Boop;
+    let mut state = game.initial_state();
+    for (_, action) in &traced.actions {
+        game.apply_action(&mut state, action)
+            .expect("trace contains actions accepted by the game");
+    }
+    let winner = winner_from_utilities(&traced.result.utilities);
+    let moves = traced
+        .actions
+        .into_iter()
+        .map(|(player, action)| RecordedMove {
+            player: player.index(),
+            action: CatalogAction::Boop {
+                piece: catalog_boop_piece(action.piece()),
+                row: action.position().row(),
+                column: action.position().column(),
+                resolution: match action.resolution() {
+                    BoopResolution::None => CatalogBoopResolution::None,
+                    BoopResolution::Graduate(line) => CatalogBoopResolution::Graduate {
+                        positions: line
+                            .positions()
+                            .map(|position| (position.row(), position.column())),
+                    },
+                    BoopResolution::Recover(position) => CatalogBoopResolution::Recover {
+                        row: position.row(),
+                        column: position.column(),
+                    },
+                },
+            },
+        })
+        .collect();
+    let pools = state.pools().map(|pool| CatalogPool {
+        kittens: pool.kittens(),
+        cats: pool.cats(),
+    });
+
+    CatalogMatchReport {
+        seed: traced.result.seed,
+        plies: traced.result.plies,
+        utilities: traced.result.utilities,
+        winner,
+        moves,
+        final_board: state
+            .board()
+            .iter()
+            .map(|piece| {
+                piece.map(|piece| CatalogPiece {
+                    player: piece.owner().index(),
+                    kind: match piece.kind() {
+                        BoopPieceKind::Kitten => CatalogPieceKind::Kitten,
+                        BoopPieceKind::Cat => CatalogPieceKind::Cat,
+                    },
+                })
+            })
+            .collect(),
+        pools: Some(pools),
+    }
+}
+
+fn catalog_boop_piece(piece: BoopPieceKind) -> CatalogBoopPieceKind {
+    match piece {
+        BoopPieceKind::Kitten => CatalogBoopPieceKind::Kitten,
+        BoopPieceKind::Cat => CatalogBoopPieceKind::Cat,
     }
 }
 
@@ -279,9 +493,35 @@ pub fn run_batch(
         max_plies,
     };
     match game {
+        GameId::Boop => run_boop_batch(first, second, config),
         GameId::ConnectFour => run_connect_four_batch(first, second, config),
         GameId::TicTacToe => run_tic_tac_toe_batch(first, second, config),
     }
+}
+
+fn run_boop_batch(
+    first: AgentConfig,
+    second: AgentConfig,
+    config: BatchConfig,
+) -> Result<Vec<MatchResult>, CatalogError> {
+    let results = match (first, second) {
+        (AgentConfig::Random, AgentConfig::Random) => {
+            play_batch(&Boop, config, || RandomAgent, || RandomAgent)
+        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
+            play_batch(&Boop, config, || RandomAgent, || MctsAgent::new(second))
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Random) => {
+            play_batch(&Boop, config, || MctsAgent::new(first), || RandomAgent)
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_batch(
+            &Boop,
+            config,
+            || MctsAgent::new(first),
+            || MctsAgent::new(second),
+        ),
+    }?;
+    Ok(results)
 }
 
 fn run_connect_four_batch(
@@ -380,6 +620,7 @@ mod tests {
                     assert!(column < 3);
                 }
                 CatalogAction::ConnectFour { .. } => panic!("unexpected Connect Four action"),
+                CatalogAction::Boop { .. } => panic!("unexpected boop action"),
             }
         }
     }
@@ -400,7 +641,27 @@ mod tests {
             match recorded.action {
                 CatalogAction::ConnectFour { column } => assert!(column < 7),
                 CatalogAction::TicTacToe { .. } => panic!("unexpected tic-tac-toe action"),
+                CatalogAction::Boop { .. } => panic!("unexpected boop action"),
             }
         }
+    }
+
+    #[test]
+    fn boop_trace_contains_actions_and_an_authoritative_board() {
+        let report = run_match_with_trace(
+            GameId::Boop,
+            AgentConfig::Random,
+            AgentConfig::Random,
+            MatchConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(report.moves.len(), report.plies as usize);
+        assert_eq!(report.final_board.len(), 36);
+        assert!(report.pools.is_some());
+        assert!(report.moves.iter().all(|movement| matches!(
+            movement.action,
+            CatalogAction::Boop { row, column, .. } if row < 6 && column < 6
+        )));
     }
 }

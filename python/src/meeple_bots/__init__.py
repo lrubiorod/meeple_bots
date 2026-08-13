@@ -1,6 +1,14 @@
 """Public Python API for Meeple Bots."""
 
 from .api import (
+    Boop,
+    BoopAction,
+    BoopGraduateLine,
+    BoopPiece,
+    BoopPieceKind,
+    BoopPool,
+    BoopPosition,
+    BoopRecoverPiece,
     ConnectFour,
     ConnectFourAction,
     HumanAgent,
@@ -15,6 +23,14 @@ from .api import (
 )
 
 __all__ = [
+    "Boop",
+    "BoopAction",
+    "BoopGraduateLine",
+    "BoopPiece",
+    "BoopPieceKind",
+    "BoopPool",
+    "BoopPosition",
+    "BoopRecoverPiece",
     "ConnectFour",
     "ConnectFourAction",
     "HumanAgent",

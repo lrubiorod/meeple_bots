@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+meeple_bots_boop = { path = "../../games/boop" }
 meeple_bots_core = { path = "../core" }
 meeple_bots_connect_four = { path = "../../games/connect-four" }
 meeple_bots_mcts_agent = { path = "../../agents/mcts" }

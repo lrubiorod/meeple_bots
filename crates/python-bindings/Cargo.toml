@@ -8,6 +8,7 @@ name = "_native"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+meeple_bots_boop = { path = "../../games/boop" }
 meeple_bots_catalog = { path = "../catalog" }
 meeple_bots_connect_four = { path = "../../games/connect-four" }
 meeple_bots_core = { path = "../core" }

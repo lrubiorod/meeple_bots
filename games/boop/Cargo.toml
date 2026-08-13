@@ -1,0 +1,7 @@
+[package]
+name = "meeple_bots_boop"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+meeple_bots_core = { path = "../../crates/core" }

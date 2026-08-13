@@ -2,9 +2,12 @@
 
 use std::num::NonZeroU32;
 
+use meeple_bots_boop::{Boop, BoopAction, PieceKind as BoopPieceKind, Resolution};
 use meeple_bots_catalog::{
-    AgentConfig, CatalogAction, CatalogError, CatalogMatchReport, GameId, MatchConfig, MctsConfig,
-    run_connect_four_match_with_trace, run_match_with_trace, run_tic_tac_toe_match_with_trace,
+    AgentConfig, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution, CatalogError,
+    CatalogMatchReport, CatalogPieceKind, GameId, MatchConfig, MctsConfig,
+    run_boop_match_with_trace, run_connect_four_match_with_trace, run_match_with_trace,
+    run_tic_tac_toe_match_with_trace,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{Agent, AgentError, DecisionContext, RandomSource};
@@ -149,6 +152,48 @@ impl Agent<ConnectFour> for PythonHumanAgent<'_> {
     }
 }
 
+impl Agent<Boop> for PythonHumanAgent<'_> {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, Boop>,
+        _rng: &mut R,
+    ) -> Result<BoopAction, AgentError> {
+        let player = decision.player().index();
+        let board: Vec<_> = decision
+            .state()
+            .board()
+            .iter()
+            .map(|cell| {
+                cell.map(|piece| {
+                    (
+                        piece.owner().index(),
+                        boop_piece_name(piece.kind()).to_owned(),
+                    )
+                })
+            })
+            .collect();
+        let pools: Vec<_> = decision
+            .state()
+            .pools()
+            .iter()
+            .map(|pool| (pool.kittens(), pool.cats()))
+            .collect();
+        let legal_actions: Vec<_> = decision.legal_actions().collect();
+        let native_actions: Vec<_> = legal_actions.iter().map(native_boop_action).collect();
+
+        let selected: usize = Python::attach(|py| {
+            self.selector
+                .bind(py)
+                .call1((player, board, pools, native_actions))?
+                .extract()
+        })
+        .map_err(|error| AgentError::message(format!("human selector failed: {error}")))?;
+        legal_actions.get(selected).copied().ok_or_else(|| {
+            AgentError::message("human selected an action index that is not currently legal")
+        })
+    }
+}
+
 #[pyfunction(name = "run_match")]
 #[pyo3(signature = (game, first, second, seed=0, max_plies=10_000))]
 fn py_run_match(
@@ -160,6 +205,7 @@ fn py_run_match(
     max_plies: u32,
 ) -> PyResult<Py<PyDict>> {
     let game = match game {
+        "boop" => GameId::Boop,
         "connect_four" => GameId::ConnectFour,
         "tic_tac_toe" => GameId::TicTacToe,
         other => return Err(PyValueError::new_err(format!("unknown game: {other}"))),
@@ -189,10 +235,71 @@ fn py_run_match(
     result.set_item("utilities", PyList::new(py, report.utilities)?)?;
     result.set_item("winner", report.winner)?;
 
+    let final_board = PyList::empty(py);
+    for piece in report.final_board {
+        match piece {
+            None => final_board.append(py.None())?,
+            Some(piece) => {
+                let serialized = PyDict::new(py);
+                serialized.set_item("player", piece.player)?;
+                serialized.set_item(
+                    "kind",
+                    match piece.kind {
+                        CatalogPieceKind::Token => "token",
+                        CatalogPieceKind::Kitten => "kitten",
+                        CatalogPieceKind::Cat => "cat",
+                    },
+                )?;
+                final_board.append(serialized)?;
+            }
+        }
+    }
+    result.set_item("final_board", final_board)?;
+    match report.pools {
+        None => result.set_item("pools", py.None())?,
+        Some(pools) => {
+            let serialized = PyList::empty(py);
+            for pool in pools {
+                let item = PyDict::new(py);
+                item.set_item("kittens", pool.kittens)?;
+                item.set_item("cats", pool.cats)?;
+                serialized.append(item)?;
+            }
+            result.set_item("pools", serialized)?;
+        }
+    }
+
     let moves = PyList::empty(py);
     for recorded in report.moves {
         let action = PyDict::new(py);
         match recorded.action {
+            CatalogAction::Boop {
+                piece,
+                row,
+                column,
+                resolution,
+            } => {
+                action.set_item("type", "boop")?;
+                action.set_item("piece", catalog_boop_piece_name(piece))?;
+                action.set_item("row", row)?;
+                action.set_item("column", column)?;
+                let serialized_resolution = PyDict::new(py);
+                match resolution {
+                    CatalogBoopResolution::None => {
+                        serialized_resolution.set_item("type", "none")?;
+                    }
+                    CatalogBoopResolution::Graduate { positions } => {
+                        serialized_resolution.set_item("type", "graduate")?;
+                        serialized_resolution.set_item("positions", positions)?;
+                    }
+                    CatalogBoopResolution::Recover { row, column } => {
+                        serialized_resolution.set_item("type", "recover")?;
+                        serialized_resolution.set_item("row", row)?;
+                        serialized_resolution.set_item("column", column)?;
+                    }
+                }
+                action.set_item("resolution", serialized_resolution)?;
+            }
             CatalogAction::ConnectFour { column } => {
                 action.set_item("type", "connect_four")?;
                 action.set_item("column", column)?;
@@ -222,6 +329,12 @@ fn run_with_human_first(
 ) -> Result<CatalogMatchReport, CatalogError> {
     let mut first = PythonHumanAgent { selector: first };
     match (game, second) {
+        (GameId::Boop, AgentConfig::Random) => {
+            run_boop_match_with_trace(&mut first, &mut RandomAgent, config)
+        }
+        (GameId::Boop, AgentConfig::Mcts(configured)) => {
+            run_boop_match_with_trace(&mut first, &mut MctsAgent::new(configured), config)
+        }
         (GameId::ConnectFour, AgentConfig::Random) => {
             run_connect_four_match_with_trace(&mut first, &mut RandomAgent, config)
         }
@@ -245,6 +358,12 @@ fn run_with_human_second(
 ) -> Result<CatalogMatchReport, CatalogError> {
     let mut second = PythonHumanAgent { selector: second };
     match (game, first) {
+        (GameId::Boop, AgentConfig::Random) => {
+            run_boop_match_with_trace(&mut RandomAgent, &mut second, config)
+        }
+        (GameId::Boop, AgentConfig::Mcts(configured)) => {
+            run_boop_match_with_trace(&mut MctsAgent::new(configured), &mut second, config)
+        }
         (GameId::ConnectFour, AgentConfig::Random) => {
             run_connect_four_match_with_trace(&mut RandomAgent, &mut second, config)
         }
@@ -267,6 +386,11 @@ fn run_with_two_humans(
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
     match game {
+        GameId::Boop => run_boop_match_with_trace(
+            &mut PythonHumanAgent { selector: first },
+            &mut PythonHumanAgent { selector: second },
+            config,
+        ),
         GameId::ConnectFour => run_connect_four_match_with_trace(
             &mut PythonHumanAgent { selector: first },
             &mut PythonHumanAgent { selector: second },
@@ -277,6 +401,45 @@ fn run_with_two_humans(
             &mut PythonHumanAgent { selector: second },
             config,
         ),
+    }
+}
+
+type NativeBoopAction = (String, u8, u8, (String, Vec<(u8, u8)>));
+
+fn native_boop_action(action: &BoopAction) -> NativeBoopAction {
+    let resolution = match action.resolution() {
+        Resolution::None => ("none".to_owned(), Vec::new()),
+        Resolution::Graduate(line) => (
+            "graduate".to_owned(),
+            line.positions()
+                .into_iter()
+                .map(|position| (position.row(), position.column()))
+                .collect(),
+        ),
+        Resolution::Recover(position) => (
+            "recover".to_owned(),
+            vec![(position.row(), position.column())],
+        ),
+    };
+    (
+        boop_piece_name(action.piece()).to_owned(),
+        action.position().row(),
+        action.position().column(),
+        resolution,
+    )
+}
+
+fn boop_piece_name(piece: BoopPieceKind) -> &'static str {
+    match piece {
+        BoopPieceKind::Kitten => "kitten",
+        BoopPieceKind::Cat => "cat",
+    }
+}
+
+fn catalog_boop_piece_name(piece: CatalogBoopPieceKind) -> &'static str {
+    match piece {
+        CatalogBoopPieceKind::Kitten => "kitten",
+        CatalogBoopPieceKind::Cat => "cat",
     }
 }
 
