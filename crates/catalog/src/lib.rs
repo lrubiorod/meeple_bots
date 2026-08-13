@@ -2,6 +2,7 @@
 
 use std::{error::Error, fmt, num::NonZeroU32};
 
+use meeple_bots_core::Agent;
 use meeple_bots_mcts_agent::MctsAgent;
 pub use meeple_bots_mcts_agent::MctsConfig;
 use meeple_bots_random_agent::RandomAgent;
@@ -82,6 +83,19 @@ pub fn run_match_with_trace(
     }
 }
 
+pub fn run_tic_tac_toe_match_with_trace<A, B>(
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError>
+where
+    A: Agent<TicTacToe>,
+    B: Agent<TicTacToe>,
+{
+    let traced = play_typed_match_with_trace(&TicTacToe, first, second, config)?;
+    Ok(tic_tac_toe_report(traced))
+}
+
 fn run_tic_tac_toe(
     first: AgentConfig,
     second: AgentConfig,
@@ -113,29 +127,22 @@ fn run_tic_tac_toe_with_trace(
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
-    let game = TicTacToe;
-    let traced = match (first, second) {
+    match (first, second) {
         (AgentConfig::Random, AgentConfig::Random) => {
-            play_typed_match_with_trace(&game, &mut RandomAgent, &mut RandomAgent, config)
+            run_tic_tac_toe_match_with_trace(&mut RandomAgent, &mut RandomAgent, config)
         }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_typed_match_with_trace(
-            &game,
-            &mut RandomAgent,
-            &mut MctsAgent::new(second),
-            config,
-        ),
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
+            run_tic_tac_toe_match_with_trace(&mut RandomAgent, &mut MctsAgent::new(second), config)
+        }
         (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            play_typed_match_with_trace(&game, &mut MctsAgent::new(first), &mut RandomAgent, config)
+            run_tic_tac_toe_match_with_trace(&mut MctsAgent::new(first), &mut RandomAgent, config)
         }
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_typed_match_with_trace(
-            &game,
+        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => run_tic_tac_toe_match_with_trace(
             &mut MctsAgent::new(first),
             &mut MctsAgent::new(second),
             config,
         ),
-    }?;
-
-    Ok(tic_tac_toe_report(traced))
+    }
 }
 
 fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatchReport {

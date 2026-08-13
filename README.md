@@ -92,6 +92,35 @@ for move in result.moves:
 Rows, columns, and player identifiers are zero-based. A `None` winner represents a draw. Reusing a
 seed with the same configuration reproduces the same match.
 
+Use `HumanAgent` to collect moves from a Python function. Calling it without arguments uses an
+interactive terminal prompt:
+
+```python
+from meeple_bots import HumanAgent, Match, MctsAgent
+
+result = Match(first=HumanAgent(), second=MctsAgent(), seed=42).run()
+print(result.winner)
+```
+
+For a graphical interface or another input source, pass a function that receives a read-only
+`HumanTurn` and returns a `TicTacToeAction`:
+
+```python
+from meeple_bots import HumanAgent, Match, RandomAgent, TicTacToeAction
+
+
+def choose_move(turn):
+    print(turn.board)
+    print(turn.legal_actions)
+    return TicTacToeAction(row=0, column=0)
+
+
+result = Match(first=HumanAgent(choose_move), second=RandomAgent()).run()
+```
+
+The selector must return one of `turn.legal_actions`. Invalid interactive input is requested again;
+an invalid value returned by a custom selector stops the match with an error.
+
 ### Command-line interface
 
 The `match` command runs one match and prints its complete move history. Both entry points below are
@@ -107,8 +136,8 @@ The command accepts these options:
 | Option | Default | Description |
 | --- | --- | --- |
 | `--game` | `tic-tac-toe` | Game to run; currently only tic-tac-toe is available. |
-| `--first` | `mcts` | Agent for player 0: `mcts` or `random`. |
-| `--second` | `random` | Agent for player 1: `mcts` or `random`. |
+| `--first` | `mcts` | Agent for player 0: `human`, `mcts`, or `random`. |
+| `--second` | `random` | Agent for player 1: `human`, `mcts`, or `random`. |
 | `--seed` | `0` | Seed controlling the reproducible random streams. |
 | `--max-plies` | `10000` | Safety limit for the number of actions in the match. |
 | `--mcts-iterations` | `1000` | Search iterations used by every selected MCTS agent. |
@@ -120,6 +149,12 @@ For example, run two random agents and request JSON output:
 
 ```bash
 meeple-bots match --first random --second random --seed 9 --json
+```
+
+To play against MCTS as player 0, enter a zero-based row and column when prompted:
+
+```bash
+meeple-bots match --first human --second mcts --seed 42
 ```
 
 Use `meeple-bots match --help` to display the available options from the installed version.

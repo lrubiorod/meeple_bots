@@ -7,7 +7,7 @@ import json
 import sys
 from collections.abc import Sequence
 
-from .api import Match, MatchResult, MctsAgent, RandomAgent, TicTacToe
+from .api import HumanAgent, Match, MatchResult, MctsAgent, RandomAgent, TicTacToe
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -15,8 +15,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     match = commands.add_parser("match", help="run and display one match")
     match.add_argument("--game", choices=["tic-tac-toe"], default="tic-tac-toe")
-    match.add_argument("--first", choices=["mcts", "random"], default="mcts")
-    match.add_argument("--second", choices=["mcts", "random"], default="random")
+    match.add_argument("--first", choices=["human", "mcts", "random"], default="mcts")
+    match.add_argument("--second", choices=["human", "mcts", "random"], default="random")
     match.add_argument("--seed", type=int, default=0)
     match.add_argument("--max-plies", type=int, default=10_000)
     match.add_argument("--mcts-iterations", type=int, default=1_000)
@@ -40,8 +40,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         result = Match(
             game=TicTacToe(),
-            first=mcts if args.first == "mcts" else RandomAgent(),
-            second=mcts if args.second == "mcts" else RandomAgent(),
+            first=_agent(args.first, mcts),
+            second=_agent(args.second, mcts),
             seed=args.seed,
             max_plies=args.max_plies,
         ).run()
@@ -54,6 +54,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         _print_result(result, args.first, args.second)
     return 0
+
+
+def _agent(name: str, mcts: MctsAgent) -> HumanAgent | MctsAgent | RandomAgent:
+    if name == "human":
+        return HumanAgent()
+    if name == "mcts":
+        return mcts
+    return RandomAgent()
 
 
 def _result_dict(result: MatchResult) -> dict[str, object]:

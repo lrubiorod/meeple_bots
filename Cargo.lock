@@ -18,6 +18,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 name = "meeple_bots_catalog"
 version = "0.1.0"
 dependencies = [
+ "meeple_bots_core",
  "meeple_bots_mcts_agent",
  "meeple_bots_random_agent",
  "meeple_bots_simulation",
@@ -43,6 +44,10 @@ name = "meeple_bots_python_bindings"
 version = "0.1.0"
 dependencies = [
  "meeple_bots_catalog",
+ "meeple_bots_core",
+ "meeple_bots_mcts_agent",
+ "meeple_bots_random_agent",
+ "meeple_bots_tic_tac_toe",
  "pyo3",
 ]
 

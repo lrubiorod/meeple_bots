@@ -3,15 +3,25 @@
 use std::num::NonZeroU32;
 
 use meeple_bots_catalog::{
-    AgentConfig, CatalogAction, GameId, MatchConfig, MctsConfig, run_match_with_trace,
+    AgentConfig, CatalogAction, CatalogError, CatalogMatchReport, GameId, MatchConfig, MctsConfig,
+    run_match_with_trace, run_tic_tac_toe_match_with_trace,
 };
+use meeple_bots_core::{Agent, AgentError, DecisionContext, RandomSource};
+use meeple_bots_mcts_agent::MctsAgent;
+use meeple_bots_random_agent::RandomAgent;
+use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyModule};
+use pyo3::types::{PyAny, PyDict, PyList, PyModule};
+
+enum PythonAgentConfig {
+    Automated(AgentConfig),
+    Human(Py<PyAny>),
+}
 
 #[pyclass(name = "AgentConfig", frozen)]
 struct PyAgentConfig {
-    inner: AgentConfig,
+    inner: PythonAgentConfig,
 }
 
 #[pymethods]
@@ -19,7 +29,7 @@ impl PyAgentConfig {
     #[staticmethod]
     fn random() -> Self {
         Self {
-            inner: AgentConfig::Random,
+            inner: PythonAgentConfig::Automated(AgentConfig::Random),
         }
     }
 
@@ -44,12 +54,63 @@ impl PyAgentConfig {
         }
 
         Ok(Self {
-            inner: AgentConfig::Mcts(MctsConfig {
+            inner: PythonAgentConfig::Automated(AgentConfig::Mcts(MctsConfig {
                 iterations,
                 exploration,
                 rollout_depth,
-            }),
+            })),
         })
+    }
+
+    #[staticmethod]
+    fn human(py: Python<'_>, selector: Py<PyAny>) -> PyResult<Self> {
+        if !selector.bind(py).is_callable() {
+            return Err(PyValueError::new_err("human selector must be callable"));
+        }
+        Ok(Self {
+            inner: PythonAgentConfig::Human(selector),
+        })
+    }
+}
+
+struct PythonHumanAgent<'a> {
+    selector: &'a Py<PyAny>,
+}
+
+impl Agent<TicTacToe> for PythonHumanAgent<'_> {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, TicTacToe>,
+        _rng: &mut R,
+    ) -> Result<TicTacToeAction, AgentError> {
+        let player = decision.player().index();
+        let board: Vec<_> = decision
+            .state()
+            .board()
+            .iter()
+            .map(|cell| cell.map(|occupant| occupant.index()))
+            .collect();
+        let legal_actions: Vec<_> = decision.legal_actions().collect();
+        let legal_coordinates: Vec<_> = legal_actions
+            .iter()
+            .map(|action| (action.row(), action.column()))
+            .collect();
+
+        let (row, column): (u8, u8) = Python::attach(|py| {
+            self.selector
+                .bind(py)
+                .call1((player, board, legal_coordinates))?
+                .extract()
+        })
+        .map_err(|error| AgentError::message(format!("human selector failed: {error}")))?;
+        let action = TicTacToeAction::new(row, column)
+            .ok_or_else(|| AgentError::message("human selected a cell outside the board"))?;
+        if !legal_actions.contains(&action) {
+            return Err(AgentError::message(
+                "human selected a cell that is not currently legal",
+            ));
+        }
+        Ok(action)
     }
 }
 
@@ -69,12 +130,21 @@ fn py_run_match(
     };
     let max_plies = NonZeroU32::new(max_plies)
         .ok_or_else(|| PyValueError::new_err("max_plies must be greater than zero"))?;
-    let report = run_match_with_trace(
-        game,
-        first.inner,
-        second.inner,
-        MatchConfig::new(seed, max_plies),
-    )
+    let config = MatchConfig::new(seed, max_plies);
+    let report = match (&first.inner, &second.inner) {
+        (PythonAgentConfig::Automated(first), PythonAgentConfig::Automated(second)) => {
+            run_match_with_trace(game, *first, *second, config)
+        }
+        (PythonAgentConfig::Human(first), PythonAgentConfig::Automated(second)) => {
+            run_with_human_first(first, *second, config)
+        }
+        (PythonAgentConfig::Automated(first), PythonAgentConfig::Human(second)) => {
+            run_with_human_second(*first, second, config)
+        }
+        (PythonAgentConfig::Human(first), PythonAgentConfig::Human(second)) => {
+            run_with_two_humans(first, second, config)
+        }
+    }
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
 
     let result = PyDict::new(py);
@@ -102,6 +172,50 @@ fn py_run_match(
     result.set_item("moves", moves)?;
 
     Ok(result.unbind())
+}
+
+fn run_with_human_first(
+    first: &Py<PyAny>,
+    second: AgentConfig,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError> {
+    let mut first = PythonHumanAgent { selector: first };
+    match second {
+        AgentConfig::Random => {
+            run_tic_tac_toe_match_with_trace(&mut first, &mut RandomAgent, config)
+        }
+        AgentConfig::Mcts(configured) => {
+            run_tic_tac_toe_match_with_trace(&mut first, &mut MctsAgent::new(configured), config)
+        }
+    }
+}
+
+fn run_with_human_second(
+    first: AgentConfig,
+    second: &Py<PyAny>,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError> {
+    let mut second = PythonHumanAgent { selector: second };
+    match first {
+        AgentConfig::Random => {
+            run_tic_tac_toe_match_with_trace(&mut RandomAgent, &mut second, config)
+        }
+        AgentConfig::Mcts(configured) => {
+            run_tic_tac_toe_match_with_trace(&mut MctsAgent::new(configured), &mut second, config)
+        }
+    }
+}
+
+fn run_with_two_humans(
+    first: &Py<PyAny>,
+    second: &Py<PyAny>,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError> {
+    run_tic_tac_toe_match_with_trace(
+        &mut PythonHumanAgent { selector: first },
+        &mut PythonHumanAgent { selector: second },
+        config,
+    )
 }
 
 #[pymodule]

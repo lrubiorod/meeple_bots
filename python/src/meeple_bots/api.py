@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from math import isfinite, sqrt
 from typing import TypeAlias
@@ -46,15 +48,52 @@ class MctsAgent:
             raise ValueError("exploration must be finite and non-negative")
 
 
-Agent: TypeAlias = RandomAgent | MctsAgent
-
-
 @dataclass(frozen=True, slots=True)
 class TicTacToeAction:
     """A zero-based row and column on the tic-tac-toe board."""
 
     row: int
     column: int
+
+    def __post_init__(self) -> None:
+        for name, value in (("row", self.row), ("column", self.column)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+            if not 0 <= value < 3:
+                raise ValueError(f"{name} must be between 0 and 2")
+
+
+TicTacToeBoard: TypeAlias = tuple[
+    tuple[int | None, int | None, int | None],
+    tuple[int | None, int | None, int | None],
+    tuple[int | None, int | None, int | None],
+]
+
+
+@dataclass(frozen=True, slots=True)
+class HumanTurn:
+    """Read-only position presented to a human move selector."""
+
+    player: int
+    board: TicTacToeBoard
+    legal_actions: tuple[TicTacToeAction, ...]
+
+
+MoveSelector: TypeAlias = Callable[[HumanTurn], TicTacToeAction]
+
+
+@dataclass(frozen=True, slots=True)
+class HumanAgent:
+    """A player controlled by a Python function or an interactive terminal prompt."""
+
+    select_action: MoveSelector = field(default=lambda turn: _prompt_human_action(turn))
+
+    def __post_init__(self) -> None:
+        if not callable(self.select_action):
+            raise TypeError("select_action must be callable")
+
+
+Agent: TypeAlias = RandomAgent | MctsAgent | HumanAgent
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,10 +128,10 @@ class Match:
     def __post_init__(self) -> None:
         if not isinstance(self.game, TicTacToe):
             raise TypeError("game must be TicTacToe")
-        if not isinstance(self.first, (RandomAgent, MctsAgent)):
-            raise TypeError("first must be RandomAgent or MctsAgent")
-        if not isinstance(self.second, (RandomAgent, MctsAgent)):
-            raise TypeError("second must be RandomAgent or MctsAgent")
+        if not isinstance(self.first, (RandomAgent, MctsAgent, HumanAgent)):
+            raise TypeError("first must be RandomAgent, MctsAgent, or HumanAgent")
+        if not isinstance(self.second, (RandomAgent, MctsAgent, HumanAgent)):
+            raise TypeError("second must be RandomAgent, MctsAgent, or HumanAgent")
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
             raise TypeError("seed must be an integer")
         if not 0 <= self.seed <= _MAX_U64:
@@ -131,8 +170,66 @@ class Match:
 def _native_agent(agent: Agent):
     if isinstance(agent, RandomAgent):
         return _native.AgentConfig.random()
-    return _native.AgentConfig.mcts(
-        agent.iterations,
-        float(agent.exploration),
-        agent.rollout_depth,
-    )
+    if isinstance(agent, MctsAgent):
+        return _native.AgentConfig.mcts(
+            agent.iterations,
+            float(agent.exploration),
+            agent.rollout_depth,
+        )
+    return _native.AgentConfig.human(_human_selector(agent))
+
+
+def _human_selector(agent: HumanAgent):
+    def select(
+        player: int,
+        flat_board: list[int | None],
+        legal_coordinates: list[tuple[int, int]],
+    ) -> tuple[int, int]:
+        board: TicTacToeBoard = (
+            tuple(flat_board[0:3]),
+            tuple(flat_board[3:6]),
+            tuple(flat_board[6:9]),
+        )
+        turn = HumanTurn(
+            player=player,
+            board=board,
+            legal_actions=tuple(
+                TicTacToeAction(row=row, column=column)
+                for row, column in legal_coordinates
+            ),
+        )
+        action = agent.select_action(turn)
+        if not isinstance(action, TicTacToeAction):
+            raise TypeError("human select_action must return TicTacToeAction")
+        if action not in turn.legal_actions:
+            raise ValueError("the selected cell is not currently legal")
+        return action.row, action.column
+
+    return select
+
+
+def _prompt_human_action(turn: HumanTurn) -> TicTacToeAction:
+    symbols = {None: ".", 0: "X", 1: "O"}
+    print(file=sys.stderr)
+    print("    0 1 2", file=sys.stderr)
+    for row, cells in enumerate(turn.board):
+        rendered = " ".join(symbols[cell] for cell in cells)
+        print(f"{row} | {rendered}", file=sys.stderr)
+
+    while True:
+        print(
+            f"Player {turn.player}, enter row and column (for example, 1 2): ",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            parts = input().split()
+            if len(parts) != 2:
+                raise ValueError("enter exactly two numbers")
+            action = TicTacToeAction(row=int(parts[0]), column=int(parts[1]))
+            if action not in turn.legal_actions:
+                raise ValueError("that cell is already occupied")
+            return action
+        except ValueError as error:
+            print(f"Invalid move: {error}", file=sys.stderr)

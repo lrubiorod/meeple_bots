@@ -1,9 +1,17 @@
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from unittest.mock import patch
 
-from meeple_bots import Match, MctsAgent, RandomAgent, TicTacToe
+from meeple_bots import (
+    HumanAgent,
+    Match,
+    MctsAgent,
+    RandomAgent,
+    TicTacToe,
+    TicTacToeAction,
+)
 from meeple_bots.cli import main
 
 
@@ -38,6 +46,46 @@ class MatchApiTests(unittest.TestCase):
     def test_invalid_mcts_configuration_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             MctsAgent(iterations=0)
+
+    def test_scripted_humans_receive_positions_and_finish_a_match(self) -> None:
+        first_moves = iter([(0, 0), (0, 1), (0, 2)])
+        second_moves = iter([(1, 0), (1, 1)])
+        observed_turns = []
+
+        def select_first(turn):
+            observed_turns.append(turn)
+            return TicTacToeAction(*next(first_moves))
+
+        def select_second(turn):
+            observed_turns.append(turn)
+            return TicTacToeAction(*next(second_moves))
+
+        result = Match(
+            first=HumanAgent(select_first),
+            second=HumanAgent(select_second),
+        ).run()
+
+        self.assertEqual(result.winner, 0)
+        self.assertEqual(result.plies, 5)
+        self.assertEqual(observed_turns[0].player, 0)
+        self.assertEqual(observed_turns[0].board, ((None,) * 3,) * 3)
+        self.assertEqual(len(observed_turns[0].legal_actions), 9)
+
+    def test_cli_prompts_for_human_moves(self) -> None:
+        output = io.StringIO()
+        prompts = io.StringIO()
+        moves = ["0 0", "1 0", "0 1", "1 1", "0 2"]
+
+        with (
+            patch("builtins.input", side_effect=moves),
+            redirect_stdout(output),
+            redirect_stderr(prompts),
+        ):
+            exit_code = main(["match", "--first", "human", "--second", "human"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Winner: player 0", output.getvalue())
+        self.assertIn("enter row and column", prompts.getvalue())
 
     def test_cli_can_return_json(self) -> None:
         output = io.StringIO()

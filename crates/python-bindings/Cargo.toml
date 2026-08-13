@@ -9,4 +9,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 meeple_bots_catalog = { path = "../catalog" }
+meeple_bots_core = { path = "../core" }
+meeple_bots_mcts_agent = { path = "../../agents/mcts" }
+meeple_bots_random_agent = { path = "../../agents/random" }
+meeple_bots_tic_tac_toe = { path = "../../games/tic-tac-toe" }
 pyo3 = "0.29.0"
