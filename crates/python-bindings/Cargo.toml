@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 meeple_bots_catalog = { path = "../catalog" }
+meeple_bots_connect_four = { path = "../../games/connect-four" }
 meeple_bots_core = { path = "../core" }
 meeple_bots_mcts_agent = { path = "../../agents/mcts" }
 meeple_bots_random_agent = { path = "../../agents/random" }

@@ -5,6 +5,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from meeple_bots import (
+    ConnectFour,
+    ConnectFourAction,
     HumanAgent,
     Match,
     MctsAgent,
@@ -68,8 +70,37 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(result.winner, 0)
         self.assertEqual(result.plies, 5)
         self.assertEqual(observed_turns[0].player, 0)
+        self.assertIsInstance(observed_turns[0].game, TicTacToe)
         self.assertEqual(observed_turns[0].board, ((None,) * 3,) * 3)
         self.assertEqual(len(observed_turns[0].legal_actions), 9)
+
+    def test_scripted_humans_can_finish_connect_four(self) -> None:
+        first_moves = iter([0, 1, 2, 3])
+        second_moves = iter([0, 1, 2])
+        observed_turns = []
+
+        def select_first(turn):
+            observed_turns.append(turn)
+            return ConnectFourAction(next(first_moves))
+
+        def select_second(turn):
+            observed_turns.append(turn)
+            return ConnectFourAction(next(second_moves))
+
+        result = Match(
+            game=ConnectFour(),
+            first=HumanAgent(select_first),
+            second=HumanAgent(select_second),
+        ).run()
+
+        self.assertEqual(result.winner, 0)
+        self.assertEqual(result.plies, 7)
+        self.assertIsInstance(observed_turns[0].game, ConnectFour)
+        self.assertEqual(observed_turns[0].board, ((None,) * 7,) * 6)
+        self.assertEqual(len(observed_turns[0].legal_actions), 7)
+        self.assertTrue(
+            all(isinstance(move.action, ConnectFourAction) for move in result.moves)
+        )
 
     def test_cli_prompts_for_human_moves(self) -> None:
         output = io.StringIO()
@@ -85,7 +116,54 @@ class MatchApiTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertIn("Winner: player 0", output.getvalue())
+        self.assertIn("Final board:", output.getvalue())
+        self.assertIn("0 | X X X", output.getvalue())
         self.assertIn("enter row and column", prompts.getvalue())
+
+    def test_cli_shows_final_board_for_automated_match(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "match",
+                    "--first",
+                    "random",
+                    "--second",
+                    "random",
+                    "--seed",
+                    "9",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Final board:", output.getvalue())
+        self.assertIn("    0 1 2", output.getvalue())
+
+    def test_cli_shows_final_connect_four_board_with_gravity(self) -> None:
+        output = io.StringIO()
+        prompts = io.StringIO()
+        moves = ["0", "0", "1", "1", "2", "2", "3"]
+
+        with (
+            patch("builtins.input", side_effect=moves),
+            redirect_stdout(output),
+            redirect_stderr(prompts),
+        ):
+            exit_code = main(
+                [
+                    "match",
+                    "--game",
+                    "connect-four",
+                    "--first",
+                    "human",
+                    "--second",
+                    "human",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("4 | O O O . . . .", output.getvalue())
+        self.assertIn("5 | X X X X . . .", output.getvalue())
 
     def test_cli_can_return_json(self) -> None:
         output = io.StringIO()
@@ -107,6 +185,31 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["seed"], 9)
         self.assertEqual(len(payload["moves"]), payload["plies"])
+
+    def test_cli_can_run_connect_four(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "match",
+                    "--game",
+                    "connect-four",
+                    "--first",
+                    "random",
+                    "--second",
+                    "random",
+                    "--seed",
+                    "9",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertGreaterEqual(payload["plies"], 7)
+        self.assertTrue(
+            all(move["action"]["type"] == "connect_four" for move in payload["moves"])
+        )
 
 
 if __name__ == "__main__":

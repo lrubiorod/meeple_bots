@@ -4,8 +4,9 @@ use std::num::NonZeroU32;
 
 use meeple_bots_catalog::{
     AgentConfig, CatalogAction, CatalogError, CatalogMatchReport, GameId, MatchConfig, MctsConfig,
-    run_match_with_trace, run_tic_tac_toe_match_with_trace,
+    run_connect_four_match_with_trace, run_match_with_trace, run_tic_tac_toe_match_with_trace,
 };
+use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{Agent, AgentError, DecisionContext, RandomSource};
 use meeple_bots_mcts_agent::MctsAgent;
 use meeple_bots_random_agent::RandomAgent;
@@ -114,6 +115,40 @@ impl Agent<TicTacToe> for PythonHumanAgent<'_> {
     }
 }
 
+impl Agent<ConnectFour> for PythonHumanAgent<'_> {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, ConnectFour>,
+        _rng: &mut R,
+    ) -> Result<ConnectFourAction, AgentError> {
+        let player = decision.player().index();
+        let board: Vec<_> = decision
+            .state()
+            .board()
+            .iter()
+            .map(|cell| cell.map(|occupant| occupant.index()))
+            .collect();
+        let legal_actions: Vec<_> = decision.legal_actions().collect();
+        let legal_columns: Vec<_> = legal_actions.iter().map(|action| action.column()).collect();
+
+        let column: u8 = Python::attach(|py| {
+            self.selector
+                .bind(py)
+                .call1((player, board, legal_columns))?
+                .extract()
+        })
+        .map_err(|error| AgentError::message(format!("human selector failed: {error}")))?;
+        let action = ConnectFourAction::new(column)
+            .ok_or_else(|| AgentError::message("human selected a column outside the board"))?;
+        if !legal_actions.contains(&action) {
+            return Err(AgentError::message(
+                "human selected a column that is not currently legal",
+            ));
+        }
+        Ok(action)
+    }
+}
+
 #[pyfunction(name = "run_match")]
 #[pyo3(signature = (game, first, second, seed=0, max_plies=10_000))]
 fn py_run_match(
@@ -125,6 +160,7 @@ fn py_run_match(
     max_plies: u32,
 ) -> PyResult<Py<PyDict>> {
     let game = match game {
+        "connect_four" => GameId::ConnectFour,
         "tic_tac_toe" => GameId::TicTacToe,
         other => return Err(PyValueError::new_err(format!("unknown game: {other}"))),
     };
@@ -136,13 +172,13 @@ fn py_run_match(
             run_match_with_trace(game, *first, *second, config)
         }
         (PythonAgentConfig::Human(first), PythonAgentConfig::Automated(second)) => {
-            run_with_human_first(first, *second, config)
+            run_with_human_first(game, first, *second, config)
         }
         (PythonAgentConfig::Automated(first), PythonAgentConfig::Human(second)) => {
-            run_with_human_second(*first, second, config)
+            run_with_human_second(game, *first, second, config)
         }
         (PythonAgentConfig::Human(first), PythonAgentConfig::Human(second)) => {
-            run_with_two_humans(first, second, config)
+            run_with_two_humans(game, first, second, config)
         }
     }
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
@@ -157,6 +193,10 @@ fn py_run_match(
     for recorded in report.moves {
         let action = PyDict::new(py);
         match recorded.action {
+            CatalogAction::ConnectFour { column } => {
+                action.set_item("type", "connect_four")?;
+                action.set_item("column", column)?;
+            }
             CatalogAction::TicTacToe { row, column } => {
                 action.set_item("type", "tic_tac_toe")?;
                 action.set_item("row", row)?;
@@ -175,47 +215,69 @@ fn py_run_match(
 }
 
 fn run_with_human_first(
+    game: GameId,
     first: &Py<PyAny>,
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
     let mut first = PythonHumanAgent { selector: first };
-    match second {
-        AgentConfig::Random => {
+    match (game, second) {
+        (GameId::ConnectFour, AgentConfig::Random) => {
+            run_connect_four_match_with_trace(&mut first, &mut RandomAgent, config)
+        }
+        (GameId::ConnectFour, AgentConfig::Mcts(configured)) => {
+            run_connect_four_match_with_trace(&mut first, &mut MctsAgent::new(configured), config)
+        }
+        (GameId::TicTacToe, AgentConfig::Random) => {
             run_tic_tac_toe_match_with_trace(&mut first, &mut RandomAgent, config)
         }
-        AgentConfig::Mcts(configured) => {
+        (GameId::TicTacToe, AgentConfig::Mcts(configured)) => {
             run_tic_tac_toe_match_with_trace(&mut first, &mut MctsAgent::new(configured), config)
         }
     }
 }
 
 fn run_with_human_second(
+    game: GameId,
     first: AgentConfig,
     second: &Py<PyAny>,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
     let mut second = PythonHumanAgent { selector: second };
-    match first {
-        AgentConfig::Random => {
+    match (game, first) {
+        (GameId::ConnectFour, AgentConfig::Random) => {
+            run_connect_four_match_with_trace(&mut RandomAgent, &mut second, config)
+        }
+        (GameId::ConnectFour, AgentConfig::Mcts(configured)) => {
+            run_connect_four_match_with_trace(&mut MctsAgent::new(configured), &mut second, config)
+        }
+        (GameId::TicTacToe, AgentConfig::Random) => {
             run_tic_tac_toe_match_with_trace(&mut RandomAgent, &mut second, config)
         }
-        AgentConfig::Mcts(configured) => {
+        (GameId::TicTacToe, AgentConfig::Mcts(configured)) => {
             run_tic_tac_toe_match_with_trace(&mut MctsAgent::new(configured), &mut second, config)
         }
     }
 }
 
 fn run_with_two_humans(
+    game: GameId,
     first: &Py<PyAny>,
     second: &Py<PyAny>,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
-    run_tic_tac_toe_match_with_trace(
-        &mut PythonHumanAgent { selector: first },
-        &mut PythonHumanAgent { selector: second },
-        config,
-    )
+    match game {
+        GameId::ConnectFour => run_connect_four_match_with_trace(
+            &mut PythonHumanAgent { selector: first },
+            &mut PythonHumanAgent { selector: second },
+            config,
+        ),
+        GameId::TicTacToe => run_tic_tac_toe_match_with_trace(
+            &mut PythonHumanAgent { selector: first },
+            &mut PythonHumanAgent { selector: second },
+            config,
+        ),
+    }
 }
 
 #[pymodule]

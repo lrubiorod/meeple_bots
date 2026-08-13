@@ -5,6 +5,7 @@ members = [
     "crates/simulation",
     "crates/catalog",
     "crates/python-bindings",
+    "games/connect-four",
     "games/tic-tac-toe",
     "agents/random",
     "agents/mcts",

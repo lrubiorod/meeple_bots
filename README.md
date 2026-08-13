@@ -31,7 +31,8 @@ randomness and hidden information through future capability traits.
 
 ## Current Implementations
 
-- Game: tic-tac-toe with an allocation-free legal-action iterator.
+- Games: tic-tac-toe and standard 6x7 Connect Four, both with allocation-free legal-action
+  iterators.
 - Agents: uniform random and Monte Carlo Tree Search.
 - Simulation: reproducible seeds, independent RNG streams per player, turn limits, observers, and
   sequential batches.
@@ -92,6 +93,23 @@ for move in result.moves:
 Rows, columns, and player identifiers are zero-based. A `None` winner represents a draw. Reusing a
 seed with the same configuration reproduces the same match.
 
+Select Connect Four by passing `ConnectFour` as the game. Its actions contain only a column because
+the Rust engine applies gravity:
+
+```python
+from meeple_bots import ConnectFour, Match, MctsAgent, RandomAgent
+
+result = Match(
+    game=ConnectFour(),
+    first=MctsAgent(),
+    second=RandomAgent(),
+    seed=42,
+).run()
+
+for move in result.moves:
+    print(move.player, move.action.column)
+```
+
 Use `HumanAgent` to collect moves from a Python function. Calling it without arguments uses an
 interactive terminal prompt:
 
@@ -103,16 +121,16 @@ print(result.winner)
 ```
 
 For a graphical interface or another input source, pass a function that receives a read-only
-`HumanTurn` and returns a `TicTacToeAction`:
+`HumanTurn` and returns one of its game-specific legal actions:
 
 ```python
-from meeple_bots import HumanAgent, Match, RandomAgent, TicTacToeAction
+from meeple_bots import HumanAgent, Match, RandomAgent
 
 
 def choose_move(turn):
     print(turn.board)
     print(turn.legal_actions)
-    return TicTacToeAction(row=0, column=0)
+    return turn.legal_actions[0]
 
 
 result = Match(first=HumanAgent(choose_move), second=RandomAgent()).run()
@@ -135,7 +153,7 @@ The command accepts these options:
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--game` | `tic-tac-toe` | Game to run; currently only tic-tac-toe is available. |
+| `--game` | `tic-tac-toe` | Game to run: `tic-tac-toe` or `connect-four`. |
 | `--first` | `mcts` | Agent for player 0: `human`, `mcts`, or `random`. |
 | `--second` | `random` | Agent for player 1: `human`, `mcts`, or `random`. |
 | `--seed` | `0` | Seed controlling the reproducible random streams. |
@@ -155,6 +173,12 @@ To play against MCTS as player 0, enter a zero-based row and column when prompte
 
 ```bash
 meeple-bots match --first human --second mcts --seed 42
+```
+
+For Connect Four, a human enters only the zero-based column:
+
+```bash
+meeple-bots match --game connect-four --first human --second mcts --seed 42
 ```
 
 Use `meeple-bots match --help` to display the available options from the installed version.

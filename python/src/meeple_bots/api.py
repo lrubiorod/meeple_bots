@@ -27,6 +27,11 @@ class TicTacToe:
 
 
 @dataclass(frozen=True, slots=True)
+class ConnectFour:
+    """The standard 6x7 Connect Four rules with gravity."""
+
+
+@dataclass(frozen=True, slots=True)
 class RandomAgent:
     """An agent that chooses uniformly among legal actions."""
 
@@ -63,23 +68,35 @@ class TicTacToeAction:
                 raise ValueError(f"{name} must be between 0 and 2")
 
 
-TicTacToeBoard: TypeAlias = tuple[
-    tuple[int | None, int | None, int | None],
-    tuple[int | None, int | None, int | None],
-    tuple[int | None, int | None, int | None],
-]
+@dataclass(frozen=True, slots=True)
+class ConnectFourAction:
+    """A zero-based column in which to drop a Connect Four piece."""
+
+    column: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.column, bool) or not isinstance(self.column, int):
+            raise TypeError("column must be an integer")
+        if not 0 <= self.column < 7:
+            raise ValueError("column must be between 0 and 6")
+
+
+Game: TypeAlias = TicTacToe | ConnectFour
+GameAction: TypeAlias = TicTacToeAction | ConnectFourAction
+GameBoard: TypeAlias = tuple[tuple[int | None, ...], ...]
 
 
 @dataclass(frozen=True, slots=True)
 class HumanTurn:
     """Read-only position presented to a human move selector."""
 
+    game: Game
     player: int
-    board: TicTacToeBoard
-    legal_actions: tuple[TicTacToeAction, ...]
+    board: GameBoard
+    legal_actions: tuple[GameAction, ...]
 
 
-MoveSelector: TypeAlias = Callable[[HumanTurn], TicTacToeAction]
+MoveSelector: TypeAlias = Callable[[HumanTurn], GameAction]
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +118,7 @@ class Move:
     """One action selected by one player."""
 
     player: int
-    action: TicTacToeAction
+    action: GameAction
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,15 +136,15 @@ class MatchResult:
 class Match:
     """Configuration for one match executed by the Rust engine."""
 
-    game: TicTacToe = field(default_factory=TicTacToe)
+    game: Game = field(default_factory=TicTacToe)
     first: Agent = field(default_factory=MctsAgent)
     second: Agent = field(default_factory=RandomAgent)
     seed: int = 0
     max_plies: int = 10_000
 
     def __post_init__(self) -> None:
-        if not isinstance(self.game, TicTacToe):
-            raise TypeError("game must be TicTacToe")
+        if not isinstance(self.game, (TicTacToe, ConnectFour)):
+            raise TypeError("game must be TicTacToe or ConnectFour")
         if not isinstance(self.first, (RandomAgent, MctsAgent, HumanAgent)):
             raise TypeError("first must be RandomAgent, MctsAgent, or HumanAgent")
         if not isinstance(self.second, (RandomAgent, MctsAgent, HumanAgent)):
@@ -142,19 +159,16 @@ class Match:
         """Execute the match and return its complete immutable report."""
 
         raw = _native.run_match(
-            "tic_tac_toe",
-            _native_agent(self.first),
-            _native_agent(self.second),
+            _native_game(self.game),
+            _native_agent(self.first, self.game),
+            _native_agent(self.second, self.game),
             self.seed,
             self.max_plies,
         )
         moves = tuple(
             Move(
                 player=item["player"],
-                action=TicTacToeAction(
-                    row=item["action"]["row"],
-                    column=item["action"]["column"],
-                ),
+                action=_action_from_native(item["action"]),
             )
             for item in raw["moves"]
         )
@@ -167,7 +181,17 @@ class Match:
         )
 
 
-def _native_agent(agent: Agent):
+def _native_game(game: Game) -> str:
+    return "tic_tac_toe" if isinstance(game, TicTacToe) else "connect_four"
+
+
+def _action_from_native(raw: dict[str, object]) -> GameAction:
+    if raw["type"] == "tic_tac_toe":
+        return TicTacToeAction(row=raw["row"], column=raw["column"])
+    return ConnectFourAction(column=raw["column"])
+
+
+def _native_agent(agent: Agent, game: Game):
     if isinstance(agent, RandomAgent):
         return _native.AgentConfig.random()
     if isinstance(agent, MctsAgent):
@@ -176,46 +200,83 @@ def _native_agent(agent: Agent):
             float(agent.exploration),
             agent.rollout_depth,
         )
-    return _native.AgentConfig.human(_human_selector(agent))
+    return _native.AgentConfig.human(_human_selector(agent, game))
 
 
-def _human_selector(agent: HumanAgent):
+def _human_selector(agent: HumanAgent, game: Game):
     def select(
         player: int,
         flat_board: list[int | None],
-        legal_coordinates: list[tuple[int, int]],
-    ) -> tuple[int, int]:
-        board: TicTacToeBoard = (
-            tuple(flat_board[0:3]),
-            tuple(flat_board[3:6]),
-            tuple(flat_board[6:9]),
-        )
+        native_legal_actions: list[tuple[int, int]] | list[int],
+    ) -> tuple[int, int] | int:
+        if isinstance(game, TicTacToe):
+            board = _board_rows(flat_board, columns=3)
+            legal_actions: tuple[GameAction, ...] = tuple(
+                TicTacToeAction(row=row, column=column)
+                for row, column in native_legal_actions
+            )
+        else:
+            board = _board_rows(flat_board, columns=7)
+            legal_actions = tuple(
+                ConnectFourAction(column=column) for column in native_legal_actions
+            )
         turn = HumanTurn(
+            game=game,
             player=player,
             board=board,
-            legal_actions=tuple(
-                TicTacToeAction(row=row, column=column)
-                for row, column in legal_coordinates
-            ),
+            legal_actions=legal_actions,
         )
         action = agent.select_action(turn)
-        if not isinstance(action, TicTacToeAction):
-            raise TypeError("human select_action must return TicTacToeAction")
+        expected_type = TicTacToeAction if isinstance(game, TicTacToe) else ConnectFourAction
+        if not isinstance(action, expected_type):
+            raise TypeError(f"human select_action must return {expected_type.__name__}")
         if action not in turn.legal_actions:
-            raise ValueError("the selected cell is not currently legal")
-        return action.row, action.column
+            raise ValueError("the selected action is not currently legal")
+        if isinstance(action, TicTacToeAction):
+            return action.row, action.column
+        return action.column
 
     return select
 
 
-def _prompt_human_action(turn: HumanTurn) -> TicTacToeAction:
+def _board_rows(flat_board: list[int | None], columns: int) -> GameBoard:
+    return tuple(
+        tuple(flat_board[start : start + columns])
+        for start in range(0, len(flat_board), columns)
+    )
+
+
+def _prompt_human_action(turn: HumanTurn) -> GameAction:
     symbols = {None: ".", 0: "X", 1: "O"}
     print(file=sys.stderr)
-    print("    0 1 2", file=sys.stderr)
+    print("    " + " ".join(str(column) for column in range(len(turn.board[0]))), file=sys.stderr)
     for row, cells in enumerate(turn.board):
         rendered = " ".join(symbols[cell] for cell in cells)
         print(f"{row} | {rendered}", file=sys.stderr)
 
+    if isinstance(turn.game, ConnectFour):
+        return _prompt_connect_four_action(turn)
+    return _prompt_tic_tac_toe_action(turn)
+
+
+def _prompt_connect_four_action(turn: HumanTurn) -> ConnectFourAction:
+    while True:
+        print(
+            f"Player {turn.player}, enter column (0-6): ",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            action = ConnectFourAction(column=int(input()))
+            if action not in turn.legal_actions:
+                raise ValueError("that column is full")
+            return action
+        except ValueError as error:
+            print(f"Invalid move: {error}", file=sys.stderr)
+
+
+def _prompt_tic_tac_toe_action(turn: HumanTurn) -> TicTacToeAction:
     while True:
         print(
             f"Player {turn.player}, enter row and column (for example, 1 2): ",

@@ -1,6 +1,8 @@
 """Public Python API for Meeple Bots."""
 
 from .api import (
+    ConnectFour,
+    ConnectFourAction,
     HumanAgent,
     HumanTurn,
     Match,
@@ -13,6 +15,8 @@ from .api import (
 )
 
 __all__ = [
+    "ConnectFour",
+    "ConnectFourAction",
     "HumanAgent",
     "HumanTurn",
     "Match",
