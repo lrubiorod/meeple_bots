@@ -29,51 +29,43 @@ pub struct MctsAgent {
     pub config: MctsConfig,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MctsSearchStats {
+    pub iterations: u32,
+    pub expanded_nodes: u32,
+    pub root_actions: u32,
+    pub maximum_tree_depth: u32,
+    pub mean_tree_depth: f64,
+    pub maximum_simulation_depth: u32,
+    pub mean_simulation_depth: f64,
+    pub terminal_rollouts: u32,
+    pub truncated_rollouts: u32,
+    pub selected_action_visits: u32,
+    pub selected_action_visit_share: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MctsDecision<A> {
+    pub action: A,
+    pub stats: MctsSearchStats,
+}
+
 impl MctsAgent {
     pub const fn new(config: MctsConfig) -> Self {
         Self { config }
     }
-}
 
-struct Node<A> {
-    action: Option<A>,
-    children: Vec<usize>,
-    unexpanded: Vec<A>,
-    visits: u32,
-    total_utility: f64,
-}
-
-impl<A> Node<A> {
-    fn new(action: Option<A>, unexpanded: Vec<A>) -> Self {
-        Self {
-            action,
-            children: Vec::new(),
-            unexpanded,
-            visits: 0,
-            total_utility: 0.0,
-        }
-    }
-
-    fn mean_utility(&self) -> f64 {
-        if self.visits == 0 {
-            0.0
-        } else {
-            self.total_utility / f64::from(self.visits)
-        }
-    }
-}
-
-impl<G> Agent<G> for MctsAgent
-where
-    G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
-    G::State: Clone,
-    G::Action: Clone,
-{
-    fn select_action<R: RandomSource + ?Sized>(
+    pub fn select_action_with_stats<G, R>(
         &mut self,
         decision: DecisionContext<'_, G>,
         rng: &mut R,
-    ) -> Result<G::Action, AgentError> {
+    ) -> Result<MctsDecision<G::Action>, AgentError>
+    where
+        G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
+        G::State: Clone,
+        G::Action: Clone,
+        R: RandomSource + ?Sized,
+    {
         let game = decision.game();
         let root_state = decision.state();
         let root_player = decision.player();
@@ -88,8 +80,15 @@ where
         if root_actions.is_empty() {
             return Err(AgentError::NoLegalActions);
         }
+        let root_action_count = root_actions.len() as u32;
 
         let mut nodes = vec![Node::new(None, root_actions)];
+        let mut tree_depth_sum = 0_u64;
+        let mut simulation_depth_sum = 0_u64;
+        let mut maximum_tree_depth = 0;
+        let mut maximum_simulation_depth = 0;
+        let mut terminal_rollouts = 0;
+        let mut truncated_rollouts = 0;
 
         for _ in 0..self.config.iterations.get() {
             let mut state = root_state.clone();
@@ -154,20 +153,31 @@ where
                 path.push(node_index);
             }
 
-            let utility = rollout(
+            let tree_depth = (path.len() - 1) as u32;
+            let rollout = rollout(
                 game,
                 &mut state,
                 root_player,
                 self.config.rollout_depth,
                 rng,
             )?;
+            let simulation_depth = tree_depth.saturating_add(rollout.plies);
+            tree_depth_sum += u64::from(tree_depth);
+            simulation_depth_sum += u64::from(simulation_depth);
+            maximum_tree_depth = maximum_tree_depth.max(tree_depth);
+            maximum_simulation_depth = maximum_simulation_depth.max(simulation_depth);
+            if rollout.terminal {
+                terminal_rollouts += 1;
+            } else {
+                truncated_rollouts += 1;
+            }
             for visited in path {
                 nodes[visited].visits += 1;
-                nodes[visited].total_utility += utility;
+                nodes[visited].total_utility += rollout.utility;
             }
         }
 
-        nodes[0]
+        let selected_index = nodes[0]
             .children
             .iter()
             .copied()
@@ -181,8 +191,74 @@ where
                             .total_cmp(&nodes[*right].mean_utility())
                     })
             })
-            .and_then(|index| nodes[index].action.clone())
-            .ok_or(AgentError::NoLegalActions)
+            .ok_or(AgentError::NoLegalActions)?;
+        let iterations = self.config.iterations.get();
+        let selected_action_visits = nodes[selected_index].visits;
+
+        Ok(MctsDecision {
+            action: nodes[selected_index]
+                .action
+                .clone()
+                .ok_or(AgentError::NoLegalActions)?,
+            stats: MctsSearchStats {
+                iterations,
+                expanded_nodes: (nodes.len() - 1) as u32,
+                root_actions: root_action_count,
+                maximum_tree_depth,
+                mean_tree_depth: tree_depth_sum as f64 / f64::from(iterations),
+                maximum_simulation_depth,
+                mean_simulation_depth: simulation_depth_sum as f64 / f64::from(iterations),
+                terminal_rollouts,
+                truncated_rollouts,
+                selected_action_visits,
+                selected_action_visit_share: f64::from(selected_action_visits)
+                    / f64::from(iterations),
+            },
+        })
+    }
+}
+
+struct Node<A> {
+    action: Option<A>,
+    children: Vec<usize>,
+    unexpanded: Vec<A>,
+    visits: u32,
+    total_utility: f64,
+}
+
+impl<A> Node<A> {
+    fn new(action: Option<A>, unexpanded: Vec<A>) -> Self {
+        Self {
+            action,
+            children: Vec::new(),
+            unexpanded,
+            visits: 0,
+            total_utility: 0.0,
+        }
+    }
+
+    fn mean_utility(&self) -> f64 {
+        if self.visits == 0 {
+            0.0
+        } else {
+            self.total_utility / f64::from(self.visits)
+        }
+    }
+}
+
+impl<G> Agent<G> for MctsAgent
+where
+    G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
+    G::State: Clone,
+    G::Action: Clone,
+{
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, G>,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        self.select_action_with_stats(decision, rng)
+            .map(|decision| decision.action)
     }
 }
 
@@ -222,18 +298,22 @@ fn rollout<G, R>(
     root_player: PlayerId,
     max_depth: u32,
     rng: &mut R,
-) -> Result<f64, AgentError>
+) -> Result<RolloutResult, AgentError>
 where
     G: DeterministicGame,
     G::Action: Clone,
     R: RandomSource + ?Sized,
 {
-    for _ in 0..max_depth {
+    for plies in 0..max_depth {
         match game.status(state) {
             PositionStatus::Terminal => {
                 return game
                     .terminal_utility(state, root_player)
-                    .map(f64::from)
+                    .map(|utility| RolloutResult {
+                        utility: f64::from(utility),
+                        plies,
+                        terminal: true,
+                    })
                     .ok_or_else(|| AgentError::message("terminal utility is missing"));
             }
             PositionStatus::PlayerTurn(_) => {
@@ -254,10 +334,24 @@ where
     match game.status(state) {
         PositionStatus::Terminal => game
             .terminal_utility(state, root_player)
-            .map(f64::from)
+            .map(|utility| RolloutResult {
+                utility: f64::from(utility),
+                plies: max_depth,
+                terminal: true,
+            })
             .ok_or_else(|| AgentError::message("terminal utility is missing")),
-        _ => Ok(0.0),
+        _ => Ok(RolloutResult {
+            utility: 0.0,
+            plies: max_depth,
+            terminal: false,
+        }),
     }
+}
+
+struct RolloutResult {
+    utility: f64,
+    plies: u32,
+    terminal: bool,
 }
 
 #[cfg(test)]
@@ -353,5 +447,33 @@ mod tests {
             .unwrap();
 
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn reports_search_work_and_rollout_outcomes() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let mut agent = MctsAgent::new(MctsConfig {
+            iterations: NonZeroU32::new(32).unwrap(),
+            rollout_depth: 1,
+            ..MctsConfig::default()
+        });
+        let decision = agent
+            .select_action_with_stats(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut SplitMix64::new(5),
+            )
+            .unwrap();
+
+        assert_eq!(decision.stats.iterations, 32);
+        assert_eq!(decision.stats.root_actions, 9);
+        assert!(decision.stats.expanded_nodes <= 32);
+        assert_eq!(
+            decision.stats.terminal_rollouts + decision.stats.truncated_rollouts,
+            decision.stats.iterations
+        );
+        assert!(decision.stats.maximum_tree_depth >= 1);
+        assert!(decision.stats.maximum_simulation_depth >= 2);
+        assert!((0.0..=1.0).contains(&decision.stats.selected_action_visit_share));
     }
 }

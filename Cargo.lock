@@ -28,6 +28,7 @@ dependencies = [
  "meeple_bots_boop",
  "meeple_bots_connect_four",
  "meeple_bots_core",
+ "meeple_bots_evaluation",
  "meeple_bots_mcts_agent",
  "meeple_bots_random_agent",
  "meeple_bots_simulation",
@@ -44,6 +45,18 @@ dependencies = [
 [[package]]
 name = "meeple_bots_core"
 version = "0.1.0"
+
+[[package]]
+name = "meeple_bots_evaluation"
+version = "0.1.0"
+dependencies = [
+ "meeple_bots_connect_four",
+ "meeple_bots_core",
+ "meeple_bots_mcts_agent",
+ "meeple_bots_random_agent",
+ "meeple_bots_simulation",
+ "meeple_bots_tic_tac_toe",
+]
 
 [[package]]
 name = "meeple_bots_mcts_agent"

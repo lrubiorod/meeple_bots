@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/core",
+    "crates/evaluation",
     "crates/simulation",
     "crates/catalog",
     "crates/python-bindings",

@@ -9,14 +9,22 @@ from meeple_bots import (
     BoopAction,
     BoopPiece,
     BoopPieceKind,
+    BenchmarkConfidence,
     ConnectFour,
     ConnectFourAction,
     HumanAgent,
+    CutoffHeuristicEvidence,
+    MctsLevel,
     Match,
     MctsAgent,
     RandomAgent,
+    SearchSufficiency,
+    StrengthEstimate,
+    StrengthProgressStage,
     TicTacToe,
     TicTacToeAction,
+    evaluate_game_complexity,
+    evaluate_mcts_strength,
 )
 from meeple_bots.cli import main
 
@@ -52,6 +60,77 @@ class MatchApiTests(unittest.TestCase):
     def test_invalid_mcts_configuration_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             MctsAgent(iterations=0)
+
+    def test_complexity_report_has_reproducible_structural_metrics(self) -> None:
+        first = evaluate_game_complexity(TicTacToe(), samples=16, seed=42)
+        repeated = evaluate_game_complexity(TicTacToe(), samples=16, seed=42)
+
+        self.assertEqual(first.initial_legal_actions, 9)
+        self.assertEqual(first.completed_samples, 16)
+        self.assertEqual(first.mean_branching_factor, repeated.mean_branching_factor)
+        self.assertEqual(first.median_plies, repeated.median_plies)
+        self.assertEqual(first.estimated_tree_log10, repeated.estimated_tree_log10)
+        self.assertEqual(len(first.recommendations), 3)
+
+    def test_custom_recommendation_builds_an_mcts_agent(self) -> None:
+        report = evaluate_game_complexity(TicTacToe(), samples=8)
+        recommendation = report.recommend(MctsLevel.FAST, time_budget_ms=1)
+        agent = MctsAgent.from_recommendation(recommendation)
+
+        self.assertGreaterEqual(recommendation.iterations, 9)
+        self.assertEqual(recommendation.target_time_ms, 1)
+        self.assertEqual(agent.iterations, recommendation.iterations)
+        self.assertEqual(agent.rollout_depth, recommendation.rollout_depth)
+
+    def test_strength_report_contains_search_and_paired_results(self) -> None:
+        game = TicTacToe()
+        complexity = evaluate_game_complexity(game, samples=8, seed=3)
+        progress = []
+        report = evaluate_mcts_strength(
+            game,
+            MctsAgent(iterations=8, rollout_depth=1),
+            matches_per_opponent=2,
+            max_plies=32,
+            seed=3,
+            complexity_report=complexity,
+            progress=progress.append,
+        )
+
+        self.assertEqual(report.reference.iterations, 32)
+        self.assertEqual(report.versus_random.matches, 2)
+        self.assertEqual(report.versus_reference.matches, 2)
+        self.assertGreater(report.search.decisions, 0)
+        self.assertAlmostEqual(
+            report.search.terminal_rollout_rate
+            + report.search.truncated_rollout_rate,
+            1.0,
+        )
+        self.assertIsInstance(report.strength_estimate, StrengthEstimate)
+        self.assertIsInstance(report.search_sufficiency, SearchSufficiency)
+        self.assertEqual(report.benchmark_confidence, BenchmarkConfidence.LOW)
+        self.assertEqual(report.strength_estimate, StrengthEstimate.INCONCLUSIVE)
+        self.assertIsInstance(
+            report.cutoff_heuristic_evidence,
+            CutoffHeuristicEvidence,
+        )
+        self.assertGreater(report.search.mean_root_actions, 0)
+        self.assertGreater(report.search.mean_iterations_per_root_action, 0)
+        self.assertGreaterEqual(report.search.mean_tree_revisit_rate, 0)
+        self.assertTrue(report.reasons)
+        self.assertEqual(len(progress), 8)
+        self.assertEqual(progress[0].stage, StrengthProgressStage.STARTED)
+        self.assertEqual(progress[1].stage, StrengthProgressStage.COMPLETED)
+        self.assertEqual(progress[0].match_number, 1)
+        self.assertEqual(progress[-1].match_number, 4)
+        self.assertIsNotNone(progress[-1].elapsed_seconds)
+
+    def test_strength_evaluation_requires_even_match_count(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be even"):
+            evaluate_mcts_strength(
+                TicTacToe(),
+                MctsAgent(iterations=8),
+                matches_per_opponent=3,
+            )
 
     def test_scripted_humans_receive_positions_and_finish_a_match(self) -> None:
         first_moves = iter([(0, 0), (0, 1), (0, 2)])
@@ -190,6 +269,43 @@ class MatchApiTests(unittest.TestCase):
         self.assertIn("Final board:", output.getvalue())
         self.assertIn("    0 1 2", output.getvalue())
 
+    def test_cli_assess_emits_machine_readable_strength_report(self) -> None:
+        output = io.StringIO()
+        progress = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(progress):
+            exit_code = main(
+                [
+                    "assess",
+                    "--game",
+                    "tic-tac-toe",
+                    "--samples",
+                    "8",
+                    "--max-depth",
+                    "9",
+                    "--matches",
+                    "2",
+                    "--mcts-iterations",
+                    "8",
+                    "--mcts-rollout-depth",
+                    "1",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["game"], "tic-tac-toe")
+        self.assertEqual(payload["candidate"]["iterations"], 8)
+        self.assertEqual(payload["reference"]["iterations"], 32)
+        self.assertIn("truncated_rollout_rate", payload["search"])
+        self.assertEqual(payload["benchmark_confidence"], "low")
+        self.assertEqual(payload["strength_estimate"], "inconclusive")
+        self.assertIn("search_sufficiency", payload)
+        self.assertIn("cutoff_heuristic_evidence", payload)
+        self.assertIn("[setup] Analyzing game complexity", progress.getvalue())
+        self.assertIn("[1/4] Starting against random", progress.getvalue())
+        self.assertIn("[4/4] Completed", progress.getvalue())
+
     def test_cli_shows_final_connect_four_board_with_gravity(self) -> None:
         output = io.StringIO()
         prompts = io.StringIO()
@@ -287,6 +403,49 @@ class MatchApiTests(unittest.TestCase):
         self.assertTrue(
             all(move["action"]["type"] == "boop" for move in payload["moves"])
         )
+
+    def test_cli_analyze_returns_complexity_json(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "analyze",
+                    "--game",
+                    "tic-tac-toe",
+                    "--samples",
+                    "8",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["game"], "tic-tac-toe")
+        self.assertEqual(payload["initial_legal_actions"], 9)
+        self.assertEqual(len(payload["recommendations"]), 3)
+
+    def test_cli_can_apply_an_automatic_mcts_level(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "match",
+                    "--first",
+                    "mcts",
+                    "--second",
+                    "random",
+                    "--mcts-level",
+                    "fast",
+                    "--mcts-time-ms",
+                    "1",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["mcts_recommendation"]["level"], "fast")
+        self.assertEqual(payload["mcts_recommendation"]["target_time_ms"], 1)
 
 
 if __name__ == "__main__":

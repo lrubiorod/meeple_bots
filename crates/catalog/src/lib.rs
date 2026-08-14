@@ -7,6 +7,15 @@ use meeple_bots_boop::{
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{Agent, Game};
+pub use meeple_bots_evaluation::{
+    AggregatedSearchStats, BenchmarkConfidence, ComplexityConfig, CutoffHeuristicEvidence,
+    EvaluationError, GameComplexityReport, MctsLevel, MctsRecommendation, MctsStrengthReport,
+    OpponentResult, SearchSufficiency, StrengthConfig, StrengthEstimate, StrengthOpponent,
+    StrengthProgress, StrengthProgressStage,
+};
+use meeple_bots_evaluation::{
+    evaluate_game, evaluate_mcts_strength_with_progress as evaluate_typed_mcts_strength,
+};
 use meeple_bots_mcts_agent::MctsAgent;
 pub use meeple_bots_mcts_agent::MctsConfig;
 use meeple_bots_random_agent::RandomAgent;
@@ -97,11 +106,17 @@ pub struct CatalogMatchReport {
 }
 
 #[derive(Debug)]
-pub struct CatalogError(MatchError);
+pub enum CatalogError {
+    Match(MatchError),
+    Evaluation(EvaluationError),
+}
 
 impl fmt::Display for CatalogError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
+        match self {
+            Self::Match(error) => error.fmt(formatter),
+            Self::Evaluation(error) => error.fmt(formatter),
+        }
     }
 }
 
@@ -109,8 +124,77 @@ impl Error for CatalogError {}
 
 impl From<MatchError> for CatalogError {
     fn from(error: MatchError) -> Self {
-        Self(error)
+        Self::Match(error)
     }
+}
+
+impl From<EvaluationError> for CatalogError {
+    fn from(error: EvaluationError) -> Self {
+        Self::Evaluation(error)
+    }
+}
+
+pub fn evaluate_game_complexity(
+    game: GameId,
+    config: ComplexityConfig,
+) -> Result<GameComplexityReport, CatalogError> {
+    let report = match game {
+        GameId::Boop => evaluate_game(&Boop, config),
+        GameId::ConnectFour => evaluate_game(&ConnectFour, config),
+        GameId::TicTacToe => evaluate_game(&TicTacToe, config),
+    }?;
+    Ok(report)
+}
+
+pub fn evaluate_mcts_strength(
+    game: GameId,
+    estimated_tree_log10: f64,
+    tree_size_estimate_is_lower_bound: bool,
+    config: StrengthConfig,
+) -> Result<MctsStrengthReport, CatalogError> {
+    evaluate_mcts_strength_with_progress(
+        game,
+        estimated_tree_log10,
+        tree_size_estimate_is_lower_bound,
+        config,
+        |_| Ok(()),
+    )
+}
+
+pub fn evaluate_mcts_strength_with_progress<F>(
+    game: GameId,
+    estimated_tree_log10: f64,
+    tree_size_estimate_is_lower_bound: bool,
+    config: StrengthConfig,
+    mut progress: F,
+) -> Result<MctsStrengthReport, CatalogError>
+where
+    F: FnMut(StrengthProgress) -> Result<(), EvaluationError>,
+{
+    let report = match game {
+        GameId::Boop => evaluate_typed_mcts_strength(
+            &Boop,
+            estimated_tree_log10,
+            tree_size_estimate_is_lower_bound,
+            config,
+            &mut progress,
+        ),
+        GameId::ConnectFour => evaluate_typed_mcts_strength(
+            &ConnectFour,
+            estimated_tree_log10,
+            tree_size_estimate_is_lower_bound,
+            config,
+            &mut progress,
+        ),
+        GameId::TicTacToe => evaluate_typed_mcts_strength(
+            &TicTacToe,
+            estimated_tree_log10,
+            tree_size_estimate_is_lower_bound,
+            config,
+            &mut progress,
+        ),
+    }?;
+    Ok(report)
 }
 
 pub fn run_match(
@@ -585,6 +669,8 @@ fn run_tic_tac_toe_batch(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
+
     use super::*;
 
     #[test]
@@ -663,5 +749,21 @@ mod tests {
             movement.action,
             CatalogAction::Boop { row, column, .. } if row < 6 && column < 6
         )));
+    }
+
+    #[test]
+    fn boop_samples_as_more_complex_than_tic_tac_toe() {
+        let config = ComplexityConfig {
+            samples: NonZeroU32::new(16).unwrap(),
+            calibration_iterations: NonZeroU32::new(1).unwrap(),
+            ..ComplexityConfig::default()
+        };
+        let tic_tac_toe = evaluate_game_complexity(GameId::TicTacToe, config).unwrap();
+        let boop = evaluate_game_complexity(GameId::Boop, config).unwrap();
+
+        assert!(boop.initial_legal_actions > tic_tac_toe.initial_legal_actions);
+        assert!(boop.mean_branching_factor > tic_tac_toe.mean_branching_factor);
+        assert!(boop.median_plies > tic_tac_toe.median_plies);
+        assert!(boop.estimated_tree_log10 > tic_tac_toe.estimated_tree_log10);
     }
 }

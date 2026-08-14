@@ -1,14 +1,14 @@
 [package]
-name = "meeple_bots_catalog"
+name = "meeple_bots_evaluation"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-meeple_bots_boop = { path = "../../games/boop" }
 meeple_bots_core = { path = "../core" }
-meeple_bots_connect_four = { path = "../../games/connect-four" }
-meeple_bots_evaluation = { path = "../evaluation" }
 meeple_bots_mcts_agent = { path = "../../agents/mcts" }
 meeple_bots_random_agent = { path = "../../agents/random" }
 meeple_bots_simulation = { path = "../simulation" }
+
+[dev-dependencies]
+meeple_bots_connect_four = { path = "../../games/connect-four" }
 meeple_bots_tic_tac_toe = { path = "../../games/tic-tac-toe" }
