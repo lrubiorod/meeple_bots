@@ -1,0 +1,9 @@
+# Copy this file to create a reproducible MCTS profile.
+name = "example-mcts"
+iterations = 100
+rollout_depth = 16
+exploration = 1.4142135623730951
+
+# Set this to true to enable the selected game's heuristic.
+use_heuristic = false
+heuristic_index = 0

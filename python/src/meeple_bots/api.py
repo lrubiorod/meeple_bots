@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from math import isfinite, sqrt
+from time import perf_counter
 from typing import TypeAlias
 
 from . import _native
@@ -258,6 +259,58 @@ class MatchResult:
     pools: tuple[BoopPool, BoopPool] | None
 
 
+class BatchProgressStatus(str, Enum):
+    """Stage reported by a batch progress event."""
+
+    STARTED = "started"
+    COMPLETED = "completed"
+
+
+@dataclass(frozen=True, slots=True)
+class BatchMatchResult:
+    """Participant-oriented result for one match in a batch."""
+
+    match_number: int
+    seed: int
+    agent_a_player: int
+    winner: int | None
+    plies: int
+    utilities: tuple[float, float]
+    duration_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class BatchProgress:
+    """Progress emitted immediately before and after each batch match."""
+
+    status: BatchProgressStatus
+    match_number: int
+    total_matches: int
+    seed: int
+    agent_a_player: int
+    elapsed_seconds: float
+    result: BatchMatchResult | None = None
+
+
+BatchProgressCallback: TypeAlias = Callable[[BatchProgress], None]
+
+
+@dataclass(frozen=True, slots=True)
+class BatchResult:
+    """Aggregate and per-match results for a completed simulation batch."""
+
+    seed: int
+    matches: int
+    alternate_sides: bool
+    agent_a_wins: int
+    agent_b_wins: int
+    draws: int
+    total_plies: int
+    average_plies: float
+    elapsed_seconds: float
+    games: tuple[BatchMatchResult, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class Match:
     """Configuration for one match executed by the Rust engine."""
@@ -308,6 +361,129 @@ class Match:
             moves=moves,
             final_board=_final_board_from_native(raw["final_board"], self.game),
             pools=_pools_from_native(raw["pools"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Batch:
+    """A reproducible series of automated matches between two participants."""
+
+    game: Game = field(default_factory=TicTacToe)
+    agent_a: RandomAgent | MctsAgent = field(default_factory=RandomAgent)
+    agent_b: RandomAgent | MctsAgent = field(default_factory=MctsAgent)
+    matches: int = 20
+    seed: int = 0
+    max_plies: int = 10_000
+    alternate_sides: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop)):
+            raise TypeError("game must be TicTacToe, ConnectFour, or Boop")
+        for name, agent in (("agent_a", self.agent_a), ("agent_b", self.agent_b)):
+            if not isinstance(agent, (RandomAgent, MctsAgent)):
+                raise TypeError(f"{name} must be RandomAgent or MctsAgent")
+            _validate_agent_heuristic(self.game, agent)
+        _positive_u32("matches", self.matches)
+        _positive_u32("max_plies", self.max_plies)
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int):
+            raise TypeError("seed must be an integer")
+        if not 0 <= self.seed <= _MAX_U64:
+            raise ValueError(f"seed must be between 0 and {_MAX_U64}")
+        if not isinstance(self.alternate_sides, bool):
+            raise TypeError("alternate_sides must be a boolean")
+
+    def run(
+        self,
+        progress: BatchProgressCallback | None = None,
+    ) -> BatchResult:
+        """Run the batch and optionally report each match boundary."""
+
+        if progress is not None and not callable(progress):
+            raise TypeError("progress must be callable")
+
+        batch_started = perf_counter()
+        games = []
+        agent_a_wins = 0
+        agent_b_wins = 0
+        draws = 0
+
+        for offset in range(self.matches):
+            match_number = offset + 1
+            match_seed = (self.seed + offset) & _MAX_U64
+            agent_a_player = offset % 2 if self.alternate_sides else 0
+            if progress is not None:
+                progress(
+                    BatchProgress(
+                        status=BatchProgressStatus.STARTED,
+                        match_number=match_number,
+                        total_matches=self.matches,
+                        seed=match_seed,
+                        agent_a_player=agent_a_player,
+                        elapsed_seconds=perf_counter() - batch_started,
+                    )
+                )
+
+            match_started = perf_counter()
+            first, second = (
+                (self.agent_a, self.agent_b)
+                if agent_a_player == 0
+                else (self.agent_b, self.agent_a)
+            )
+            match = Match(
+                game=self.game,
+                first=first,
+                second=second,
+                seed=match_seed,
+                max_plies=self.max_plies,
+            ).run()
+            if match.winner is None:
+                winner = None
+                draws += 1
+            elif match.winner == agent_a_player:
+                winner = 0
+                agent_a_wins += 1
+            else:
+                winner = 1
+                agent_b_wins += 1
+            game_result = BatchMatchResult(
+                match_number=match_number,
+                seed=match_seed,
+                agent_a_player=agent_a_player,
+                winner=winner,
+                plies=match.plies,
+                utilities=(
+                    match.utilities[agent_a_player],
+                    match.utilities[1 - agent_a_player],
+                ),
+                duration_seconds=perf_counter() - match_started,
+            )
+            games.append(game_result)
+            if progress is not None:
+                progress(
+                    BatchProgress(
+                        status=BatchProgressStatus.COMPLETED,
+                        match_number=match_number,
+                        total_matches=self.matches,
+                        seed=match_seed,
+                        agent_a_player=agent_a_player,
+                        elapsed_seconds=perf_counter() - batch_started,
+                        result=game_result,
+                    )
+                )
+
+        elapsed_seconds = perf_counter() - batch_started
+        total_plies = sum(game.plies for game in games)
+        return BatchResult(
+            seed=self.seed,
+            matches=self.matches,
+            alternate_sides=self.alternate_sides,
+            agent_a_wins=agent_a_wins,
+            agent_b_wins=agent_b_wins,
+            draws=draws,
+            total_plies=total_plies,
+            average_plies=total_plies / self.matches,
+            elapsed_seconds=elapsed_seconds,
+            games=tuple(games),
         )
 
 

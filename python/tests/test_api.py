@@ -1,10 +1,14 @@
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 from meeple_bots import (
+    Batch,
+    BatchProgressStatus,
     Boop,
     BoopAction,
     BoopPiece,
@@ -23,6 +27,54 @@ from meeple_bots.cli import main
 
 
 class MatchApiTests(unittest.TestCase):
+    def test_batch_alternates_sides_and_aggregates_results(self) -> None:
+        events = []
+        result = Batch(
+            game=TicTacToe(),
+            agent_a=RandomAgent(),
+            agent_b=RandomAgent(),
+            matches=4,
+            seed=42,
+        ).run(events.append)
+
+        self.assertEqual(result.matches, 4)
+        self.assertEqual(
+            result.agent_a_wins + result.agent_b_wins + result.draws,
+            result.matches,
+        )
+        self.assertEqual([game.seed for game in result.games], [42, 43, 44, 45])
+        self.assertEqual(
+            [game.agent_a_player for game in result.games],
+            [0, 1, 0, 1],
+        )
+        self.assertEqual(len(events), 8)
+        self.assertEqual(events[0].status, BatchProgressStatus.STARTED)
+        self.assertEqual(events[1].status, BatchProgressStatus.COMPLETED)
+        self.assertIsNone(events[0].result)
+        self.assertEqual(events[1].result, result.games[0])
+
+    def test_batch_results_are_reproducible_except_for_timing(self) -> None:
+        batch = Batch(
+            game=TicTacToe(),
+            agent_a=RandomAgent(),
+            agent_b=MctsAgent(iterations=4, rollout_depth=9),
+            matches=4,
+            seed=7,
+        )
+
+        first = batch.run()
+        repeated = batch.run()
+        first_games = [
+            (game.seed, game.agent_a_player, game.winner, game.plies, game.utilities)
+            for game in first.games
+        ]
+        repeated_games = [
+            (game.seed, game.agent_a_player, game.winner, game.plies, game.utilities)
+            for game in repeated.games
+        ]
+
+        self.assertEqual(first_games, repeated_games)
+
     def test_same_seed_produces_same_report(self) -> None:
         match = Match(
             game=TicTacToe(),
@@ -414,6 +466,111 @@ class MatchApiTests(unittest.TestCase):
         self.assertIn("recommended_iterations", payload)
         self.assertIn("milliseconds_per_iteration", payload)
         self.assertIn("estimated_decision_time_ms", payload)
+
+    def test_cli_batch_loads_an_mcts_profile_and_reports_progress(self) -> None:
+        output = io.StringIO()
+        progress = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory, "test-profile.toml")
+            profile.write_text(
+                '\n'.join(
+                    [
+                        'name = "test-mcts"',
+                        "iterations = 4",
+                        "rollout_depth = 9",
+                        "exploration = 1.4142135623730951",
+                        "use_heuristic = false",
+                        "heuristic_index = 0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with redirect_stdout(output), redirect_stderr(progress):
+                exit_code = main(
+                    [
+                        "batch",
+                        "--game",
+                        "tic-tac-toe",
+                        "--matches",
+                        "4",
+                        "--agent-b-config",
+                        str(profile),
+                        "--seed",
+                        "42",
+                        "--json",
+                    ]
+                )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["matches"], 4)
+        self.assertEqual(payload["agents"]["a"]["type"], "random")
+        self.assertEqual(payload["agents"]["b"]["name"], "test-mcts")
+        self.assertEqual(payload["agents"]["b"]["iterations"], 4)
+        self.assertEqual(
+            payload["summary"]["agent_a_wins"]
+            + payload["summary"]["agent_b_wins"]
+            + payload["summary"]["draws"],
+            4,
+        )
+        self.assertEqual(
+            [game["agent_a_player"] for game in payload["games"]],
+            [0, 1, 0, 1],
+        )
+        self.assertIn("[1/4] starting", progress.getvalue())
+        self.assertIn("[4/4] completed", progress.getvalue())
+
+    def test_cli_batch_requires_a_profile_for_each_mcts_agent(self) -> None:
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            exit_code = main(
+                [
+                    "batch",
+                    "--game",
+                    "tic-tac-toe",
+                    "--matches",
+                    "2",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("--agent-b-config is required", errors.getvalue())
+
+    def test_cli_batch_profile_can_enable_the_boop_heuristic(self) -> None:
+        output = io.StringIO()
+        progress = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory, "heuristic.toml")
+            profile.write_text(
+                '\n'.join(
+                    [
+                        'name = "cat-balance"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        "use_heuristic = true",
+                        "heuristic_index = 0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with redirect_stdout(output), redirect_stderr(progress):
+                exit_code = main(
+                    [
+                        "batch",
+                        "--game",
+                        "boop",
+                        "--matches",
+                        "1",
+                        "--agent-b-config",
+                        str(profile),
+                        "--json",
+                    ]
+                )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["agents"]["b"]["name"], "cat-balance")
+        self.assertEqual(payload["agents"]["b"]["heuristic"], 0)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,29 @@ The selector receives a read-only `HumanTurn` containing the game, active player
 actions, and boop. pools when applicable. It must return one of `turn.legal_actions`; returning a
 wrong type or illegal action stops the match with an error.
 
+## Running simulation batches
+
+`Batch` runs automated participants repeatedly, alternates their player positions by default, and
+returns participant-oriented results. In `BatchMatchResult`, winner `0` means agent A, winner `1`
+means agent B, and `None` means draw:
+
+```python
+from meeple_bots import Batch, MctsAgent, RandomAgent, TicTacToe
+
+result = Batch(
+    game=TicTacToe(),
+    agent_a=RandomAgent(),
+    agent_b=MctsAgent(iterations=100, rollout_depth=9),
+    matches=20,
+    seed=42,
+).run(lambda event: print(event.status, event.match_number))
+
+print(result.agent_a_wins, result.agent_b_wins, result.draws)
+```
+
+Seeds are assigned sequentially starting at the batch seed. Timing fields are observational; game
+results remain reproducible for the same configuration and seed.
+
 ## Game evaluation
 
 The Python API returns a compact estimate of a game's structure and MCTS compute requirements:
@@ -184,5 +207,53 @@ meeple-bots analyze --game boop --samples 128 --max-depth 256
 meeple-bots analyze --game boop --samples 128 --max-depth 256 --json
 ```
 
-Use `meeple-bots match --help` or `meeple-bots analyze --help` for the options installed in the
-current environment.
+### batch
+
+The `batch` command runs automated matches and prints progress to standard error before and after
+every game. Agent A and B swap player positions on alternating matches, so wins are summarized by
+participant rather than by board position.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--game` | required | Game to simulate. |
+| `--matches` | `20` | Number of matches. |
+| `--agent-a` | `random` | Participant A: `random` or `mcts`. |
+| `--agent-b` | `mcts` | Participant B: `random` or `mcts`. |
+| `--agent-a-config` | disabled | TOML profile required when A is MCTS. |
+| `--agent-b-config` | disabled | TOML profile required when B is MCTS. |
+| `--seed` | `0` | Seed of the first match. |
+| `--max-plies` | `10000` | Safety limit for each match. |
+| `--no-alternate-sides` | disabled | Keep A as player 0 in every match. |
+| `--json` | disabled | Emit the final report as JSON; progress remains on stderr. |
+
+Copy [`configs/mcts/template.toml`](../configs/mcts/template.toml) for each MCTS configuration. A
+profile is a TOML text file:
+
+```toml
+name = "boop-baseline"
+iterations = 100
+rollout_depth = 16
+exploration = 1.4142135623730951
+use_heuristic = false
+heuristic_index = 0
+```
+
+Random against MCTS:
+
+```bash
+meeple-bots batch --game boop --matches 20 \
+  --agent-a random --agent-b mcts \
+  --agent-b-config configs/mcts/boop-baseline.toml --seed 42
+```
+
+Two MCTS profiles against each other:
+
+```bash
+meeple-bots batch --game boop --matches 20 \
+  --agent-a mcts --agent-a-config configs/mcts/boop-baseline.toml \
+  --agent-b mcts --agent-b-config configs/mcts/boop-heuristic.toml \
+  --seed 42 --json
+```
+
+Use `meeple-bots match --help`, `meeple-bots analyze --help`, or `meeple-bots batch --help` for the
+options installed in the current environment.

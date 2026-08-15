@@ -71,6 +71,24 @@ result = Match(
 Tic-tac-toe and Connect Four currently expose no heuristics, so passing an index for either game is
 an error. Future boop variants can use indices `1`, `2`, and so on without changing the MCTS API.
 
+### Reusable profiles
+
+Batch simulations load MCTS parameters from TOML text files. Copy the provided
+[`template.toml`](../configs/mcts/template.toml) and edit its values:
+
+```toml
+name = "boop-baseline"
+iterations = 100
+rollout_depth = 16
+exploration = 1.4142135623730951
+use_heuristic = false
+heuristic_index = 0
+```
+
+`iterations` and `rollout_depth` are required. `exploration` defaults to `sqrt(2)`,
+`use_heuristic` defaults to `false`, and `heuristic_index` defaults to `0`. The index is used only
+when `use_heuristic` is true.
+
 ## Choosing a search budget
 
 The game evaluator provides a simple starting point for choosing manual MCTS parameters:

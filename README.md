@@ -10,6 +10,7 @@ exposed through a typed Python API and command-line interface.
 - Agents: interactive humans, uniform random play, and configurable MCTS.
 - Reproducible matches with seeded, independent random streams.
 - Complete move histories, utilities, winners, and authoritative final boards.
+- Reproducible simulation batches with side alternation and live progress.
 - Simple game-tree sampling and local MCTS cost estimation.
 - Statically dispatched Rust game and agent implementations behind a Python-friendly catalog.
 
@@ -49,6 +50,18 @@ print(result.final_board)
 
 Select another game with `--game connect-four` or `--game boop`. Use `human` as either player to
 enter moves interactively.
+
+Run 20 games between Random and a reusable MCTS profile:
+
+```bash
+python -m meeple_bots batch --game boop --matches 20 \
+  --agent-a random --agent-b mcts \
+  --agent-b-config configs/mcts/template.toml --seed 42
+```
+
+Progress is printed before and after every game. Copy
+[`configs/mcts/template.toml`](configs/mcts/template.toml) to keep different MCTS configurations
+and compare them in later batches.
 
 ## Game evaluation
 
