@@ -41,10 +41,35 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 - `exploration` controls the UCT balance between known high-utility branches and less-visited
   branches. The default is `sqrt(2)`.
 - `rollout_depth` limits actions simulated after tree expansion. A terminal result reached within
-  the limit supplies its utility; a rollout that reaches the limit is evaluated as `0.0`.
+  the limit supplies its utility; a rollout that reaches the limit uses the selected game
+  heuristic or `0.0` when none is selected.
+- `heuristic` optionally selects a zero-based heuristic index provided by the game. It defaults to
+  `None`.
 
 Iteration count alone does not represent equal work across games. The cost of one iteration also
 depends on legal-action generation, branching, and rollout length.
+
+### Game heuristics
+
+Heuristics belong to games rather than to MCTS. A game may expose no heuristics or several indexed
+variants. Each variant evaluates a truncated state from the root player's perspective and returns a
+normalized utility between `-1.0` and `1.0`.
+
+Boop currently exposes heuristic `0`, which scores each cat on the board as `0.1` for the root
+player and `-0.1` for the opponent. Kittens and pieces in either pool do not affect the score:
+
+```python
+from meeple_bots import Boop, Match, MctsAgent, RandomAgent
+
+result = Match(
+    game=Boop(),
+    first=MctsAgent(iterations=1_000, rollout_depth=16, heuristic=0),
+    second=RandomAgent(),
+).run()
+```
+
+Tic-tac-toe and Connect Four currently expose no heuristics, so passing an index for either game is
+an error. Future boop variants can use indices `1`, `2`, and so on without changing the MCTS API.
 
 ## Calibrated levels
 
@@ -89,6 +114,7 @@ these metrics with paired matches against random play and a four-times-iteration
 
 ```bash
 meeple-bots assess --game boop --mcts-level fast --matches 20 --seed 42
+meeple-bots assess --game boop --mcts-level fast --mcts-heuristic --matches 20
 ```
 
 A high truncated-rollout rate is evidence specifically for a heuristic at the rollout cutoff. The

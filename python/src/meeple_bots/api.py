@@ -49,6 +49,7 @@ class MctsAgent:
     iterations: int = 1_000
     exploration: float = sqrt(2.0)
     rollout_depth: int = 256
+    heuristic: int | None = None
 
     def __post_init__(self) -> None:
         _positive_u32("iterations", self.iterations)
@@ -57,12 +58,15 @@ class MctsAgent:
             raise TypeError("exploration must be a number")
         if not isfinite(self.exploration) or self.exploration < 0:
             raise ValueError("exploration must be finite and non-negative")
+        if self.heuristic is not None:
+            _non_negative_u32("heuristic", self.heuristic)
 
     @classmethod
     def from_recommendation(
         cls,
         recommendation: MctsRecommendation,
         exploration: float = sqrt(2.0),
+        heuristic: int | None = None,
     ) -> MctsAgent:
         """Build an agent from a hardware-calibrated recommendation."""
 
@@ -72,6 +76,7 @@ class MctsAgent:
             iterations=recommendation.iterations,
             exploration=exploration,
             rollout_depth=recommendation.rollout_depth,
+            heuristic=heuristic,
         )
 
 
@@ -459,6 +464,8 @@ class Match:
             raise TypeError("first must be RandomAgent, MctsAgent, or HumanAgent")
         if not isinstance(self.second, (RandomAgent, MctsAgent, HumanAgent)):
             raise TypeError("second must be RandomAgent, MctsAgent, or HumanAgent")
+        _validate_agent_heuristic(self.game, self.first)
+        _validate_agent_heuristic(self.game, self.second)
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
             raise TypeError("seed must be an integer")
         if not 0 <= self.seed <= _MAX_U64:
@@ -498,6 +505,7 @@ def evaluate_game_complexity(
     samples: int = 128,
     max_depth: int = 256,
     seed: int = 0,
+    heuristic: int | None = None,
 ) -> GameComplexityReport:
     """Sample a game tree and calibrate MCTS recommendations on this machine."""
 
@@ -509,12 +517,14 @@ def evaluate_game_complexity(
         raise TypeError("seed must be an integer")
     if not 0 <= seed <= _MAX_U64:
         raise ValueError(f"seed must be between 0 and {_MAX_U64}")
+    _validate_game_heuristic(game, heuristic)
 
     raw = _native.evaluate_game_complexity(
         _native_game(game),
         samples,
         max_depth,
         seed,
+        heuristic,
     )
     recommendations = tuple(
         MctsRecommendation(
@@ -565,6 +575,7 @@ def evaluate_mcts_strength(
         raise TypeError("game must be TicTacToe, ConnectFour, or Boop")
     if not isinstance(agent, MctsAgent):
         raise TypeError("agent must be an MctsAgent")
+    _validate_game_heuristic(game, agent.heuristic)
     _positive_u32("matches_per_opponent", matches_per_opponent)
     if matches_per_opponent % 2 != 0:
         raise ValueError("matches_per_opponent must be even")
@@ -581,7 +592,11 @@ def evaluate_mcts_strength(
     if not 0 <= seed <= _MAX_U64:
         raise ValueError(f"seed must be between 0 and {_MAX_U64}")
     if complexity_report is None:
-        complexity_report = evaluate_game_complexity(game, seed=seed)
+        complexity_report = evaluate_game_complexity(
+            game,
+            seed=seed,
+            heuristic=agent.heuristic,
+        )
     elif not isinstance(complexity_report, GameComplexityReport):
         raise TypeError("complexity_report must be a GameComplexityReport")
     elif complexity_report.game != game:
@@ -600,6 +615,7 @@ def evaluate_mcts_strength(
         agent.rollout_depth,
         complexity_report.estimated_tree_log10,
         complexity_report.estimate_is_lower_bound,
+        agent.heuristic,
         matches_per_opponent,
         reference_iterations_multiplier,
         max_plies,
@@ -610,11 +626,13 @@ def evaluate_mcts_strength(
         iterations=raw["candidate_iterations"],
         exploration=raw["candidate_exploration"],
         rollout_depth=raw["candidate_rollout_depth"],
+        heuristic=agent.heuristic,
     )
     reference = MctsAgent(
         iterations=raw["reference_iterations"],
         exploration=raw["reference_exploration"],
         rollout_depth=raw["reference_rollout_depth"],
+        heuristic=agent.heuristic,
     )
     search = raw["search"]
     return MctsStrengthReport(
@@ -714,8 +732,41 @@ def _native_agent(agent: Agent, game: Game):
             agent.iterations,
             float(agent.exploration),
             agent.rollout_depth,
+            agent.heuristic,
         )
     return _native.AgentConfig.human(_human_selector(agent, game))
+
+
+def _non_negative_u32(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if not 0 <= value <= _MAX_U32:
+        raise ValueError(f"{name} must be between 0 and {_MAX_U32}")
+
+
+def _validate_agent_heuristic(game: Game, agent: Agent) -> None:
+    if isinstance(agent, MctsAgent):
+        _validate_game_heuristic(game, agent.heuristic)
+
+
+def _validate_game_heuristic(game: Game, heuristic: int | None) -> None:
+    if heuristic is None:
+        return
+    _non_negative_u32("heuristic", heuristic)
+    if not isinstance(game, Boop):
+        raise ValueError(f"{_game_display_name(game)} does not provide MCTS heuristics")
+    if heuristic != 0:
+        raise ValueError(
+            f"boop does not provide MCTS heuristic {heuristic}; available indices: 0"
+        )
+
+
+def _game_display_name(game: Game) -> str:
+    if isinstance(game, TicTacToe):
+        return "tic-tac-toe"
+    if isinstance(game, ConnectFour):
+        return "connect-four"
+    return "boop"
 
 
 def _human_selector(agent: HumanAgent, game: Game):

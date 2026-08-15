@@ -43,6 +43,7 @@ Capability traits describe assumptions required by generic algorithms:
 
 - `DeterministicGame`
 - `PerfectInformationGame`
+- `HeuristicGame` for games that optionally expose indexed state evaluators.
 - `TwoPlayerZeroSumGame`
 
 MCTS declares these capabilities as trait bounds, so unsupported games fail at compile time instead

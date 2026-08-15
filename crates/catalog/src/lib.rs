@@ -6,7 +6,7 @@ use meeple_bots_boop::{
     Boop, BoopAction, PieceKind as BoopPieceKind, Resolution as BoopResolution,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
-use meeple_bots_core::{Agent, Game};
+use meeple_bots_core::{Agent, AgentError, DecisionContext, Game, HeuristicGame, RandomSource};
 pub use meeple_bots_evaluation::{
     AggregatedSearchStats, BenchmarkConfidence, ComplexityConfig, CutoffHeuristicEvidence,
     EvaluationError, GameComplexityReport, MctsLevel, MctsRecommendation, MctsStrengthReport,
@@ -14,10 +14,12 @@ pub use meeple_bots_evaluation::{
     StrengthProgress, StrengthProgressStage,
 };
 use meeple_bots_evaluation::{
-    evaluate_game, evaluate_mcts_strength_with_progress as evaluate_typed_mcts_strength,
+    evaluate_game, evaluate_game_with_evaluator,
+    evaluate_mcts_strength_with_evaluator_and_progress,
+    evaluate_mcts_strength_with_progress as evaluate_typed_mcts_strength,
 };
-use meeple_bots_mcts_agent::MctsAgent;
 pub use meeple_bots_mcts_agent::MctsConfig;
+use meeple_bots_mcts_agent::{GameHeuristic, MctsAgent};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{
     BatchConfig, MatchError, TracedMatchResult, play_batch, play_match,
@@ -36,7 +38,13 @@ pub enum GameId {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AgentConfig {
     Random,
-    Mcts(MctsConfig),
+    Mcts(MctsAgentConfig),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MctsAgentConfig {
+    pub search: MctsConfig,
+    pub heuristic: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -109,6 +117,11 @@ pub struct CatalogMatchReport {
 pub enum CatalogError {
     Match(MatchError),
     Evaluation(EvaluationError),
+    UnsupportedHeuristic {
+        game: GameId,
+        index: u32,
+        available: u32,
+    },
 }
 
 impl fmt::Display for CatalogError {
@@ -116,6 +129,22 @@ impl fmt::Display for CatalogError {
         match self {
             Self::Match(error) => error.fmt(formatter),
             Self::Evaluation(error) => error.fmt(formatter),
+            Self::UnsupportedHeuristic {
+                game,
+                index,
+                available,
+            } => {
+                let name = game_name(*game);
+                if *available == 0 {
+                    write!(formatter, "{name} does not provide MCTS heuristics")
+                } else {
+                    write!(
+                        formatter,
+                        "{name} does not provide MCTS heuristic {index}; available indices: 0..{}",
+                        available - 1
+                    )
+                }
+            }
         }
     }
 }
@@ -146,17 +175,42 @@ pub fn evaluate_game_complexity(
     Ok(report)
 }
 
+pub fn evaluate_game_complexity_with_heuristic(
+    game: GameId,
+    config: ComplexityConfig,
+    heuristic: Option<u32>,
+) -> Result<GameComplexityReport, CatalogError> {
+    let report = match (game, heuristic) {
+        (GameId::Boop, Some(index)) => {
+            validate_heuristic(GameId::Boop, &Boop, index)?;
+            evaluate_game_with_evaluator(&Boop, config, GameHeuristic::new(index))
+        }
+        (GameId::Boop, None) => evaluate_game(&Boop, config),
+        (GameId::ConnectFour, Some(index)) => {
+            return Err(unsupported_heuristic(GameId::ConnectFour, index, 0));
+        }
+        (GameId::ConnectFour, None) => evaluate_game(&ConnectFour, config),
+        (GameId::TicTacToe, Some(index)) => {
+            return Err(unsupported_heuristic(GameId::TicTacToe, index, 0));
+        }
+        (GameId::TicTacToe, None) => evaluate_game(&TicTacToe, config),
+    }?;
+    Ok(report)
+}
+
 pub fn evaluate_mcts_strength(
     game: GameId,
     estimated_tree_log10: f64,
     tree_size_estimate_is_lower_bound: bool,
     config: StrengthConfig,
+    heuristic: Option<u32>,
 ) -> Result<MctsStrengthReport, CatalogError> {
     evaluate_mcts_strength_with_progress(
         game,
         estimated_tree_log10,
         tree_size_estimate_is_lower_bound,
         config,
+        heuristic,
         |_| Ok(()),
     )
 }
@@ -166,27 +220,45 @@ pub fn evaluate_mcts_strength_with_progress<F>(
     estimated_tree_log10: f64,
     tree_size_estimate_is_lower_bound: bool,
     config: StrengthConfig,
+    heuristic: Option<u32>,
     mut progress: F,
 ) -> Result<MctsStrengthReport, CatalogError>
 where
     F: FnMut(StrengthProgress) -> Result<(), EvaluationError>,
 {
-    let report = match game {
-        GameId::Boop => evaluate_typed_mcts_strength(
+    let report = match (game, heuristic) {
+        (GameId::Boop, Some(index)) => {
+            validate_heuristic(GameId::Boop, &Boop, index)?;
+            evaluate_mcts_strength_with_evaluator_and_progress(
+                &Boop,
+                estimated_tree_log10,
+                tree_size_estimate_is_lower_bound,
+                config,
+                GameHeuristic::new(index),
+                &mut progress,
+            )
+        }
+        (GameId::Boop, None) => evaluate_typed_mcts_strength(
             &Boop,
             estimated_tree_log10,
             tree_size_estimate_is_lower_bound,
             config,
             &mut progress,
         ),
-        GameId::ConnectFour => evaluate_typed_mcts_strength(
+        (GameId::ConnectFour, Some(index)) => {
+            return Err(unsupported_heuristic(GameId::ConnectFour, index, 0));
+        }
+        (GameId::ConnectFour, None) => evaluate_typed_mcts_strength(
             &ConnectFour,
             estimated_tree_log10,
             tree_size_estimate_is_lower_bound,
             config,
             &mut progress,
         ),
-        GameId::TicTacToe => evaluate_typed_mcts_strength(
+        (GameId::TicTacToe, Some(index)) => {
+            return Err(unsupported_heuristic(GameId::TicTacToe, index, 0));
+        }
+        (GameId::TicTacToe, None) => evaluate_typed_mcts_strength(
             &TicTacToe,
             estimated_tree_log10,
             tree_size_estimate_is_lower_bound,
@@ -195,6 +267,84 @@ where
         ),
     }?;
     Ok(report)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum BoopMctsAgent {
+    Neutral(MctsAgent),
+    Heuristic(MctsAgent<GameHeuristic>),
+}
+
+impl Agent<Boop> for BoopMctsAgent {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, Boop>,
+        rng: &mut R,
+    ) -> Result<BoopAction, AgentError> {
+        match self {
+            Self::Neutral(agent) => agent.select_action(decision, rng),
+            Self::Heuristic(agent) => agent.select_action(decision, rng),
+        }
+    }
+}
+
+pub fn configured_boop_mcts(config: MctsAgentConfig) -> Result<BoopMctsAgent, CatalogError> {
+    match config.heuristic {
+        None => Ok(BoopMctsAgent::Neutral(MctsAgent::new(config.search))),
+        Some(index) => {
+            validate_heuristic(GameId::Boop, &Boop, index)?;
+            Ok(BoopMctsAgent::Heuristic(MctsAgent::with_evaluator(
+                config.search,
+                GameHeuristic::new(index),
+            )))
+        }
+    }
+}
+
+pub fn configured_connect_four_mcts(config: MctsAgentConfig) -> Result<MctsAgent, CatalogError> {
+    reject_unsupported_heuristic(GameId::ConnectFour, config.heuristic)?;
+    Ok(MctsAgent::new(config.search))
+}
+
+pub fn configured_tic_tac_toe_mcts(config: MctsAgentConfig) -> Result<MctsAgent, CatalogError> {
+    reject_unsupported_heuristic(GameId::TicTacToe, config.heuristic)?;
+    Ok(MctsAgent::new(config.search))
+}
+
+fn validate_heuristic<G: HeuristicGame>(
+    game_id: GameId,
+    game: &G,
+    index: u32,
+) -> Result<(), CatalogError> {
+    let available = game.heuristic_count();
+    if index < available {
+        Ok(())
+    } else {
+        Err(unsupported_heuristic(game_id, index, available))
+    }
+}
+
+fn reject_unsupported_heuristic(game: GameId, heuristic: Option<u32>) -> Result<(), CatalogError> {
+    match heuristic {
+        Some(index) => Err(unsupported_heuristic(game, index, 0)),
+        None => Ok(()),
+    }
+}
+
+const fn unsupported_heuristic(game: GameId, index: u32, available: u32) -> CatalogError {
+    CatalogError::UnsupportedHeuristic {
+        game,
+        index,
+        available,
+    }
+}
+
+const fn game_name(game: GameId) -> &'static str {
+    match game {
+        GameId::Boop => "boop",
+        GameId::ConnectFour => "connect-four",
+        GameId::TicTacToe => "tic-tac-toe",
+    }
 }
 
 pub fn run_match(
@@ -272,16 +422,22 @@ fn run_connect_four(
         (AgentConfig::Random, AgentConfig::Random) => {
             play_match(&game, &mut RandomAgent, &mut RandomAgent, config)
         }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            play_match(&game, &mut RandomAgent, &mut MctsAgent::new(second), config)
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            play_match(&game, &mut MctsAgent::new(first), &mut RandomAgent, config)
-        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_match(
+            &game,
+            &mut RandomAgent,
+            &mut configured_connect_four_mcts(second)?,
+            config,
+        ),
+        (AgentConfig::Mcts(first), AgentConfig::Random) => play_match(
+            &game,
+            &mut configured_connect_four_mcts(first)?,
+            &mut RandomAgent,
+            config,
+        ),
         (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_match(
             &game,
-            &mut MctsAgent::new(first),
-            &mut MctsAgent::new(second),
+            &mut configured_connect_four_mcts(first)?,
+            &mut configured_connect_four_mcts(second)?,
             config,
         ),
     }?;
@@ -298,16 +454,22 @@ fn run_boop(
         (AgentConfig::Random, AgentConfig::Random) => {
             play_match(&game, &mut RandomAgent, &mut RandomAgent, config)
         }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            play_match(&game, &mut RandomAgent, &mut MctsAgent::new(second), config)
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            play_match(&game, &mut MctsAgent::new(first), &mut RandomAgent, config)
-        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_match(
+            &game,
+            &mut RandomAgent,
+            &mut configured_boop_mcts(second)?,
+            config,
+        ),
+        (AgentConfig::Mcts(first), AgentConfig::Random) => play_match(
+            &game,
+            &mut configured_boop_mcts(first)?,
+            &mut RandomAgent,
+            config,
+        ),
         (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_match(
             &game,
-            &mut MctsAgent::new(first),
-            &mut MctsAgent::new(second),
+            &mut configured_boop_mcts(first)?,
+            &mut configured_boop_mcts(second)?,
             config,
         ),
     }?;
@@ -324,14 +486,14 @@ fn run_boop_with_trace(
             run_boop_match_with_trace(&mut RandomAgent, &mut RandomAgent, config)
         }
         (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            run_boop_match_with_trace(&mut RandomAgent, &mut MctsAgent::new(second), config)
+            run_boop_match_with_trace(&mut RandomAgent, &mut configured_boop_mcts(second)?, config)
         }
         (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            run_boop_match_with_trace(&mut MctsAgent::new(first), &mut RandomAgent, config)
+            run_boop_match_with_trace(&mut configured_boop_mcts(first)?, &mut RandomAgent, config)
         }
         (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => run_boop_match_with_trace(
-            &mut MctsAgent::new(first),
-            &mut MctsAgent::new(second),
+            &mut configured_boop_mcts(first)?,
+            &mut configured_boop_mcts(second)?,
             config,
         ),
     }
@@ -346,15 +508,19 @@ fn run_connect_four_with_trace(
         (AgentConfig::Random, AgentConfig::Random) => {
             run_connect_four_match_with_trace(&mut RandomAgent, &mut RandomAgent, config)
         }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            run_connect_four_match_with_trace(&mut RandomAgent, &mut MctsAgent::new(second), config)
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            run_connect_four_match_with_trace(&mut MctsAgent::new(first), &mut RandomAgent, config)
-        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => run_connect_four_match_with_trace(
+            &mut RandomAgent,
+            &mut configured_connect_four_mcts(second)?,
+            config,
+        ),
+        (AgentConfig::Mcts(first), AgentConfig::Random) => run_connect_four_match_with_trace(
+            &mut configured_connect_four_mcts(first)?,
+            &mut RandomAgent,
+            config,
+        ),
         (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => run_connect_four_match_with_trace(
-            &mut MctsAgent::new(first),
-            &mut MctsAgent::new(second),
+            &mut configured_connect_four_mcts(first)?,
+            &mut configured_connect_four_mcts(second)?,
             config,
         ),
     }
@@ -370,16 +536,22 @@ fn run_tic_tac_toe(
         (AgentConfig::Random, AgentConfig::Random) => {
             play_match(&game, &mut RandomAgent, &mut RandomAgent, config)
         }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            play_match(&game, &mut RandomAgent, &mut MctsAgent::new(second), config)
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            play_match(&game, &mut MctsAgent::new(first), &mut RandomAgent, config)
-        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_match(
+            &game,
+            &mut RandomAgent,
+            &mut configured_tic_tac_toe_mcts(second)?,
+            config,
+        ),
+        (AgentConfig::Mcts(first), AgentConfig::Random) => play_match(
+            &game,
+            &mut configured_tic_tac_toe_mcts(first)?,
+            &mut RandomAgent,
+            config,
+        ),
         (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_match(
             &game,
-            &mut MctsAgent::new(first),
-            &mut MctsAgent::new(second),
+            &mut configured_tic_tac_toe_mcts(first)?,
+            &mut configured_tic_tac_toe_mcts(second)?,
             config,
         ),
     }?;
@@ -395,15 +567,19 @@ fn run_tic_tac_toe_with_trace(
         (AgentConfig::Random, AgentConfig::Random) => {
             run_tic_tac_toe_match_with_trace(&mut RandomAgent, &mut RandomAgent, config)
         }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            run_tic_tac_toe_match_with_trace(&mut RandomAgent, &mut MctsAgent::new(second), config)
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            run_tic_tac_toe_match_with_trace(&mut MctsAgent::new(first), &mut RandomAgent, config)
-        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => run_tic_tac_toe_match_with_trace(
+            &mut RandomAgent,
+            &mut configured_tic_tac_toe_mcts(second)?,
+            config,
+        ),
+        (AgentConfig::Mcts(first), AgentConfig::Random) => run_tic_tac_toe_match_with_trace(
+            &mut configured_tic_tac_toe_mcts(first)?,
+            &mut RandomAgent,
+            config,
+        ),
         (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => run_tic_tac_toe_match_with_trace(
-            &mut MctsAgent::new(first),
-            &mut MctsAgent::new(second),
+            &mut configured_tic_tac_toe_mcts(first)?,
+            &mut configured_tic_tac_toe_mcts(second)?,
             config,
         ),
     }
@@ -593,17 +769,18 @@ fn run_boop_batch(
             play_batch(&Boop, config, || RandomAgent, || RandomAgent)
         }
         (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            play_batch(&Boop, config, || RandomAgent, || MctsAgent::new(second))
+            let second = configured_boop_mcts(second)?;
+            play_batch(&Boop, config, || RandomAgent, || second)
         }
         (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            play_batch(&Boop, config, || MctsAgent::new(first), || RandomAgent)
+            let first = configured_boop_mcts(first)?;
+            play_batch(&Boop, config, || first, || RandomAgent)
         }
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_batch(
-            &Boop,
-            config,
-            || MctsAgent::new(first),
-            || MctsAgent::new(second),
-        ),
+        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
+            let first = configured_boop_mcts(first)?;
+            let second = configured_boop_mcts(second)?;
+            play_batch(&Boop, config, || first, || second)
+        }
     }?;
     Ok(results)
 }
@@ -617,24 +794,19 @@ fn run_connect_four_batch(
         (AgentConfig::Random, AgentConfig::Random) => {
             play_batch(&ConnectFour, config, || RandomAgent, || RandomAgent)
         }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_batch(
-            &ConnectFour,
-            config,
-            || RandomAgent,
-            || MctsAgent::new(second),
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Random) => play_batch(
-            &ConnectFour,
-            config,
-            || MctsAgent::new(first),
-            || RandomAgent,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_batch(
-            &ConnectFour,
-            config,
-            || MctsAgent::new(first),
-            || MctsAgent::new(second),
-        ),
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
+            let second = configured_connect_four_mcts(second)?;
+            play_batch(&ConnectFour, config, || RandomAgent, || second)
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Random) => {
+            let first = configured_connect_four_mcts(first)?;
+            play_batch(&ConnectFour, config, || first, || RandomAgent)
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
+            let first = configured_connect_four_mcts(first)?;
+            let second = configured_connect_four_mcts(second)?;
+            play_batch(&ConnectFour, config, || first, || second)
+        }
     }?;
     Ok(results)
 }
@@ -648,21 +820,19 @@ fn run_tic_tac_toe_batch(
         (AgentConfig::Random, AgentConfig::Random) => {
             play_batch(&TicTacToe, config, || RandomAgent, || RandomAgent)
         }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_batch(
-            &TicTacToe,
-            config,
-            || RandomAgent,
-            || MctsAgent::new(second),
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            play_batch(&TicTacToe, config, || MctsAgent::new(first), || RandomAgent)
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
+            let second = configured_tic_tac_toe_mcts(second)?;
+            play_batch(&TicTacToe, config, || RandomAgent, || second)
         }
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_batch(
-            &TicTacToe,
-            config,
-            || MctsAgent::new(first),
-            || MctsAgent::new(second),
-        ),
+        (AgentConfig::Mcts(first), AgentConfig::Random) => {
+            let first = configured_tic_tac_toe_mcts(first)?;
+            play_batch(&TicTacToe, config, || first, || RandomAgent)
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
+            let first = configured_tic_tac_toe_mcts(first)?;
+            let second = configured_tic_tac_toe_mcts(second)?;
+            play_batch(&TicTacToe, config, || first, || second)
+        }
     }?;
     Ok(results)
 }
@@ -672,6 +842,17 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::*;
+
+    fn mcts(heuristic: Option<u32>) -> AgentConfig {
+        AgentConfig::Mcts(MctsAgentConfig {
+            search: MctsConfig {
+                iterations: NonZeroU32::new(4).unwrap(),
+                rollout_depth: 1,
+                ..MctsConfig::default()
+            },
+            heuristic,
+        })
+    }
 
     #[test]
     fn runtime_catalog_dispatches_outside_the_match_loop() {
@@ -685,6 +866,52 @@ mod tests {
 
         assert_eq!(result.utilities.len(), 2);
         assert!((5..=9).contains(&result.plies));
+    }
+
+    #[test]
+    fn rejects_unknown_or_unsupported_heuristics() {
+        let unknown = configured_boop_mcts(match mcts(Some(1)) {
+            AgentConfig::Mcts(config) => config,
+            AgentConfig::Random => unreachable!(),
+        })
+        .unwrap_err();
+        assert!(unknown.to_string().contains("available indices: 0"));
+
+        let unsupported = run_match(
+            GameId::TicTacToe,
+            mcts(Some(0)),
+            AgentConfig::Random,
+            MatchConfig::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            unsupported.to_string(),
+            "tic-tac-toe does not provide MCTS heuristics"
+        );
+    }
+
+    #[test]
+    fn strength_assessment_accepts_boop_heuristic_zero() {
+        let report = evaluate_mcts_strength(
+            GameId::Boop,
+            10.0,
+            false,
+            StrengthConfig {
+                candidate: MctsConfig {
+                    iterations: NonZeroU32::new(1).unwrap(),
+                    rollout_depth: 1,
+                    ..MctsConfig::default()
+                },
+                matches_per_opponent: NonZeroU32::new(2).unwrap(),
+                reference_iterations_multiplier: NonZeroU32::new(2).unwrap(),
+                ..StrengthConfig::default()
+            },
+            Some(0),
+        )
+        .unwrap();
+
+        assert_eq!(report.candidate.iterations.get(), 1);
+        assert_eq!(report.reference.iterations.get(), 2);
     }
 
     #[test]

@@ -51,7 +51,7 @@ from meeple_bots import Match, MctsAgent, RandomAgent, TicTacToe
 
 result = Match(
     game=TicTacToe(),
-    first=MctsAgent(iterations=1_000, rollout_depth=256),
+    first=MctsAgent(iterations=1_000, rollout_depth=256, heuristic=None),
     second=RandomAgent(),
     seed=42,
 ).run()
@@ -66,6 +66,10 @@ Player identifiers, rows, and columns are zero-based. `winner` is `None` for a d
 same seed and configuration reproduces the same match.
 
 Available games and their action types are documented in the [games guide](../games/README.md).
+
+An MCTS heuristic is selected by a zero-based index owned by the game. Boop currently accepts
+`heuristic=0`, which is a neutral implementation returning `0.0`. Tic-tac-toe and Connect Four
+currently reject every heuristic index.
 
 ## Human players
 
@@ -174,6 +178,8 @@ The `match` command runs one game and prints its move history and final board.
 | `--mcts-iterations` | `1000` | Manual MCTS search iterations. |
 | `--mcts-exploration` | `sqrt(2)` | MCTS exploration constant. |
 | `--mcts-rollout-depth` | `256` | Manual rollout-depth limit. |
+| `--first-mcts-heuristic [INDEX]` | disabled | Player 0 heuristic; omitting `INDEX` selects `0`. |
+| `--second-mcts-heuristic [INDEX]` | disabled | Player 1 heuristic; omitting `INDEX` selects `0`. |
 | `--mcts-level` | disabled | Calibrated `fast`, `balanced`, or `thorough` level. |
 | `--mcts-time-ms` | level default | Override a calibrated level's target time. |
 | `--json` | disabled | Emit machine-readable output. |
@@ -186,6 +192,8 @@ Examples:
 meeple-bots match --game connect-four --first human --second mcts --seed 42
 meeple-bots match --game boop --first random --second random --seed 9 --json
 meeple-bots match --game boop --first human --second mcts --mcts-level balanced
+meeple-bots match --game boop --first mcts --second mcts \
+  --first-mcts-heuristic --second-mcts-heuristic 0
 ```
 
 ### analyze
@@ -224,11 +232,13 @@ relative results, confidence intervals, and evidence that a heuristic may be use
 | `--mcts-iterations` | disabled | Manually configure candidate iterations. |
 | `--mcts-rollout-depth` | disabled | Manually configure the rollout limit. |
 | `--mcts-exploration` | `sqrt(2)` | Candidate and reference exploration constant. |
+| `--mcts-heuristic [INDEX]` | disabled | Game heuristic for both MCTS variants; defaults to `0` when present without a value. |
 | `--seed` | `0` | Reproducible sampling and paired-match seed. |
 | `--json` | disabled | Emit machine-readable output. |
 
 ```bash
 meeple-bots assess --game boop --mcts-level fast --matches 20 --seed 42
+meeple-bots assess --game boop --mcts-level fast --mcts-heuristic --matches 20
 meeple-bots assess --game connect-four --mcts-iterations 1000 \
   --mcts-rollout-depth 42 --matches 20 --json
 ```

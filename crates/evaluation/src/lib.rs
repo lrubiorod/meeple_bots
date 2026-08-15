@@ -6,7 +6,9 @@ use meeple_bots_core::{
     Agent, AgentError, DecisionContext, DeterministicGame, IllegalAction, PerfectInformationGame,
     PositionStatus, RandomSource, TwoPlayerZeroSumGame,
 };
-use meeple_bots_mcts_agent::{MctsAgent, MctsConfig, MctsSearchStats};
+use meeple_bots_mcts_agent::{
+    CutoffEvaluator, MctsAgent, MctsConfig, MctsSearchStats, NeutralEvaluator,
+};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{MatchConfig, MatchError, SplitMix64, play_match};
 
@@ -282,6 +284,20 @@ where
     G::State: Clone,
     G::Action: Clone,
 {
+    evaluate_game_with_evaluator(game, config, NeutralEvaluator)
+}
+
+pub fn evaluate_game_with_evaluator<G, E>(
+    game: &G,
+    config: ComplexityConfig,
+    evaluator: E,
+) -> Result<GameComplexityReport, EvaluationError>
+where
+    G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
+    G::State: Clone,
+    G::Action: Clone,
+    E: CutoffEvaluator<G> + Clone,
+{
     let initial_state = game.initial_state();
     let initial_legal_actions = game.legal_actions(&initial_state).count() as u32;
     if initial_legal_actions == 0 {
@@ -310,6 +326,7 @@ where
             depths[index],
             config.calibration_iterations.get(),
             config.seed.wrapping_add(index as u64),
+            evaluator.clone(),
         )?;
         recommendations[index] = recommendation(
             level,
@@ -354,11 +371,12 @@ where
     G::State: Clone,
     G::Action: Clone,
 {
-    evaluate_mcts_strength_with_progress(
+    evaluate_mcts_strength_with_evaluator_and_progress(
         game,
         estimated_tree_log10,
         tree_size_estimate_is_lower_bound,
         config,
+        NeutralEvaluator,
         |_| Ok(()),
     )
 }
@@ -368,7 +386,7 @@ pub fn evaluate_mcts_strength_with_progress<G, F>(
     estimated_tree_log10: f64,
     tree_size_estimate_is_lower_bound: bool,
     config: StrengthConfig,
-    mut progress: F,
+    progress: F,
 ) -> Result<MctsStrengthReport, EvaluationError>
 where
     G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
@@ -376,6 +394,55 @@ where
     G::Action: Clone,
     F: FnMut(StrengthProgress) -> Result<(), EvaluationError>,
 {
+    evaluate_mcts_strength_with_evaluator_and_progress(
+        game,
+        estimated_tree_log10,
+        tree_size_estimate_is_lower_bound,
+        config,
+        NeutralEvaluator,
+        progress,
+    )
+}
+
+pub fn evaluate_mcts_strength_with_evaluator<G, E>(
+    game: &G,
+    estimated_tree_log10: f64,
+    tree_size_estimate_is_lower_bound: bool,
+    config: StrengthConfig,
+    evaluator: E,
+) -> Result<MctsStrengthReport, EvaluationError>
+where
+    G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
+    G::State: Clone,
+    G::Action: Clone,
+    E: CutoffEvaluator<G> + Clone,
+{
+    evaluate_mcts_strength_with_evaluator_and_progress(
+        game,
+        estimated_tree_log10,
+        tree_size_estimate_is_lower_bound,
+        config,
+        evaluator,
+        |_| Ok(()),
+    )
+}
+
+pub fn evaluate_mcts_strength_with_evaluator_and_progress<G, E, F>(
+    game: &G,
+    estimated_tree_log10: f64,
+    tree_size_estimate_is_lower_bound: bool,
+    config: StrengthConfig,
+    evaluator: E,
+    mut progress: F,
+) -> Result<MctsStrengthReport, EvaluationError>
+where
+    G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
+    G::State: Clone,
+    G::Action: Clone,
+    E: CutoffEvaluator<G> + Clone,
+    F: FnMut(StrengthProgress) -> Result<(), EvaluationError>,
+{
+    let uses_game_heuristic = evaluator.uses_game_heuristic();
     if !config.matches_per_opponent.get().is_multiple_of(2) {
         return Err(EvaluationError::OddMatchCount(
             config.matches_per_opponent.get(),
@@ -401,7 +468,7 @@ where
         PositionStatus::Terminal => return Err(EvaluationError::NoLegalActions),
         _ => return Err(EvaluationError::UnexpectedChance),
     };
-    let mut initial_agent = MctsAgent::new(config.candidate);
+    let mut initial_agent = MctsAgent::with_evaluator(config.candidate, evaluator.clone());
     let mut initial_rng = SplitMix64::new(config.seed ^ 0xD1B5_4A32_D192_ED03);
     let initial_search = initial_agent
         .select_action_with_stats(
@@ -411,7 +478,7 @@ where
         .map_err(EvaluationError::Agent)?
         .stats;
 
-    let mut observed = ObservedMcts::new(config.candidate);
+    let mut observed = ObservedMcts::new(config.candidate, evaluator.clone());
     let mut seed_stream = SplitMix64::new(config.seed ^ 0x8CB9_2BA7_2F3D_8DD7);
     let versus_random = play_paired_against_random(
         game,
@@ -425,6 +492,7 @@ where
         game,
         &mut observed,
         reference,
+        evaluator,
         config.matches_per_opponent.get(),
         config.max_plies,
         &mut seed_stream,
@@ -483,10 +551,17 @@ where
             config.matches_per_opponent
         ));
     }
-    reasons.push(format!(
-        "{:.1}% of candidate rollouts reached the depth limit and received neutral utility",
-        search.truncated_rollout_rate * 100.0
-    ));
+    reasons.push(if uses_game_heuristic {
+        format!(
+            "{:.1}% of candidate rollouts reached the depth limit and used the configured game heuristic",
+            search.truncated_rollout_rate * 100.0
+        )
+    } else {
+        format!(
+            "{:.1}% of candidate rollouts reached the depth limit and received neutral utility",
+            search.truncated_rollout_rate * 100.0
+        )
+    });
     if benchmark_confidence != BenchmarkConfidence::Low && below_reference {
         reasons.push("the higher-iteration reference performed significantly better".to_owned());
     } else if benchmark_confidence != BenchmarkConfidence::Low {
@@ -514,25 +589,26 @@ where
     })
 }
 
-struct ObservedMcts {
-    agent: MctsAgent,
+struct ObservedMcts<E> {
+    agent: MctsAgent<E>,
     stats: Vec<MctsSearchStats>,
 }
 
-impl ObservedMcts {
-    fn new(config: MctsConfig) -> Self {
+impl<E> ObservedMcts<E> {
+    fn new(config: MctsConfig, evaluator: E) -> Self {
         Self {
-            agent: MctsAgent::new(config),
+            agent: MctsAgent::with_evaluator(config, evaluator),
             stats: Vec::new(),
         }
     }
 }
 
-impl<G> Agent<G> for ObservedMcts
+impl<G, E> Agent<G> for ObservedMcts<E>
 where
     G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
     G::State: Clone,
     G::Action: Clone,
+    E: CutoffEvaluator<G>,
 {
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
@@ -595,9 +671,9 @@ fn wilson_interval(score: f64, samples: u32) -> (f64, f64) {
     ((center - margin).max(0.0), (center + margin).min(1.0))
 }
 
-fn play_paired_against_random<G, F>(
+fn play_paired_against_random<G, E, F>(
     game: &G,
-    candidate: &mut ObservedMcts,
+    candidate: &mut ObservedMcts<E>,
     matches: u32,
     max_plies: NonZeroU32,
     seed_stream: &mut SplitMix64,
@@ -607,6 +683,7 @@ where
     G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
     G::State: Clone,
     G::Action: Clone,
+    E: CutoffEvaluator<G>,
     F: FnMut(StrengthProgress) -> Result<(), EvaluationError>,
 {
     let mut outcomes = Outcomes::default();
@@ -663,10 +740,11 @@ where
     Ok(outcomes.report())
 }
 
-fn play_paired_against_reference<G, F>(
+fn play_paired_against_reference<G, E, F>(
     game: &G,
-    candidate: &mut ObservedMcts,
+    candidate: &mut ObservedMcts<E>,
     reference_config: MctsConfig,
+    evaluator: E,
     matches: u32,
     max_plies: NonZeroU32,
     seed_stream: &mut SplitMix64,
@@ -676,9 +754,10 @@ where
     G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
     G::State: Clone,
     G::Action: Clone,
+    E: CutoffEvaluator<G>,
     F: FnMut(StrengthProgress) -> Result<(), EvaluationError>,
 {
-    let mut reference = MctsAgent::new(reference_config);
+    let mut reference = MctsAgent::with_evaluator(reference_config, evaluator);
     let mut outcomes = Outcomes::default();
     for pair in 0..matches / 2 {
         let seed = seed_stream.next_u64();
@@ -924,16 +1003,18 @@ where
     })
 }
 
-fn calibrate_iteration_cost<G>(
+fn calibrate_iteration_cost<G, E>(
     game: &G,
     rollout_depth: u32,
     iterations: u32,
     seed: u64,
+    evaluator: E,
 ) -> Result<f64, EvaluationError>
 where
     G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
     G::State: Clone,
     G::Action: Clone,
+    E: CutoffEvaluator<G> + Clone,
 {
     let state = game.initial_state();
     let player = match game.status(&state) {
@@ -946,11 +1027,14 @@ where
     let mut timings = [0.0; CALIBRATION_REPEATS];
 
     for (repeat, timing) in timings.iter_mut().enumerate() {
-        let mut agent = MctsAgent::new(MctsConfig {
-            iterations,
-            exploration: std::f64::consts::SQRT_2,
-            rollout_depth,
-        });
+        let mut agent = MctsAgent::with_evaluator(
+            MctsConfig {
+                iterations,
+                exploration: std::f64::consts::SQRT_2,
+                rollout_depth,
+            },
+            evaluator.clone(),
+        );
         let mut rng = SplitMix64::new(seed.wrapping_add(repeat as u64));
         let started = Instant::now();
         agent

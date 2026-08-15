@@ -49,6 +49,20 @@ def build_parser() -> argparse.ArgumentParser:
     match.add_argument("--mcts-iterations", type=int)
     match.add_argument("--mcts-exploration", type=float, default=sqrt_two())
     match.add_argument("--mcts-rollout-depth", type=int)
+    match.add_argument(
+        "--first-mcts-heuristic",
+        nargs="?",
+        const=0,
+        type=int,
+        help="use the selected game's heuristic (index 0 when no value is given)",
+    )
+    match.add_argument(
+        "--second-mcts-heuristic",
+        nargs="?",
+        const=0,
+        type=int,
+        help="use the selected game's heuristic (index 0 when no value is given)",
+    )
     match.add_argument("--mcts-level", choices=[level.value for level in MctsLevel])
     match.add_argument("--mcts-time-ms", type=int)
     match.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -77,6 +91,13 @@ def build_parser() -> argparse.ArgumentParser:
     assess.add_argument("--mcts-iterations", type=int)
     assess.add_argument("--mcts-exploration", type=float, default=sqrt_two())
     assess.add_argument("--mcts-rollout-depth", type=int)
+    assess.add_argument(
+        "--mcts-heuristic",
+        nargs="?",
+        const=0,
+        type=int,
+        help="use the selected game's heuristic (index 0 when no value is given)",
+    )
     assess.add_argument("--mcts-level", choices=[level.value for level in MctsLevel])
     assess.add_argument("--mcts-time-ms", type=int)
     assess.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -111,12 +132,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 samples=args.samples,
                 max_depth=args.max_depth,
                 seed=args.seed,
+                heuristic=args.mcts_heuristic,
             )
             mcts = _assessment_mcts_configuration(args, complexity)
             print(
                 f"[setup] Starting {args.matches * 2} benchmark matches "
                 f"with {mcts.iterations} candidate iterations and "
-                f"rollout depth {mcts.rollout_depth}...",
+                f"rollout depth {mcts.rollout_depth}, "
+                f"heuristic {_heuristic_name(mcts.heuristic)}...",
                 file=sys.stderr,
                 flush=True,
             )
@@ -137,10 +160,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         mcts, recommendation = _mcts_configuration(args, game)
+        first = _agent(
+            args.first,
+            mcts,
+            args.first_mcts_heuristic,
+            "--first-mcts-heuristic",
+        )
+        second = _agent(
+            args.second,
+            mcts,
+            args.second_mcts_heuristic,
+            "--second-mcts-heuristic",
+        )
         result = Match(
             game=game,
-            first=_agent(args.first, mcts),
-            second=_agent(args.second, mcts),
+            first=first,
+            second=second,
             seed=args.seed,
             max_plies=args.max_plies,
         ).run()
@@ -150,11 +185,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.json:
         payload = _result_dict(result)
+        payload["players"] = [
+            _agent_dict(args.first, first),
+            _agent_dict(args.second, second),
+        ]
         if recommendation is not None:
             payload["mcts_recommendation"] = _recommendation_dict(recommendation)
         print(json.dumps(payload, indent=2))
     else:
-        _print_result(result, args.first, args.second, recommendation)
+        _print_result(result, args.first, args.second, first, second, recommendation)
     return 0
 
 
@@ -228,6 +267,7 @@ def _assessment_mcts_configuration(
                 if args.mcts_rollout_depth is None
                 else args.mcts_rollout_depth
             ),
+            heuristic=args.mcts_heuristic,
         )
 
     level = MctsLevel.FAST if args.mcts_level is None else MctsLevel(args.mcts_level)
@@ -235,15 +275,39 @@ def _assessment_mcts_configuration(
     return MctsAgent.from_recommendation(
         recommendation,
         exploration=args.mcts_exploration,
+        heuristic=args.mcts_heuristic,
     )
 
 
-def _agent(name: str, mcts: MctsAgent) -> HumanAgent | MctsAgent | RandomAgent:
+def _agent(
+    name: str,
+    mcts: MctsAgent,
+    heuristic: int | None,
+    option: str,
+) -> HumanAgent | MctsAgent | RandomAgent:
+    if heuristic is not None and name != "mcts":
+        raise ValueError(f"{option} requires the corresponding player to be MCTS")
     if name == "human":
         return HumanAgent()
     if name == "mcts":
-        return mcts
+        return MctsAgent(
+            iterations=mcts.iterations,
+            exploration=mcts.exploration,
+            rollout_depth=mcts.rollout_depth,
+            heuristic=heuristic,
+        )
     return RandomAgent()
+
+
+def _agent_dict(name: str, agent) -> dict[str, object]:
+    return {
+        "type": name,
+        "heuristic": agent.heuristic if isinstance(agent, MctsAgent) else None,
+    }
+
+
+def _heuristic_name(heuristic: int | None) -> str:
+    return "none" if heuristic is None else str(heuristic)
 
 
 def _result_dict(result: MatchResult) -> dict[str, object]:
@@ -287,10 +351,12 @@ def _print_result(
     result: MatchResult,
     first: str,
     second: str,
+    first_agent,
+    second_agent,
     recommendation: MctsRecommendation | None = None,
 ) -> None:
-    print(f"Player 0: {first}")
-    print(f"Player 1: {second}")
+    print(f"Player 0: {_agent_name(first, first_agent)}")
+    print(f"Player 1: {_agent_name(second, second_agent)}")
     if recommendation is not None:
         print(
             "MCTS configuration: "
@@ -324,6 +390,12 @@ def _print_result(
     print(f"Utilities: {list(result.utilities)}")
     print(f"Plies: {result.plies}")
     print(f"Seed: {result.seed}")
+
+
+def _agent_name(name: str, agent) -> str:
+    if isinstance(agent, MctsAgent):
+        return f"{name} (heuristic {_heuristic_name(agent.heuristic)})"
+    return name
 
 
 def _print_board(board) -> None:
@@ -419,11 +491,13 @@ def _strength_dict(report: MctsStrengthReport) -> dict[str, object]:
             "iterations": report.candidate.iterations,
             "exploration": report.candidate.exploration,
             "rollout_depth": report.candidate.rollout_depth,
+            "heuristic": report.candidate.heuristic,
         },
         "reference": {
             "iterations": report.reference.iterations,
             "exploration": report.reference.exploration,
             "rollout_depth": report.reference.rollout_depth,
+            "heuristic": report.reference.heuristic,
         },
         "matches_per_opponent": report.matches_per_opponent,
         "initial_expanded_nodes": report.initial_expanded_nodes,
@@ -510,12 +584,14 @@ def _print_strength(report: MctsStrengthReport) -> None:
     print(
         "Candidate: "
         f"{report.candidate.iterations} iterations, "
-        f"depth {report.candidate.rollout_depth}"
+        f"depth {report.candidate.rollout_depth}, "
+        f"heuristic {_heuristic_name(report.candidate.heuristic)}"
     )
     print(
         "Reference: "
         f"{report.reference.iterations} iterations, "
-        f"depth {report.reference.rollout_depth}"
+        f"depth {report.reference.rollout_depth}, "
+        f"heuristic {_heuristic_name(report.reference.heuristic)}"
     )
     print()
     print("Assessment:")

@@ -6,14 +6,15 @@ use meeple_bots_boop::{Boop, BoopAction, PieceKind as BoopPieceKind, Resolution}
 use meeple_bots_catalog::{
     AgentConfig, BenchmarkConfidence, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution,
     CatalogError, CatalogMatchReport, CatalogPieceKind, ComplexityConfig, CutoffHeuristicEvidence,
-    EvaluationError, GameId, MatchConfig, MctsConfig, MctsLevel, OpponentResult, SearchSufficiency,
-    StrengthConfig, StrengthEstimate, StrengthOpponent, StrengthProgress, StrengthProgressStage,
-    evaluate_game_complexity, evaluate_mcts_strength_with_progress, run_boop_match_with_trace,
+    EvaluationError, GameId, MatchConfig, MctsAgentConfig, MctsConfig, MctsLevel, OpponentResult,
+    SearchSufficiency, StrengthConfig, StrengthEstimate, StrengthOpponent, StrengthProgress,
+    StrengthProgressStage, configured_boop_mcts, configured_connect_four_mcts,
+    configured_tic_tac_toe_mcts, evaluate_game_complexity_with_heuristic,
+    evaluate_mcts_strength_with_progress, run_boop_match_with_trace,
     run_connect_four_match_with_trace, run_match_with_trace, run_tic_tac_toe_match_with_trace,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{Agent, AgentError, DecisionContext, RandomSource};
-use meeple_bots_mcts_agent::MctsAgent;
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -44,8 +45,14 @@ impl PyAgentConfig {
         iterations=1_000,
         exploration=std::f64::consts::SQRT_2,
         rollout_depth=256,
+        heuristic=None,
     ))]
-    fn mcts(iterations: u32, exploration: f64, rollout_depth: u32) -> PyResult<Self> {
+    fn mcts(
+        iterations: u32,
+        exploration: f64,
+        rollout_depth: u32,
+        heuristic: Option<u32>,
+    ) -> PyResult<Self> {
         let iterations = NonZeroU32::new(iterations)
             .ok_or_else(|| PyValueError::new_err("iterations must be greater than zero"))?;
         if !exploration.is_finite() || exploration < 0.0 {
@@ -60,10 +67,13 @@ impl PyAgentConfig {
         }
 
         Ok(Self {
-            inner: PythonAgentConfig::Automated(AgentConfig::Mcts(MctsConfig {
-                iterations,
-                exploration,
-                rollout_depth,
+            inner: PythonAgentConfig::Automated(AgentConfig::Mcts(MctsAgentConfig {
+                search: MctsConfig {
+                    iterations,
+                    exploration,
+                    rollout_depth,
+                },
+                heuristic,
             })),
         })
     }
@@ -84,20 +94,21 @@ struct PythonHumanAgent<'a> {
 }
 
 #[pyfunction(name = "evaluate_game_complexity")]
-#[pyo3(signature = (game, samples=128, max_depth=256, seed=0))]
+#[pyo3(signature = (game, samples=128, max_depth=256, seed=0, heuristic=None))]
 fn py_evaluate_game_complexity(
     py: Python<'_>,
     game: &str,
     samples: u32,
     max_depth: u32,
     seed: u64,
+    heuristic: Option<u32>,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     let samples = NonZeroU32::new(samples)
         .ok_or_else(|| PyValueError::new_err("samples must be greater than zero"))?;
     let max_depth = NonZeroU32::new(max_depth)
         .ok_or_else(|| PyValueError::new_err("max_depth must be greater than zero"))?;
-    let report = evaluate_game_complexity(
+    let report = evaluate_game_complexity_with_heuristic(
         game,
         ComplexityConfig {
             samples,
@@ -105,6 +116,7 @@ fn py_evaluate_game_complexity(
             seed,
             ..ComplexityConfig::default()
         },
+        heuristic,
     )
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
 
@@ -155,6 +167,7 @@ fn py_evaluate_game_complexity(
     rollout_depth,
     estimated_tree_log10,
     tree_size_estimate_is_lower_bound,
+    heuristic=None,
     matches_per_opponent=20,
     reference_iterations_multiplier=4,
     max_plies=10_000,
@@ -170,6 +183,7 @@ fn py_evaluate_mcts_strength(
     rollout_depth: u32,
     estimated_tree_log10: f64,
     tree_size_estimate_is_lower_bound: bool,
+    heuristic: Option<u32>,
     matches_per_opponent: u32,
     reference_iterations_multiplier: u32,
     max_plies: u32,
@@ -235,6 +249,7 @@ fn py_evaluate_mcts_strength(
             seed,
             ..StrengthConfig::default()
         },
+        heuristic,
         &mut notify,
     )
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
@@ -589,20 +604,24 @@ fn run_with_human_first(
             run_boop_match_with_trace(&mut first, &mut RandomAgent, config)
         }
         (GameId::Boop, AgentConfig::Mcts(configured)) => {
-            run_boop_match_with_trace(&mut first, &mut MctsAgent::new(configured), config)
+            run_boop_match_with_trace(&mut first, &mut configured_boop_mcts(configured)?, config)
         }
         (GameId::ConnectFour, AgentConfig::Random) => {
             run_connect_four_match_with_trace(&mut first, &mut RandomAgent, config)
         }
-        (GameId::ConnectFour, AgentConfig::Mcts(configured)) => {
-            run_connect_four_match_with_trace(&mut first, &mut MctsAgent::new(configured), config)
-        }
+        (GameId::ConnectFour, AgentConfig::Mcts(configured)) => run_connect_four_match_with_trace(
+            &mut first,
+            &mut configured_connect_four_mcts(configured)?,
+            config,
+        ),
         (GameId::TicTacToe, AgentConfig::Random) => {
             run_tic_tac_toe_match_with_trace(&mut first, &mut RandomAgent, config)
         }
-        (GameId::TicTacToe, AgentConfig::Mcts(configured)) => {
-            run_tic_tac_toe_match_with_trace(&mut first, &mut MctsAgent::new(configured), config)
-        }
+        (GameId::TicTacToe, AgentConfig::Mcts(configured)) => run_tic_tac_toe_match_with_trace(
+            &mut first,
+            &mut configured_tic_tac_toe_mcts(configured)?,
+            config,
+        ),
     }
 }
 
@@ -618,20 +637,24 @@ fn run_with_human_second(
             run_boop_match_with_trace(&mut RandomAgent, &mut second, config)
         }
         (GameId::Boop, AgentConfig::Mcts(configured)) => {
-            run_boop_match_with_trace(&mut MctsAgent::new(configured), &mut second, config)
+            run_boop_match_with_trace(&mut configured_boop_mcts(configured)?, &mut second, config)
         }
         (GameId::ConnectFour, AgentConfig::Random) => {
             run_connect_four_match_with_trace(&mut RandomAgent, &mut second, config)
         }
-        (GameId::ConnectFour, AgentConfig::Mcts(configured)) => {
-            run_connect_four_match_with_trace(&mut MctsAgent::new(configured), &mut second, config)
-        }
+        (GameId::ConnectFour, AgentConfig::Mcts(configured)) => run_connect_four_match_with_trace(
+            &mut configured_connect_four_mcts(configured)?,
+            &mut second,
+            config,
+        ),
         (GameId::TicTacToe, AgentConfig::Random) => {
             run_tic_tac_toe_match_with_trace(&mut RandomAgent, &mut second, config)
         }
-        (GameId::TicTacToe, AgentConfig::Mcts(configured)) => {
-            run_tic_tac_toe_match_with_trace(&mut MctsAgent::new(configured), &mut second, config)
-        }
+        (GameId::TicTacToe, AgentConfig::Mcts(configured)) => run_tic_tac_toe_match_with_trace(
+            &mut configured_tic_tac_toe_mcts(configured)?,
+            &mut second,
+            config,
+        ),
     }
 }
 

@@ -78,9 +78,9 @@ Recommended rollout depths use sampled game-length percentiles and explicit ceil
 The caller's `max_depth` remains an additional upper bound for all three levels. These ceilings
 prevent a game with cycles or very long sampled matches from producing unbounded rollouts.
 
-MCTS currently returns utility `0.0` when a rollout reaches its limit without finding a terminal
-state. A short recommendation therefore trades tactical visibility for response time; it is not a
-heuristic evaluation of the truncated position.
+MCTS returns utility `0.0` when a rollout reaches its limit without finding a terminal state and no
+heuristic is selected. When configured, the selected game heuristic evaluates that truncated
+position instead. A short recommendation still trades tactical visibility for response time.
 
 ## Hardware calibration
 
@@ -140,9 +140,9 @@ Search is `INSUFFICIENT` below two mean iterations per root action or 10% existi
 diagnostic thresholds, not guarantees of strong play. Benchmark confidence is `LOW` below 20
 matches per opponent, `MODERATE` from 20 to 99, and `HIGH` from 100 onward.
 
-The observed search metrics also include expanded nodes and actual tree and simulation depths. A
-rollout truncated by `rollout_depth` receives neutral utility `0.0`; the cutoff-specific evidence
-therefore measures information discarded at that boundary, not overall agent quality.
+The observed search metrics also include expanded nodes and actual tree and simulation depths. The
+cutoff-specific evidence measures how often `rollout_depth` requires either a neutral fallback or a
+heuristic estimate; it does not measure overall agent quality.
 
 | Cutoff heuristic evidence | Truncated rollouts | Interpretation |
 | --- | ---: | --- |

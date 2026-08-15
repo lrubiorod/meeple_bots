@@ -3,8 +3,8 @@
 use std::num::NonZeroU32;
 
 use meeple_bots_core::{
-    Agent, AgentError, DecisionContext, DeterministicGame, PerfectInformationGame, PlayerId,
-    PositionStatus, RandomSource, TwoPlayerZeroSumGame,
+    Agent, AgentError, DecisionContext, DeterministicGame, HeuristicGame, PerfectInformationGame,
+    PlayerId, PositionStatus, RandomSource, TwoPlayerZeroSumGame,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,9 +24,74 @@ impl Default for MctsConfig {
     }
 }
 
+pub trait CutoffEvaluator<G: DeterministicGame> {
+    fn evaluate(
+        &self,
+        game: &G,
+        state: &G::State,
+        root_player: PlayerId,
+    ) -> Result<f64, AgentError>;
+
+    fn uses_game_heuristic(&self) -> bool {
+        true
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
-pub struct MctsAgent {
+pub struct NeutralEvaluator;
+
+impl<G: DeterministicGame> CutoffEvaluator<G> for NeutralEvaluator {
+    fn evaluate(
+        &self,
+        _game: &G,
+        _state: &G::State,
+        _root_player: PlayerId,
+    ) -> Result<f64, AgentError> {
+        Ok(0.0)
+    }
+
+    fn uses_game_heuristic(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GameHeuristic {
+    pub index: u32,
+}
+
+impl GameHeuristic {
+    pub const fn new(index: u32) -> Self {
+        Self { index }
+    }
+}
+
+impl<G> CutoffEvaluator<G> for GameHeuristic
+where
+    G: DeterministicGame + HeuristicGame,
+{
+    fn evaluate(
+        &self,
+        game: &G,
+        state: &G::State,
+        root_player: PlayerId,
+    ) -> Result<f64, AgentError> {
+        game.heuristic_utility(self.index, state, root_player)
+            .map(f64::from)
+            .ok_or_else(|| {
+                AgentError::message(format!(
+                    "heuristic index {} is not available; the game provides {} heuristics",
+                    self.index,
+                    game.heuristic_count()
+                ))
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MctsAgent<E = NeutralEvaluator> {
     pub config: MctsConfig,
+    pub evaluator: E,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,9 +115,24 @@ pub struct MctsDecision<A> {
     pub stats: MctsSearchStats,
 }
 
-impl MctsAgent {
+impl Default for MctsAgent<NeutralEvaluator> {
+    fn default() -> Self {
+        Self::new(MctsConfig::default())
+    }
+}
+
+impl MctsAgent<NeutralEvaluator> {
     pub const fn new(config: MctsConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            evaluator: NeutralEvaluator,
+        }
+    }
+}
+
+impl<E> MctsAgent<E> {
+    pub const fn with_evaluator(config: MctsConfig, evaluator: E) -> Self {
+        Self { config, evaluator }
     }
 
     pub fn select_action_with_stats<G, R>(
@@ -64,6 +144,7 @@ impl MctsAgent {
         G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
         G::State: Clone,
         G::Action: Clone,
+        E: CutoffEvaluator<G>,
         R: RandomSource + ?Sized,
     {
         let game = decision.game();
@@ -159,6 +240,7 @@ impl MctsAgent {
                 &mut state,
                 root_player,
                 self.config.rollout_depth,
+                &self.evaluator,
                 rng,
             )?;
             let simulation_depth = tree_depth.saturating_add(rollout.plies);
@@ -246,11 +328,12 @@ impl<A> Node<A> {
     }
 }
 
-impl<G> Agent<G> for MctsAgent
+impl<G, E> Agent<G> for MctsAgent<E>
 where
     G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
     G::State: Clone,
     G::Action: Clone,
+    E: CutoffEvaluator<G>,
 {
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
@@ -292,16 +375,18 @@ fn uct_score<A>(node: &Node<A>, parent_visits: f64, maximizing: bool, exploratio
     exploitation + exploration * (parent_visits.ln() / f64::from(node.visits)).sqrt()
 }
 
-fn rollout<G, R>(
+fn rollout<G, E, R>(
     game: &G,
     state: &mut G::State,
     root_player: PlayerId,
     max_depth: u32,
+    evaluator: &E,
     rng: &mut R,
 ) -> Result<RolloutResult, AgentError>
 where
     G: DeterministicGame,
     G::Action: Clone,
+    E: CutoffEvaluator<G>,
     R: RandomSource + ?Sized,
 {
     for plies in 0..max_depth {
@@ -340,14 +425,23 @@ where
                 terminal: true,
             })
             .ok_or_else(|| AgentError::message("terminal utility is missing")),
-        _ => Ok(RolloutResult {
-            utility: 0.0,
-            plies: max_depth,
-            terminal: false,
-        }),
+        _ => {
+            let utility = evaluator.evaluate(game, state, root_player)?;
+            if !utility.is_finite() || !(-1.0..=1.0).contains(&utility) {
+                return Err(AgentError::message(
+                    "MCTS heuristic utility must be finite and between -1.0 and 1.0",
+                ));
+            }
+            Ok(RolloutResult {
+                utility,
+                plies: max_depth,
+                terminal: false,
+            })
+        }
     }
 }
 
+#[derive(Debug)]
 struct RolloutResult {
     utility: f64,
     plies: u32,
@@ -362,6 +456,34 @@ mod tests {
     use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
     use super::*;
+
+    #[derive(Clone, Copy)]
+    struct FixedEvaluator(f64);
+
+    impl CutoffEvaluator<TicTacToe> for FixedEvaluator {
+        fn evaluate(
+            &self,
+            _game: &TicTacToe,
+            _state: &<TicTacToe as Game>::State,
+            _root_player: PlayerId,
+        ) -> Result<f64, AgentError> {
+            Ok(self.0)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct FailingEvaluator;
+
+    impl CutoffEvaluator<TicTacToe> for FailingEvaluator {
+        fn evaluate(
+            &self,
+            _game: &TicTacToe,
+            _state: &<TicTacToe as Game>::State,
+            _root_player: PlayerId,
+        ) -> Result<f64, AgentError> {
+            Err(AgentError::message("evaluator should not be called"))
+        }
+    }
 
     fn action(index: u8) -> TicTacToeAction {
         TicTacToeAction::from_index(index).unwrap()
@@ -475,5 +597,63 @@ mod tests {
         assert!(decision.stats.maximum_tree_depth >= 1);
         assert!(decision.stats.maximum_simulation_depth >= 2);
         assert!((0.0..=1.0).contains(&decision.stats.selected_action_visit_share));
+    }
+
+    #[test]
+    fn cutoff_uses_the_configured_evaluator() {
+        let game = TicTacToe;
+        let mut state = game.initial_state();
+        let result = rollout(
+            &game,
+            &mut state,
+            PlayerId::FIRST,
+            0,
+            &FixedEvaluator(0.25),
+            &mut SplitMix64::new(3),
+        )
+        .unwrap();
+
+        assert_eq!(result.utility, 0.25);
+        assert!(!result.terminal);
+    }
+
+    #[test]
+    fn terminal_utility_does_not_call_the_evaluator() {
+        let game = TicTacToe;
+        let mut state = game.initial_state();
+        for index in [0, 3, 1, 4, 2] {
+            game.apply_action(&mut state, &action(index)).unwrap();
+        }
+
+        let result = rollout(
+            &game,
+            &mut state,
+            PlayerId::FIRST,
+            0,
+            &FailingEvaluator,
+            &mut SplitMix64::new(3),
+        )
+        .unwrap();
+
+        assert_eq!(result.utility, 1.0);
+        assert!(result.terminal);
+    }
+
+    #[test]
+    fn rejects_invalid_heuristic_utilities() {
+        let game = TicTacToe;
+        for invalid in [f64::NAN, f64::INFINITY, -1.1, 1.1] {
+            let error = rollout(
+                &game,
+                &mut game.initial_state(),
+                PlayerId::FIRST,
+                0,
+                &FixedEvaluator(invalid),
+                &mut SplitMix64::new(3),
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("between -1.0 and 1.0"));
+        }
     }
 }

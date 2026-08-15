@@ -60,6 +60,44 @@ class MatchApiTests(unittest.TestCase):
     def test_invalid_mcts_configuration_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             MctsAgent(iterations=0)
+        with self.assertRaises(TypeError):
+            MctsAgent(heuristic=True)
+        with self.assertRaises(ValueError):
+            MctsAgent(heuristic=-1)
+
+    def test_boop_heuristic_zero_matches_the_neutral_cutoff(self) -> None:
+        common = {
+            "game": Boop(),
+            "second": RandomAgent(),
+            "seed": 19,
+        }
+        without = Match(
+            first=MctsAgent(iterations=4, rollout_depth=1),
+            **common,
+        ).run()
+        indexed = Match(
+            first=MctsAgent(iterations=4, rollout_depth=1, heuristic=0),
+            **common,
+        ).run()
+
+        self.assertEqual(without, indexed)
+
+    def test_games_without_heuristics_reject_an_index(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "tic-tac-toe does not provide MCTS heuristics",
+        ):
+            Match(game=TicTacToe(), first=MctsAgent(heuristic=0))
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "connect-four does not provide MCTS heuristics",
+        ):
+            evaluate_mcts_strength(
+                ConnectFour(),
+                MctsAgent(iterations=1, heuristic=0),
+                matches_per_opponent=2,
+            )
 
     def test_complexity_report_has_reproducible_structural_metrics(self) -> None:
         first = evaluate_game_complexity(TicTacToe(), samples=16, seed=42)
@@ -123,6 +161,29 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(progress[0].match_number, 1)
         self.assertEqual(progress[-1].match_number, 4)
         self.assertIsNotNone(progress[-1].elapsed_seconds)
+
+    def test_strength_report_preserves_the_boop_heuristic_index(self) -> None:
+        game = Boop()
+        complexity = evaluate_game_complexity(
+            game,
+            samples=2,
+            max_depth=2,
+            seed=5,
+            heuristic=0,
+        )
+        report = evaluate_mcts_strength(
+            game,
+            MctsAgent(iterations=1, rollout_depth=1, heuristic=0),
+            matches_per_opponent=2,
+            seed=5,
+            complexity_report=complexity,
+        )
+
+        self.assertEqual(report.candidate.heuristic, 0)
+        self.assertEqual(report.reference.heuristic, 0)
+        self.assertTrue(
+            any("configured game heuristic" in reason for reason in report.reasons)
+        )
 
     def test_strength_evaluation_requires_even_match_count(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be even"):
@@ -403,6 +464,51 @@ class MatchApiTests(unittest.TestCase):
         self.assertTrue(
             all(move["action"]["type"] == "boop" for move in payload["moves"])
         )
+
+    def test_cli_heuristic_flag_defaults_to_zero(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "match",
+                    "--game",
+                    "boop",
+                    "--first",
+                    "mcts",
+                    "--second",
+                    "random",
+                    "--mcts-iterations",
+                    "1",
+                    "--mcts-rollout-depth",
+                    "1",
+                    "--first-mcts-heuristic",
+                    "--seed",
+                    "9",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["players"][0]["heuristic"], 0)
+        self.assertIsNone(payload["players"][1]["heuristic"])
+
+    def test_cli_rejects_heuristics_for_non_mcts_players(self) -> None:
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            exit_code = main(
+                [
+                    "match",
+                    "--game",
+                    "boop",
+                    "--first",
+                    "random",
+                    "--first-mcts-heuristic",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("requires the corresponding player to be MCTS", errors.getvalue())
 
     def test_cli_analyze_returns_complexity_json(self) -> None:
         output = io.StringIO()

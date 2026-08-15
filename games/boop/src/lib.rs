@@ -1,8 +1,8 @@
 //! Rules for the standard two-player game of boop.
 
 use meeple_bots_core::{
-    DeterministicGame, Game, IllegalAction, PerfectInformationGame, PlayerId, PositionStatus,
-    TwoPlayerZeroSumGame,
+    DeterministicGame, Game, HeuristicGame, IllegalAction, PerfectInformationGame, PlayerId,
+    PositionStatus, TwoPlayerZeroSumGame,
 };
 
 pub const ROWS: usize = 6;
@@ -324,6 +324,24 @@ impl Game for Boop {
     }
 }
 
+impl HeuristicGame for Boop {
+    fn heuristic_count(&self) -> u32 {
+        1
+    }
+
+    fn heuristic_utility(&self, index: u32, state: &Self::State, player: PlayerId) -> Option<f32> {
+        match index {
+            0 => {
+                let opponent = <Self as TwoPlayerZeroSumGame>::opponent(player)?;
+                let player_cats = pieces_on_board(state, player, Some(PieceKind::Cat));
+                let opponent_cats = pieces_on_board(state, opponent, Some(PieceKind::Cat));
+                Some((f32::from(player_cats) - f32::from(opponent_cats)) * 0.1)
+            }
+            _ => None,
+        }
+    }
+}
+
 impl DeterministicGame for Boop {}
 impl PerfectInformationGame for Boop {}
 impl TwoPlayerZeroSumGame for Boop {}
@@ -524,6 +542,43 @@ mod tests {
         assert_eq!(state.pools[0].kittens(), 8);
         assert_eq!(state.pools[0].cats(), 0);
         assert_eq!(game.legal_actions(&state).count(), 36);
+    }
+
+    #[test]
+    fn cat_balance_heuristic_uses_the_requested_player_perspective() {
+        let game = Boop;
+        let mut state = game.initial_state();
+        state.board[position(0, 0).index()] = Some(Piece::new(PlayerId::FIRST, PieceKind::Cat));
+        state.board[position(1, 1).index()] = Some(Piece::new(PlayerId::FIRST, PieceKind::Cat));
+        state.board[position(2, 2).index()] = Some(Piece::new(PlayerId::SECOND, PieceKind::Cat));
+        state.board[position(3, 3).index()] = Some(Piece::new(PlayerId::SECOND, PieceKind::Kitten));
+
+        assert_eq!(game.heuristic_count(), 1);
+        assert_eq!(
+            game.heuristic_utility(0, &state, PlayerId::FIRST),
+            Some(0.1)
+        );
+        assert_eq!(
+            game.heuristic_utility(0, &state, PlayerId::SECOND),
+            Some(-0.1)
+        );
+        assert_eq!(game.heuristic_utility(1, &state, PlayerId::FIRST), None);
+        assert_eq!(game.heuristic_utility(0, &state, PlayerId::new(2)), None);
+    }
+
+    #[test]
+    fn cat_balance_heuristic_is_neutral_on_the_initial_board() {
+        let game = Boop;
+        let state = game.initial_state();
+
+        assert_eq!(
+            game.heuristic_utility(0, &state, PlayerId::FIRST),
+            Some(0.0)
+        );
+        assert_eq!(
+            game.heuristic_utility(0, &state, PlayerId::SECOND),
+            Some(0.0)
+        );
     }
 
     #[test]
