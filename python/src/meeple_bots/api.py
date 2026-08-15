@@ -61,214 +61,25 @@ class MctsAgent:
         if self.heuristic is not None:
             _non_negative_u32("heuristic", self.heuristic)
 
-    @classmethod
-    def from_recommendation(
-        cls,
-        recommendation: MctsRecommendation,
-        exploration: float = sqrt(2.0),
-        heuristic: int | None = None,
-    ) -> MctsAgent:
-        """Build an agent from a hardware-calibrated recommendation."""
-
-        if not isinstance(recommendation, MctsRecommendation):
-            raise TypeError("recommendation must be an MctsRecommendation")
-        return cls(
-            iterations=recommendation.iterations,
-            exploration=exploration,
-            rollout_depth=recommendation.rollout_depth,
-            heuristic=heuristic,
-        )
-
-
-class MctsLevel(str, Enum):
-    """Named MCTS compute budgets, not guaranteed cross-game strength levels."""
-
-    FAST = "fast"
-    BALANCED = "balanced"
-    THOROUGH = "thorough"
-
 
 @dataclass(frozen=True, slots=True)
-class MctsRecommendation:
-    """Fixed MCTS parameters calibrated for one game and machine."""
-
-    level: MctsLevel
-    iterations: int
-    rollout_depth: int
-    target_time_ms: int
-    estimated_time_ms: float
-    milliseconds_per_iteration: float
-
-
-@dataclass(frozen=True, slots=True)
-class GameComplexityReport:
-    """Empirical structural metrics and hardware-aware MCTS recommendations."""
+class GameEvaluationReport:
+    """Structural game metrics and a local MCTS cost estimate."""
 
     game: Game
     samples: int
     max_depth: int
-    completed_samples: int
     terminal_rate: float
     initial_legal_actions: int
-    mean_branching_factor: float
     effective_branching_factor: float
-    maximum_branching_factor: int
-    p95_branching_factor: int
-    mean_plies: float
-    median_plies: int
-    p75_plies: int
-    p95_plies: int
+    estimated_depth: int
+    depth_is_lower_bound: bool
     estimated_tree_log10: float
-    estimate_is_lower_bound: bool
-    max_iterations: int
-    recommendations: tuple[
-        MctsRecommendation, MctsRecommendation, MctsRecommendation
-    ]
-
-    def recommend(
-        self,
-        level: MctsLevel = MctsLevel.BALANCED,
-        time_budget_ms: int | None = None,
-    ) -> MctsRecommendation:
-        """Return a level recommendation, optionally rescaled to another time budget."""
-
-        if not isinstance(level, MctsLevel):
-            raise TypeError("level must be an MctsLevel")
-        base = next(item for item in self.recommendations if item.level is level)
-        if time_budget_ms is None:
-            return base
-        _positive_u32("time_budget_ms", time_budget_ms)
-        iterations = int(time_budget_ms / base.milliseconds_per_iteration)
-        iterations = min(
-            self.max_iterations,
-            max(self.initial_legal_actions, iterations),
-        )
-        return MctsRecommendation(
-            level=level,
-            iterations=iterations,
-            rollout_depth=base.rollout_depth,
-            target_time_ms=time_budget_ms,
-            estimated_time_ms=iterations * base.milliseconds_per_iteration,
-            milliseconds_per_iteration=base.milliseconds_per_iteration,
-        )
-
-
-class StrengthEstimate(str, Enum):
-    """Relative MCTS strength inferred from confidence intervals."""
-
-    INCONCLUSIVE = "inconclusive"
-    UNPROVEN_AGAINST_RANDOM = "unproven_against_random"
-    BEATS_RANDOM_BELOW_REFERENCE = "beats_random_below_reference"
-    BEATS_RANDOM_NO_DETECTED_REFERENCE_GAP = (
-        "beats_random_no_detected_reference_gap"
-    )
-
-
-class CutoffHeuristicEvidence(str, Enum):
-    """Evidence that depth-limited rollouts would benefit from a state heuristic."""
-
-    LOW = "low"
-    MODERATE = "moderate"
-    HIGH = "high"
-
-
-class SearchSufficiency(str, Enum):
-    """Whether MCTS revisits branches often enough to compare them."""
-
-    INSUFFICIENT = "insufficient"
-    LIMITED = "limited"
-    ADEQUATE = "adequate"
-
-
-class BenchmarkConfidence(str, Enum):
-    """Confidence supported by the number of matches per opponent."""
-
-    LOW = "low"
-    MODERATE = "moderate"
-    HIGH = "high"
-
-
-class StrengthOpponent(str, Enum):
-    """Opponent currently used by the strength benchmark."""
-
-    RANDOM = "random"
-    REFERENCE = "reference"
-
-
-class StrengthProgressStage(str, Enum):
-    """Whether a benchmark match is about to start or has completed."""
-
-    STARTED = "started"
-    COMPLETED = "completed"
-
-
-@dataclass(frozen=True, slots=True)
-class MctsStrengthProgress:
-    """Synchronous progress event emitted around one benchmark match."""
-
-    stage: StrengthProgressStage
-    match_number: int
-    total_matches: int
-    opponent: StrengthOpponent
-    candidate_player: int
-    plies: int | None
-    utility: float | None
-    elapsed_seconds: float | None
-
-
-@dataclass(frozen=True, slots=True)
-class OpponentResult:
-    """Candidate results against one opponent, always from the candidate's view."""
-
-    matches: int
-    wins: int
-    draws: int
-    losses: int
-    score: float
-    mean_utility: float
-    utility_confidence_low: float
-    utility_confidence_high: float
-
-
-@dataclass(frozen=True, slots=True)
-class MctsSearchSummary:
-    """Search telemetry aggregated over every candidate decision in the benchmark."""
-
-    decisions: int
-    total_iterations: int
-    mean_expanded_nodes: float
-    maximum_expanded_nodes: int
-    mean_root_actions: float
-    mean_iterations_per_root_action: float
-    mean_tree_revisit_rate: float
-    mean_tree_depth: float
-    maximum_tree_depth: int
-    mean_simulation_depth: float
-    maximum_simulation_depth: int
-    terminal_rollout_rate: float
-    truncated_rollout_rate: float
-    mean_selected_action_visit_share: float
-
-
-@dataclass(frozen=True, slots=True)
-class MctsStrengthReport:
-    """Relative playing results and evidence about whether MCTS needs a heuristic."""
-
-    game: Game
-    candidate: MctsAgent
-    reference: MctsAgent
-    matches_per_opponent: int
-    initial_expanded_nodes: int
-    tree_size_log10_gap: float
-    tree_size_estimate_is_lower_bound: bool
-    search: MctsSearchSummary
-    versus_random: OpponentResult
-    versus_reference: OpponentResult
-    search_sufficiency: SearchSufficiency
-    benchmark_confidence: BenchmarkConfidence
-    strength_estimate: StrengthEstimate
-    cutoff_heuristic_evidence: CutoffHeuristicEvidence
-    reasons: tuple[str, ...]
+    recommended_rollout_depth: int
+    recommended_iterations: int
+    iterations_capped: bool
+    milliseconds_per_iteration: float
+    estimated_decision_time_ms: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -500,14 +311,13 @@ class Match:
         )
 
 
-def evaluate_game_complexity(
+def evaluate_game(
     game: Game,
     samples: int = 128,
     max_depth: int = 256,
     seed: int = 0,
-    heuristic: int | None = None,
-) -> GameComplexityReport:
-    """Sample a game tree and calibrate MCTS recommendations on this machine."""
+) -> GameEvaluationReport:
+    """Estimate game structure and the local cost of a reasonable MCTS."""
 
     if not isinstance(game, (TicTacToe, ConnectFour, Boop)):
         raise TypeError("game must be TicTacToe, ConnectFour, or Boop")
@@ -517,189 +327,28 @@ def evaluate_game_complexity(
         raise TypeError("seed must be an integer")
     if not 0 <= seed <= _MAX_U64:
         raise ValueError(f"seed must be between 0 and {_MAX_U64}")
-    _validate_game_heuristic(game, heuristic)
 
-    raw = _native.evaluate_game_complexity(
+    raw = _native.evaluate_game(
         _native_game(game),
         samples,
         max_depth,
         seed,
-        heuristic,
     )
-    recommendations = tuple(
-        MctsRecommendation(
-            level=MctsLevel(item["level"]),
-            iterations=item["iterations"],
-            rollout_depth=item["rollout_depth"],
-            target_time_ms=item["target_time_ms"],
-            estimated_time_ms=item["estimated_time_ms"],
-            milliseconds_per_iteration=item["milliseconds_per_iteration"],
-        )
-        for item in raw["recommendations"]
-    )
-    return GameComplexityReport(
+    return GameEvaluationReport(
         game=game,
         samples=raw["samples"],
         max_depth=raw["max_depth"],
-        completed_samples=raw["completed_samples"],
         terminal_rate=raw["terminal_rate"],
         initial_legal_actions=raw["initial_legal_actions"],
-        mean_branching_factor=raw["mean_branching_factor"],
         effective_branching_factor=raw["effective_branching_factor"],
-        maximum_branching_factor=raw["maximum_branching_factor"],
-        p95_branching_factor=raw["p95_branching_factor"],
-        mean_plies=raw["mean_plies"],
-        median_plies=raw["median_plies"],
-        p75_plies=raw["p75_plies"],
-        p95_plies=raw["p95_plies"],
+        estimated_depth=raw["estimated_depth"],
+        depth_is_lower_bound=raw["depth_is_lower_bound"],
         estimated_tree_log10=raw["estimated_tree_log10"],
-        estimate_is_lower_bound=raw["estimate_is_lower_bound"],
-        max_iterations=raw["max_iterations"],
-        recommendations=recommendations,
-    )
-
-
-def evaluate_mcts_strength(
-    game: Game,
-    agent: MctsAgent,
-    matches_per_opponent: int = 20,
-    reference_iterations_multiplier: int = 4,
-    max_plies: int = 10_000,
-    seed: int = 0,
-    complexity_report: GameComplexityReport | None = None,
-    progress: Callable[[MctsStrengthProgress], None] | None = None,
-) -> MctsStrengthReport:
-    """Benchmark one MCTS configuration and inspect its real search behavior."""
-
-    if not isinstance(game, (TicTacToe, ConnectFour, Boop)):
-        raise TypeError("game must be TicTacToe, ConnectFour, or Boop")
-    if not isinstance(agent, MctsAgent):
-        raise TypeError("agent must be an MctsAgent")
-    _validate_game_heuristic(game, agent.heuristic)
-    _positive_u32("matches_per_opponent", matches_per_opponent)
-    if matches_per_opponent % 2 != 0:
-        raise ValueError("matches_per_opponent must be even")
-    _positive_u32(
-        "reference_iterations_multiplier", reference_iterations_multiplier
-    )
-    if reference_iterations_multiplier < 2:
-        raise ValueError("reference_iterations_multiplier must be at least 2")
-    if agent.iterations >= 1_000_000:
-        raise ValueError("agent.iterations must be less than 1000000")
-    _positive_u32("max_plies", max_plies)
-    if isinstance(seed, bool) or not isinstance(seed, int):
-        raise TypeError("seed must be an integer")
-    if not 0 <= seed <= _MAX_U64:
-        raise ValueError(f"seed must be between 0 and {_MAX_U64}")
-    if complexity_report is None:
-        complexity_report = evaluate_game_complexity(
-            game,
-            seed=seed,
-            heuristic=agent.heuristic,
-        )
-    elif not isinstance(complexity_report, GameComplexityReport):
-        raise TypeError("complexity_report must be a GameComplexityReport")
-    elif complexity_report.game != game:
-        raise ValueError("complexity_report must describe the selected game")
-    if progress is not None and not callable(progress):
-        raise TypeError("progress must be callable")
-
-    def notify(raw: dict[str, object]) -> None:
-        if progress is not None:
-            progress(_strength_progress_from_native(raw))
-
-    raw = _native.evaluate_mcts_strength(
-        _native_game(game),
-        agent.iterations,
-        agent.exploration,
-        agent.rollout_depth,
-        complexity_report.estimated_tree_log10,
-        complexity_report.estimate_is_lower_bound,
-        agent.heuristic,
-        matches_per_opponent,
-        reference_iterations_multiplier,
-        max_plies,
-        seed,
-        notify if progress is not None else None,
-    )
-    candidate = MctsAgent(
-        iterations=raw["candidate_iterations"],
-        exploration=raw["candidate_exploration"],
-        rollout_depth=raw["candidate_rollout_depth"],
-        heuristic=agent.heuristic,
-    )
-    reference = MctsAgent(
-        iterations=raw["reference_iterations"],
-        exploration=raw["reference_exploration"],
-        rollout_depth=raw["reference_rollout_depth"],
-        heuristic=agent.heuristic,
-    )
-    search = raw["search"]
-    return MctsStrengthReport(
-        game=game,
-        candidate=candidate,
-        reference=reference,
-        matches_per_opponent=raw["matches_per_opponent"],
-        initial_expanded_nodes=raw["initial_expanded_nodes"],
-        tree_size_log10_gap=raw["tree_size_log10_gap"],
-        tree_size_estimate_is_lower_bound=raw[
-            "tree_size_estimate_is_lower_bound"
-        ],
-        search=MctsSearchSummary(
-            decisions=search["decisions"],
-            total_iterations=search["total_iterations"],
-            mean_expanded_nodes=search["mean_expanded_nodes"],
-            maximum_expanded_nodes=search["maximum_expanded_nodes"],
-            mean_root_actions=search["mean_root_actions"],
-            mean_iterations_per_root_action=search[
-                "mean_iterations_per_root_action"
-            ],
-            mean_tree_revisit_rate=search["mean_tree_revisit_rate"],
-            mean_tree_depth=search["mean_tree_depth"],
-            maximum_tree_depth=search["maximum_tree_depth"],
-            mean_simulation_depth=search["mean_simulation_depth"],
-            maximum_simulation_depth=search["maximum_simulation_depth"],
-            terminal_rollout_rate=search["terminal_rollout_rate"],
-            truncated_rollout_rate=search["truncated_rollout_rate"],
-            mean_selected_action_visit_share=search[
-                "mean_selected_action_visit_share"
-            ],
-        ),
-        versus_random=_opponent_result_from_native(raw["versus_random"]),
-        versus_reference=_opponent_result_from_native(raw["versus_reference"]),
-        search_sufficiency=SearchSufficiency(raw["search_sufficiency"]),
-        benchmark_confidence=BenchmarkConfidence(raw["benchmark_confidence"]),
-        strength_estimate=StrengthEstimate(raw["strength_estimate"]),
-        cutoff_heuristic_evidence=CutoffHeuristicEvidence(
-            raw["cutoff_heuristic_evidence"]
-        ),
-        reasons=tuple(raw["reasons"]),
-    )
-
-
-def _strength_progress_from_native(raw: dict[str, object]) -> MctsStrengthProgress:
-    return MctsStrengthProgress(
-        stage=StrengthProgressStage(raw["stage"]),
-        match_number=raw["match_number"],
-        total_matches=raw["total_matches"],
-        opponent=StrengthOpponent(raw["opponent"]),
-        candidate_player=raw["candidate_player"],
-        plies=raw["plies"],
-        utility=raw["utility"],
-        elapsed_seconds=raw["elapsed_seconds"],
-    )
-
-
-def _opponent_result_from_native(raw: dict[str, object]) -> OpponentResult:
-    return OpponentResult(
-        matches=raw["matches"],
-        wins=raw["wins"],
-        draws=raw["draws"],
-        losses=raw["losses"],
-        score=raw["score"],
-        mean_utility=raw["mean_utility"],
-        utility_confidence_low=raw["utility_confidence_low"],
-        utility_confidence_high=raw["utility_confidence_high"],
+        recommended_rollout_depth=raw["recommended_rollout_depth"],
+        recommended_iterations=raw["recommended_iterations"],
+        iterations_capped=raw["iterations_capped"],
+        milliseconds_per_iteration=raw["milliseconds_per_iteration"],
+        estimated_decision_time_ms=raw["estimated_decision_time_ms"],
     )
 
 

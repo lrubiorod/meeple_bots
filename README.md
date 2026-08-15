@@ -10,7 +10,7 @@ exposed through a typed Python API and command-line interface.
 - Agents: interactive humans, uniform random play, and configurable MCTS.
 - Reproducible matches with seeded, independent random streams.
 - Complete move histories, utilities, winners, and authoritative final boards.
-- Empirical complexity analysis, MCTS calibration, and relative-strength assessment.
+- Simple game-tree sampling and local MCTS cost estimation.
 - Statically dispatched Rust game and agent implementations behind a Python-friendly catalog.
 
 ## Quick start
@@ -50,40 +50,35 @@ print(result.final_board)
 Select another game with `--game connect-four` or `--game boop`. Use `human` as either player to
 enter moves interactively.
 
-## Complexity-aware MCTS
+## Game evaluation
 
-Measure a game's branching, typical length, and approximate game-tree size while calibrating MCTS
-for the current machine:
+Measure a game's initial actions, typical depth, effective branching, approximate game-tree size,
+and local MCTS cost:
 
 ```bash
-python -m meeple_bots analyze --game boop --samples 128 --max-depth 256
+python -m meeple_bots analyze --game boop --samples 128 --max-depth 256 --seed 42
 ```
 
-Apply one of the resulting compute levels to a match:
+The report suggests a rounded iteration count for a reasonably explored MCTS decision and
+estimates its duration on the current machine. Use those values as a starting point for a manual
+match configuration:
 
 ```bash
 python -m meeple_bots match --game boop --first human --second mcts \
-  --mcts-level balanced --seed 42
+  --mcts-iterations 50000 --mcts-rollout-depth 64 --seed 42
 ```
 
-These levels represent compute budgets rather than guaranteed cross-game strength. See the
-[complexity evaluation guide](crates/evaluation/README.md) for the metrics and calibration model.
-
-An optional benchmark inspects the real search and compares one configuration against random play
-and a four-times-iteration MCTS reference:
-
-```bash
-python -m meeple_bots assess --game boop --mcts-level fast --seed 42
-```
+The estimate describes computational scale, not playing strength. See the
+[game evaluation guide](crates/evaluation/README.md) for the formula and its limitations.
 
 ## Documentation
 
 - [Python interface](python/README.md): installation, public API, human players, and complete CLI
   reference.
 - [Games](games/README.md): supported rulesets, identifiers, actions, and board conventions.
-- [Agents](agents/README.md): Random, MCTS, manual parameters, and calibrated levels.
+- [Agents](agents/README.md): Random, MCTS, heuristics, and manual parameters.
 - [Rust architecture](crates/README.md): workspace structure, generic contracts, and dispatch model.
-- [Complexity evaluation](crates/evaluation/README.md): metrics, recommendations, and limitations.
+- [Game evaluation](crates/evaluation/README.md): structural metrics, timing, and limitations.
 
 ## Development
 

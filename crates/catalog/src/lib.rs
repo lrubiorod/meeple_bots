@@ -7,17 +7,8 @@ use meeple_bots_boop::{
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{Agent, AgentError, DecisionContext, Game, HeuristicGame, RandomSource};
-pub use meeple_bots_evaluation::{
-    AggregatedSearchStats, BenchmarkConfidence, ComplexityConfig, CutoffHeuristicEvidence,
-    EvaluationError, GameComplexityReport, MctsLevel, MctsRecommendation, MctsStrengthReport,
-    OpponentResult, SearchSufficiency, StrengthConfig, StrengthEstimate, StrengthOpponent,
-    StrengthProgress, StrengthProgressStage,
-};
-use meeple_bots_evaluation::{
-    evaluate_game, evaluate_game_with_evaluator,
-    evaluate_mcts_strength_with_evaluator_and_progress,
-    evaluate_mcts_strength_with_progress as evaluate_typed_mcts_strength,
-};
+use meeple_bots_evaluation::evaluate_game as evaluate_typed_game;
+pub use meeple_bots_evaluation::{EvaluationConfig, EvaluationError, GameEvaluationReport};
 pub use meeple_bots_mcts_agent::MctsConfig;
 use meeple_bots_mcts_agent::{GameHeuristic, MctsAgent};
 use meeple_bots_random_agent::RandomAgent;
@@ -163,108 +154,14 @@ impl From<EvaluationError> for CatalogError {
     }
 }
 
-pub fn evaluate_game_complexity(
+pub fn evaluate_game(
     game: GameId,
-    config: ComplexityConfig,
-) -> Result<GameComplexityReport, CatalogError> {
+    config: EvaluationConfig,
+) -> Result<GameEvaluationReport, CatalogError> {
     let report = match game {
-        GameId::Boop => evaluate_game(&Boop, config),
-        GameId::ConnectFour => evaluate_game(&ConnectFour, config),
-        GameId::TicTacToe => evaluate_game(&TicTacToe, config),
-    }?;
-    Ok(report)
-}
-
-pub fn evaluate_game_complexity_with_heuristic(
-    game: GameId,
-    config: ComplexityConfig,
-    heuristic: Option<u32>,
-) -> Result<GameComplexityReport, CatalogError> {
-    let report = match (game, heuristic) {
-        (GameId::Boop, Some(index)) => {
-            validate_heuristic(GameId::Boop, &Boop, index)?;
-            evaluate_game_with_evaluator(&Boop, config, GameHeuristic::new(index))
-        }
-        (GameId::Boop, None) => evaluate_game(&Boop, config),
-        (GameId::ConnectFour, Some(index)) => {
-            return Err(unsupported_heuristic(GameId::ConnectFour, index, 0));
-        }
-        (GameId::ConnectFour, None) => evaluate_game(&ConnectFour, config),
-        (GameId::TicTacToe, Some(index)) => {
-            return Err(unsupported_heuristic(GameId::TicTacToe, index, 0));
-        }
-        (GameId::TicTacToe, None) => evaluate_game(&TicTacToe, config),
-    }?;
-    Ok(report)
-}
-
-pub fn evaluate_mcts_strength(
-    game: GameId,
-    estimated_tree_log10: f64,
-    tree_size_estimate_is_lower_bound: bool,
-    config: StrengthConfig,
-    heuristic: Option<u32>,
-) -> Result<MctsStrengthReport, CatalogError> {
-    evaluate_mcts_strength_with_progress(
-        game,
-        estimated_tree_log10,
-        tree_size_estimate_is_lower_bound,
-        config,
-        heuristic,
-        |_| Ok(()),
-    )
-}
-
-pub fn evaluate_mcts_strength_with_progress<F>(
-    game: GameId,
-    estimated_tree_log10: f64,
-    tree_size_estimate_is_lower_bound: bool,
-    config: StrengthConfig,
-    heuristic: Option<u32>,
-    mut progress: F,
-) -> Result<MctsStrengthReport, CatalogError>
-where
-    F: FnMut(StrengthProgress) -> Result<(), EvaluationError>,
-{
-    let report = match (game, heuristic) {
-        (GameId::Boop, Some(index)) => {
-            validate_heuristic(GameId::Boop, &Boop, index)?;
-            evaluate_mcts_strength_with_evaluator_and_progress(
-                &Boop,
-                estimated_tree_log10,
-                tree_size_estimate_is_lower_bound,
-                config,
-                GameHeuristic::new(index),
-                &mut progress,
-            )
-        }
-        (GameId::Boop, None) => evaluate_typed_mcts_strength(
-            &Boop,
-            estimated_tree_log10,
-            tree_size_estimate_is_lower_bound,
-            config,
-            &mut progress,
-        ),
-        (GameId::ConnectFour, Some(index)) => {
-            return Err(unsupported_heuristic(GameId::ConnectFour, index, 0));
-        }
-        (GameId::ConnectFour, None) => evaluate_typed_mcts_strength(
-            &ConnectFour,
-            estimated_tree_log10,
-            tree_size_estimate_is_lower_bound,
-            config,
-            &mut progress,
-        ),
-        (GameId::TicTacToe, Some(index)) => {
-            return Err(unsupported_heuristic(GameId::TicTacToe, index, 0));
-        }
-        (GameId::TicTacToe, None) => evaluate_typed_mcts_strength(
-            &TicTacToe,
-            estimated_tree_log10,
-            tree_size_estimate_is_lower_bound,
-            config,
-            &mut progress,
-        ),
+        GameId::Boop => evaluate_typed_game(&Boop, config),
+        GameId::ConnectFour => evaluate_typed_game(&ConnectFour, config),
+        GameId::TicTacToe => evaluate_typed_game(&TicTacToe, config),
     }?;
     Ok(report)
 }
@@ -891,30 +788,6 @@ mod tests {
     }
 
     #[test]
-    fn strength_assessment_accepts_boop_heuristic_zero() {
-        let report = evaluate_mcts_strength(
-            GameId::Boop,
-            10.0,
-            false,
-            StrengthConfig {
-                candidate: MctsConfig {
-                    iterations: NonZeroU32::new(1).unwrap(),
-                    rollout_depth: 1,
-                    ..MctsConfig::default()
-                },
-                matches_per_opponent: NonZeroU32::new(2).unwrap(),
-                reference_iterations_multiplier: NonZeroU32::new(2).unwrap(),
-                ..StrengthConfig::default()
-            },
-            Some(0),
-        )
-        .unwrap();
-
-        assert_eq!(report.candidate.iterations.get(), 1);
-        assert_eq!(report.reference.iterations.get(), 2);
-    }
-
-    #[test]
     fn traced_match_contains_every_typed_move() {
         let report = run_match_with_trace(
             GameId::TicTacToe,
@@ -979,18 +852,17 @@ mod tests {
     }
 
     #[test]
-    fn boop_samples_as_more_complex_than_tic_tac_toe() {
-        let config = ComplexityConfig {
+    fn boop_evaluation_is_structurally_larger_than_tic_tac_toe() {
+        let config = EvaluationConfig {
             samples: NonZeroU32::new(16).unwrap(),
-            calibration_iterations: NonZeroU32::new(1).unwrap(),
-            ..ComplexityConfig::default()
+            ..EvaluationConfig::default()
         };
-        let tic_tac_toe = evaluate_game_complexity(GameId::TicTacToe, config).unwrap();
-        let boop = evaluate_game_complexity(GameId::Boop, config).unwrap();
+        let tic_tac_toe = evaluate_game(GameId::TicTacToe, config).unwrap();
+        let boop = evaluate_game(GameId::Boop, config).unwrap();
 
         assert!(boop.initial_legal_actions > tic_tac_toe.initial_legal_actions);
-        assert!(boop.mean_branching_factor > tic_tac_toe.mean_branching_factor);
-        assert!(boop.median_plies > tic_tac_toe.median_plies);
+        assert!(boop.effective_branching_factor > tic_tac_toe.effective_branching_factor);
+        assert!(boop.estimated_depth > tic_tac_toe.estimated_depth);
         assert!(boop.estimated_tree_log10 > tic_tac_toe.estimated_tree_log10);
     }
 }

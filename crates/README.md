@@ -20,7 +20,7 @@ python-bindings
 
 - `meeple_bots_core` defines games, agents, players, errors, randomness, and capability traits.
 - `meeple_bots_simulation` runs reproducible matches and sequential batches.
-- `meeple_bots_evaluation` samples game trees, calibrates MCTS, and benchmarks relative strength.
+- `meeple_bots_evaluation` samples game trees and estimates local MCTS compute requirements.
 - `games/*` owns concrete state, action, and rule implementations.
 - `agents/*` contains policies generic over the core contracts.
 - `meeple_bots_catalog` maps runtime game and agent identifiers to monomorphized calls.

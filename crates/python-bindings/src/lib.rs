@@ -4,14 +4,11 @@ use std::num::NonZeroU32;
 
 use meeple_bots_boop::{Boop, BoopAction, PieceKind as BoopPieceKind, Resolution};
 use meeple_bots_catalog::{
-    AgentConfig, BenchmarkConfidence, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution,
-    CatalogError, CatalogMatchReport, CatalogPieceKind, ComplexityConfig, CutoffHeuristicEvidence,
-    EvaluationError, GameId, MatchConfig, MctsAgentConfig, MctsConfig, MctsLevel, OpponentResult,
-    SearchSufficiency, StrengthConfig, StrengthEstimate, StrengthOpponent, StrengthProgress,
-    StrengthProgressStage, configured_boop_mcts, configured_connect_four_mcts,
-    configured_tic_tac_toe_mcts, evaluate_game_complexity_with_heuristic,
-    evaluate_mcts_strength_with_progress, run_boop_match_with_trace,
-    run_connect_four_match_with_trace, run_match_with_trace, run_tic_tac_toe_match_with_trace,
+    AgentConfig, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution, CatalogError,
+    CatalogMatchReport, CatalogPieceKind, EvaluationConfig, GameId, MatchConfig, MctsAgentConfig,
+    MctsConfig, configured_boop_mcts, configured_connect_four_mcts, configured_tic_tac_toe_mcts,
+    evaluate_game, run_boop_match_with_trace, run_connect_four_match_with_trace,
+    run_match_with_trace, run_tic_tac_toe_match_with_trace,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{Agent, AgentError, DecisionContext, RandomSource};
@@ -93,267 +90,56 @@ struct PythonHumanAgent<'a> {
     selector: &'a Py<PyAny>,
 }
 
-#[pyfunction(name = "evaluate_game_complexity")]
-#[pyo3(signature = (game, samples=128, max_depth=256, seed=0, heuristic=None))]
-fn py_evaluate_game_complexity(
+#[pyfunction(name = "evaluate_game")]
+#[pyo3(signature = (game, samples=128, max_depth=256, seed=0))]
+fn py_evaluate_game(
     py: Python<'_>,
     game: &str,
     samples: u32,
     max_depth: u32,
     seed: u64,
-    heuristic: Option<u32>,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     let samples = NonZeroU32::new(samples)
         .ok_or_else(|| PyValueError::new_err("samples must be greater than zero"))?;
     let max_depth = NonZeroU32::new(max_depth)
         .ok_or_else(|| PyValueError::new_err("max_depth must be greater than zero"))?;
-    let report = evaluate_game_complexity_with_heuristic(
+    let report = evaluate_game(
         game,
-        ComplexityConfig {
+        EvaluationConfig {
             samples,
             max_depth,
             seed,
-            ..ComplexityConfig::default()
         },
-        heuristic,
     )
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
 
     let serialized = PyDict::new(py);
     serialized.set_item("samples", report.samples)?;
     serialized.set_item("max_depth", report.max_depth)?;
-    serialized.set_item("completed_samples", report.completed_samples)?;
     serialized.set_item("terminal_rate", report.terminal_rate)?;
     serialized.set_item("initial_legal_actions", report.initial_legal_actions)?;
-    serialized.set_item("mean_branching_factor", report.mean_branching_factor)?;
     serialized.set_item(
         "effective_branching_factor",
         report.effective_branching_factor,
     )?;
-    serialized.set_item("maximum_branching_factor", report.maximum_branching_factor)?;
-    serialized.set_item("p95_branching_factor", report.p95_branching_factor)?;
-    serialized.set_item("mean_plies", report.mean_plies)?;
-    serialized.set_item("median_plies", report.median_plies)?;
-    serialized.set_item("p75_plies", report.p75_plies)?;
-    serialized.set_item("p95_plies", report.p95_plies)?;
+    serialized.set_item("estimated_depth", report.estimated_depth)?;
+    serialized.set_item("depth_is_lower_bound", report.depth_is_lower_bound)?;
     serialized.set_item("estimated_tree_log10", report.estimated_tree_log10)?;
-    serialized.set_item("estimate_is_lower_bound", report.estimate_is_lower_bound)?;
-    serialized.set_item("max_iterations", report.max_iterations)?;
-
-    let recommendations = PyList::empty(py);
-    for recommendation in report.recommendations {
-        let item = PyDict::new(py);
-        item.set_item("level", mcts_level_name(recommendation.level))?;
-        item.set_item("iterations", recommendation.iterations)?;
-        item.set_item("rollout_depth", recommendation.rollout_depth)?;
-        item.set_item("target_time_ms", recommendation.target_time_ms)?;
-        item.set_item("estimated_time_ms", recommendation.estimated_time_ms)?;
-        item.set_item(
-            "milliseconds_per_iteration",
-            recommendation.milliseconds_per_iteration,
-        )?;
-        recommendations.append(item)?;
-    }
-    serialized.set_item("recommendations", recommendations)?;
-    Ok(serialized.unbind())
-}
-
-#[pyfunction(name = "evaluate_mcts_strength")]
-#[pyo3(signature = (
-    game,
-    iterations,
-    exploration,
-    rollout_depth,
-    estimated_tree_log10,
-    tree_size_estimate_is_lower_bound,
-    heuristic=None,
-    matches_per_opponent=20,
-    reference_iterations_multiplier=4,
-    max_plies=10_000,
-    seed=0,
-    progress=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn py_evaluate_mcts_strength(
-    py: Python<'_>,
-    game: &str,
-    iterations: u32,
-    exploration: f64,
-    rollout_depth: u32,
-    estimated_tree_log10: f64,
-    tree_size_estimate_is_lower_bound: bool,
-    heuristic: Option<u32>,
-    matches_per_opponent: u32,
-    reference_iterations_multiplier: u32,
-    max_plies: u32,
-    seed: u64,
-    progress: Option<Py<PyAny>>,
-) -> PyResult<Py<PyDict>> {
-    let game = parse_game(game)?;
-    let iterations = NonZeroU32::new(iterations)
-        .ok_or_else(|| PyValueError::new_err("iterations must be greater than zero"))?;
-    if !exploration.is_finite() || exploration < 0.0 {
-        return Err(PyValueError::new_err(
-            "exploration must be finite and non-negative",
-        ));
-    }
-    if rollout_depth == 0 {
-        return Err(PyValueError::new_err(
-            "rollout_depth must be greater than zero",
-        ));
-    }
-    if !estimated_tree_log10.is_finite() || estimated_tree_log10 < 0.0 {
-        return Err(PyValueError::new_err(
-            "estimated_tree_log10 must be finite and non-negative",
-        ));
-    }
-    let matches_per_opponent = NonZeroU32::new(matches_per_opponent)
-        .ok_or_else(|| PyValueError::new_err("matches_per_opponent must be greater than zero"))?;
-    let reference_iterations_multiplier = NonZeroU32::new(reference_iterations_multiplier)
-        .ok_or_else(|| {
-            PyValueError::new_err("reference_iterations_multiplier must be greater than zero")
-        })?;
-    let max_plies = NonZeroU32::new(max_plies)
-        .ok_or_else(|| PyValueError::new_err("max_plies must be greater than zero"))?;
-    if let Some(callback) = progress.as_ref()
-        && !callback.bind(py).is_callable()
-    {
-        return Err(PyValueError::new_err("progress must be callable"));
-    }
-
-    let mut notify = |event| {
-        if let Some(callback) = progress.as_ref() {
-            let serialized = serialize_strength_progress(py, event)
-                .map_err(|error| EvaluationError::Progress(error.to_string()))?;
-            callback
-                .bind(py)
-                .call1((serialized,))
-                .map_err(|error| EvaluationError::Progress(error.to_string()))?;
-        }
-        Ok(())
-    };
-    let report = evaluate_mcts_strength_with_progress(
-        game,
-        estimated_tree_log10,
-        tree_size_estimate_is_lower_bound,
-        StrengthConfig {
-            candidate: MctsConfig {
-                iterations,
-                exploration,
-                rollout_depth,
-            },
-            matches_per_opponent,
-            reference_iterations_multiplier,
-            max_plies,
-            seed,
-            ..StrengthConfig::default()
-        },
-        heuristic,
-        &mut notify,
-    )
-    .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
-
-    let serialized = PyDict::new(py);
-    serialized.set_item("candidate_iterations", report.candidate.iterations.get())?;
-    serialized.set_item("candidate_exploration", report.candidate.exploration)?;
-    serialized.set_item("candidate_rollout_depth", report.candidate.rollout_depth)?;
-    serialized.set_item("reference_iterations", report.reference.iterations.get())?;
-    serialized.set_item("reference_exploration", report.reference.exploration)?;
-    serialized.set_item("reference_rollout_depth", report.reference.rollout_depth)?;
-    serialized.set_item("matches_per_opponent", report.matches_per_opponent)?;
-    serialized.set_item("initial_expanded_nodes", report.initial_expanded_nodes)?;
-    serialized.set_item("tree_size_log10_gap", report.tree_size_log10_gap)?;
     serialized.set_item(
-        "tree_size_estimate_is_lower_bound",
-        report.tree_size_estimate_is_lower_bound,
+        "recommended_rollout_depth",
+        report.recommended_rollout_depth,
     )?;
-
-    let search = PyDict::new(py);
-    search.set_item("decisions", report.search.decisions)?;
-    search.set_item("total_iterations", report.search.total_iterations)?;
-    search.set_item("mean_expanded_nodes", report.search.mean_expanded_nodes)?;
-    search.set_item(
-        "maximum_expanded_nodes",
-        report.search.maximum_expanded_nodes,
-    )?;
-    search.set_item("mean_root_actions", report.search.mean_root_actions)?;
-    search.set_item(
-        "mean_iterations_per_root_action",
-        report.search.mean_iterations_per_root_action,
-    )?;
-    search.set_item(
-        "mean_tree_revisit_rate",
-        report.search.mean_tree_revisit_rate,
-    )?;
-    search.set_item("mean_tree_depth", report.search.mean_tree_depth)?;
-    search.set_item("maximum_tree_depth", report.search.maximum_tree_depth)?;
-    search.set_item("mean_simulation_depth", report.search.mean_simulation_depth)?;
-    search.set_item(
-        "maximum_simulation_depth",
-        report.search.maximum_simulation_depth,
-    )?;
-    search.set_item("terminal_rollout_rate", report.search.terminal_rollout_rate)?;
-    search.set_item(
-        "truncated_rollout_rate",
-        report.search.truncated_rollout_rate,
-    )?;
-    search.set_item(
-        "mean_selected_action_visit_share",
-        report.search.mean_selected_action_visit_share,
-    )?;
-    serialized.set_item("search", search)?;
+    serialized.set_item("recommended_iterations", report.recommended_iterations)?;
+    serialized.set_item("iterations_capped", report.iterations_capped)?;
     serialized.set_item(
-        "versus_random",
-        serialize_opponent_result(py, report.versus_random)?,
+        "milliseconds_per_iteration",
+        report.milliseconds_per_iteration,
     )?;
     serialized.set_item(
-        "versus_reference",
-        serialize_opponent_result(py, report.versus_reference)?,
+        "estimated_decision_time_ms",
+        report.estimated_decision_time_ms,
     )?;
-    serialized.set_item(
-        "strength_estimate",
-        strength_estimate_name(report.strength_estimate),
-    )?;
-    serialized.set_item(
-        "search_sufficiency",
-        search_sufficiency_name(report.search_sufficiency),
-    )?;
-    serialized.set_item(
-        "benchmark_confidence",
-        benchmark_confidence_name(report.benchmark_confidence),
-    )?;
-    serialized.set_item(
-        "cutoff_heuristic_evidence",
-        cutoff_heuristic_evidence_name(report.cutoff_heuristic_evidence),
-    )?;
-    serialized.set_item("reasons", report.reasons)?;
-    Ok(serialized.unbind())
-}
-
-fn serialize_strength_progress(py: Python<'_>, progress: StrengthProgress) -> PyResult<Py<PyDict>> {
-    let serialized = PyDict::new(py);
-    serialized.set_item("stage", strength_progress_stage_name(progress.stage))?;
-    serialized.set_item("match_number", progress.match_number)?;
-    serialized.set_item("total_matches", progress.total_matches)?;
-    serialized.set_item("opponent", strength_opponent_name(progress.opponent))?;
-    serialized.set_item("candidate_player", progress.candidate_player)?;
-    serialized.set_item("plies", progress.plies)?;
-    serialized.set_item("utility", progress.utility)?;
-    serialized.set_item("elapsed_seconds", progress.elapsed_seconds)?;
-    Ok(serialized.unbind())
-}
-
-fn serialize_opponent_result(py: Python<'_>, result: OpponentResult) -> PyResult<Py<PyDict>> {
-    let serialized = PyDict::new(py);
-    serialized.set_item("matches", result.matches)?;
-    serialized.set_item("wins", result.wins)?;
-    serialized.set_item("draws", result.draws)?;
-    serialized.set_item("losses", result.losses)?;
-    serialized.set_item("score", result.score)?;
-    serialized.set_item("mean_utility", result.mean_utility)?;
-    serialized.set_item("utility_confidence_low", result.utility_confidence_low)?;
-    serialized.set_item("utility_confidence_high", result.utility_confidence_high)?;
     Ok(serialized.unbind())
 }
 
@@ -731,68 +517,10 @@ fn parse_game(game: &str) -> PyResult<GameId> {
     }
 }
 
-fn mcts_level_name(level: MctsLevel) -> &'static str {
-    match level {
-        MctsLevel::Fast => "fast",
-        MctsLevel::Balanced => "balanced",
-        MctsLevel::Thorough => "thorough",
-    }
-}
-
-fn strength_estimate_name(estimate: StrengthEstimate) -> &'static str {
-    match estimate {
-        StrengthEstimate::Inconclusive => "inconclusive",
-        StrengthEstimate::UnprovenAgainstRandom => "unproven_against_random",
-        StrengthEstimate::BeatsRandomBelowReference => "beats_random_below_reference",
-        StrengthEstimate::BeatsRandomNoDetectedReferenceGap => {
-            "beats_random_no_detected_reference_gap"
-        }
-    }
-}
-
-fn cutoff_heuristic_evidence_name(evidence: CutoffHeuristicEvidence) -> &'static str {
-    match evidence {
-        CutoffHeuristicEvidence::Low => "low",
-        CutoffHeuristicEvidence::Moderate => "moderate",
-        CutoffHeuristicEvidence::High => "high",
-    }
-}
-
-fn search_sufficiency_name(sufficiency: SearchSufficiency) -> &'static str {
-    match sufficiency {
-        SearchSufficiency::Insufficient => "insufficient",
-        SearchSufficiency::Limited => "limited",
-        SearchSufficiency::Adequate => "adequate",
-    }
-}
-
-fn benchmark_confidence_name(confidence: BenchmarkConfidence) -> &'static str {
-    match confidence {
-        BenchmarkConfidence::Low => "low",
-        BenchmarkConfidence::Moderate => "moderate",
-        BenchmarkConfidence::High => "high",
-    }
-}
-
-fn strength_opponent_name(opponent: StrengthOpponent) -> &'static str {
-    match opponent {
-        StrengthOpponent::Random => "random",
-        StrengthOpponent::Reference => "reference",
-    }
-}
-
-fn strength_progress_stage_name(stage: StrengthProgressStage) -> &'static str {
-    match stage {
-        StrengthProgressStage::Started => "started",
-        StrengthProgressStage::Completed => "completed",
-    }
-}
-
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAgentConfig>()?;
-    module.add_function(wrap_pyfunction!(py_evaluate_game_complexity, module)?)?;
-    module.add_function(wrap_pyfunction!(py_evaluate_mcts_strength, module)?)?;
+    module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;
     module.add_function(wrap_pyfunction!(py_run_match, module)?)?;
     Ok(())
 }

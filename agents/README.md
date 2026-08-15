@@ -71,56 +71,38 @@ result = Match(
 Tic-tac-toe and Connect Four currently expose no heuristics, so passing an index for either game is
 an error. Future boop variants can use indices `1`, `2`, and so on without changing the MCTS API.
 
-## Calibrated levels
+## Choosing a search budget
 
-The complexity evaluator can convert a target compute budget into fixed MCTS parameters for one
-game and machine:
+The game evaluator provides a simple starting point for choosing manual MCTS parameters:
 
 ```python
-from meeple_bots import Boop, MctsAgent, MctsLevel, evaluate_game_complexity
+from meeple_bots import Boop, MctsAgent, evaluate_game
 
-report = evaluate_game_complexity(Boop(), seed=42)
-recommendation = report.recommend(MctsLevel.BALANCED)
-agent = MctsAgent.from_recommendation(recommendation)
+report = evaluate_game(Boop(), samples=128, max_depth=256, seed=42)
+agent = MctsAgent(
+    iterations=report.recommended_iterations,
+    rollout_depth=report.recommended_rollout_depth,
+)
 ```
 
-The built-in levels target these approximate decision times:
+It samples random games to estimate the initial action count, 95th-percentile depth, effective
+branching factor, and approximate tree size. It then recommends a rounded iteration count using:
 
-| Level | Target |
-| --- | ---: |
-| `FAST` | 100 ms |
-| `BALANCED` | 500 ms |
-| `THOROUGH` | 2000 ms |
+```text
+initial actions × effective branching × estimated depth²
+```
 
-They express compute budgets, not guaranteed strength or Elo. The resulting `iterations` and
-`rollout_depth` are fixed before the match, preserving seeded reproducibility. See the
-[complexity evaluation guide](../crates/evaluation/README.md) for details and limitations.
+The count is capped at one million iterations. A short local calibration estimates the duration of
+one iteration and of the recommendation on the current machine. These values estimate compute
+requirements, not playing strength or Elo. See the
+[game evaluation guide](../crates/evaluation/README.md) for details and limitations.
 
 The equivalent CLI configuration is:
 
 ```bash
 meeple-bots match --game boop --first mcts --second random \
-  --mcts-level balanced --mcts-time-ms 750 --seed 42
+  --mcts-iterations 50000 --mcts-rollout-depth 64 --seed 42
 ```
-
-Manual `--mcts-iterations` and `--mcts-rollout-depth` values cannot be combined with
-`--mcts-level`.
-
-## Search diagnostics
-
-The strength evaluator can record the nodes and depths actually reached by MCTS, plus whether each
-rollout found a terminal utility or stopped at `rollout_depth` and received `0.0`. It combines
-these metrics with paired matches against random play and a four-times-iteration reference:
-
-```bash
-meeple-bots assess --game boop --mcts-level fast --matches 20 --seed 42
-meeple-bots assess --game boop --mcts-level fast --mcts-heuristic --matches 20
-```
-
-A high truncated-rollout rate is evidence specifically for a heuristic at the rollout cutoff. The
-report presents iteration-budget sufficiency and benchmark confidence separately. A tiny fraction
-of the estimated global tree is normal for MCTS and is not, by itself, evidence of weak play. See
-the [strength assessment guide](../crates/evaluation/README.md#mcts-strength-assessment).
 
 ## Human
 
