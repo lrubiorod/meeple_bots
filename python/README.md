@@ -67,10 +67,9 @@ same seed and configuration reproduces the same match.
 
 Available games and their action types are documented in the [games guide](../games/README.md).
 
-An MCTS heuristic is selected by a zero-based index owned by the game. Boop currently accepts
-`heuristic=0`, which scores each cat as `0.1` for the root player and `-0.1` for the opponent.
-Kittens and pieces in either pool do not affect the score. Tic-tac-toe and Connect Four currently
-reject every heuristic index.
+An MCTS heuristic is selected by a zero-based index owned by the game. Availability and meaning
+therefore vary between games, and selecting an unsupported index raises a validation error. See the
+[games guide](../games/README.md) and each game's README for the available evaluators.
 
 ## Human players
 

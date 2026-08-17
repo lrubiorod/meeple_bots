@@ -110,16 +110,20 @@ class MatchApiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MctsAgent(heuristic=-1)
 
-    def test_boop_match_accepts_heuristic_zero(self) -> None:
-        result = Match(
-            game=Boop(),
-            first=MctsAgent(iterations=4, rollout_depth=1, heuristic=0),
-            second=RandomAgent(),
-            seed=19,
-        ).run()
+    def test_boop_match_accepts_both_heuristics(self) -> None:
+        for heuristic in (0, 1):
+            result = Match(
+                game=Boop(),
+                first=MctsAgent(iterations=4, rollout_depth=1, heuristic=heuristic),
+                second=RandomAgent(),
+                seed=19,
+            ).run()
 
-        self.assertGreater(result.plies, 0)
-        self.assertEqual(len(result.moves), result.plies)
+            self.assertGreater(result.plies, 0)
+            self.assertEqual(len(result.moves), result.plies)
+
+        with self.assertRaisesRegex(ValueError, "available indices: 0..1"):
+            Match(game=Boop(), first=MctsAgent(heuristic=2))
 
     def test_games_without_heuristics_reject_an_index(self) -> None:
         with self.assertRaisesRegex(
@@ -455,7 +459,7 @@ class MatchApiTests(unittest.TestCase):
                         "iterations = 1",
                         "rollout_depth = 1",
                         "use_heuristic = true",
-                        "heuristic_index = 0",
+                        "heuristic_index = 1",
                     ]
                 ),
                 encoding="utf-8",
@@ -480,7 +484,7 @@ class MatchApiTests(unittest.TestCase):
 
         payload = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["players"][0]["heuristic"], 0)
+        self.assertEqual(payload["players"][0]["heuristic"], 1)
 
     def test_cli_match_rejects_a_profile_for_a_non_mcts_player(self) -> None:
         errors = io.StringIO()
@@ -622,11 +626,11 @@ class MatchApiTests(unittest.TestCase):
             profile.write_text(
                 '\n'.join(
                     [
-                        'name = "cat-balance"',
+                        'name = "strategic"',
                         "iterations = 1",
                         "rollout_depth = 1",
                         "use_heuristic = true",
-                        "heuristic_index = 0",
+                        "heuristic_index = 1",
                     ]
                 ),
                 encoding="utf-8",
@@ -647,8 +651,8 @@ class MatchApiTests(unittest.TestCase):
 
         payload = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["agents"]["b"]["name"], "cat-balance")
-        self.assertEqual(payload["agents"]["b"]["heuristic"], 0)
+        self.assertEqual(payload["agents"]["b"]["name"], "strategic")
+        self.assertEqual(payload["agents"]["b"]["heuristic"], 1)
 
 
 if __name__ == "__main__":

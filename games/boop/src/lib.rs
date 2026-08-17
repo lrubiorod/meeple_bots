@@ -326,7 +326,7 @@ impl Game for Boop {
 
 impl HeuristicGame for Boop {
     fn heuristic_count(&self) -> u32 {
-        1
+        2
     }
 
     fn heuristic_utility(&self, index: u32, state: &Self::State, player: PlayerId) -> Option<f32> {
@@ -337,6 +337,7 @@ impl HeuristicGame for Boop {
                 let opponent_cats = pieces_on_board(state, opponent, Some(PieceKind::Cat));
                 Some((f32::from(player_cats) - f32::from(opponent_cats)) * 0.1)
             }
+            1 => strategic_heuristic_utility(state, player),
             _ => None,
         }
     }
@@ -506,6 +507,135 @@ fn pieces_on_board(state: &BoopState, player: PlayerId, kind: Option<PieceKind>)
         .count() as u8
 }
 
+fn strategic_heuristic_utility(state: &BoopState, player: PlayerId) -> Option<f32> {
+    const NON_TERMINAL_LIMIT: f32 = 0.95;
+    const IMMEDIATE_WIN: f32 = 0.9;
+
+    let opponent = <Boop as TwoPlayerZeroSumGame>::opponent(player)?;
+    let active = state.next_player;
+    if winning_cat_pairs(state, active) > 0 {
+        return Some(if active == player {
+            IMMEDIATE_WIN
+        } else {
+            -IMMEDIATE_WIN
+        });
+    }
+
+    let cat_progress =
+        normalized_total_cats(state, player) - normalized_total_cats(state, opponent);
+    let winning_threats =
+        normalized_winning_threats(state, player) - normalized_winning_threats(state, opponent);
+    let graduation_progress = normalized_graduation_potential(state, player)
+        - normalized_graduation_potential(state, opponent);
+    let safe_presence =
+        normalized_safe_presence(state, player) - normalized_safe_presence(state, opponent);
+
+    Some(
+        (0.8 * cat_progress
+            + 0.5 * winning_threats
+            + 0.3 * graduation_progress
+            + 0.1 * safe_presence)
+            .clamp(-NON_TERMINAL_LIMIT, NON_TERMINAL_LIMIT),
+    )
+}
+
+fn normalized_total_cats(state: &BoopState, player: PlayerId) -> f32 {
+    let total =
+        state.pools[player.index()].cats + pieces_on_board(state, player, Some(PieceKind::Cat));
+    f32::from(total) / f32::from(PIECES_PER_PLAYER)
+}
+
+fn normalized_winning_threats(state: &BoopState, player: PlayerId) -> f32 {
+    let threats = winning_cat_pairs(state, player).min(2);
+    let tempo = if state.next_player == player {
+        1.0
+    } else {
+        0.5
+    };
+    tempo * f32::from(threats) / 2.0
+}
+
+fn winning_cat_pairs(state: &BoopState, player: PlayerId) -> u8 {
+    if state.pools[player.index()].cats == 0 {
+        return 0;
+    }
+
+    all_lines()
+        .filter(|line| {
+            completable_endpoint_pair(state, *line, player)
+                .is_some_and(|pieces| pieces.iter().all(|piece| piece.kind == PieceKind::Cat))
+        })
+        .count() as u8
+}
+
+fn normalized_graduation_potential(state: &BoopState, player: PlayerId) -> f32 {
+    let tempo = if state.next_player == player {
+        1.0
+    } else {
+        0.5
+    };
+    tempo * f32::from(graduation_potential(state, player).min(6)) / 6.0
+}
+
+fn graduation_potential(state: &BoopState, player: PlayerId) -> u8 {
+    let pool = state.pools[player.index()];
+    if pool.kittens + pool.cats == 0 {
+        return 0;
+    }
+    let placed_kitten = u8::from(pool.kittens > 0);
+
+    all_lines()
+        .filter_map(|line| completable_endpoint_pair(state, line, player))
+        .map(|pieces| {
+            pieces
+                .iter()
+                .filter(|piece| piece.kind == PieceKind::Kitten)
+                .count() as u8
+                + placed_kitten
+        })
+        .sum()
+}
+
+fn completable_endpoint_pair(
+    state: &BoopState,
+    line: GraduateLine,
+    player: PlayerId,
+) -> Option<[Piece; 2]> {
+    let [first, middle, last] = line.positions.map(|position| state.board[position.index()]);
+    let pair = match (first, middle, last) {
+        (Some(first), Some(middle), None) => [first, middle],
+        (None, Some(middle), Some(last)) => [middle, last],
+        _ => return None,
+    };
+    pair.iter()
+        .all(|piece| piece.owner == player)
+        .then_some(pair)
+}
+
+fn normalized_safe_presence(state: &BoopState, player: PlayerId) -> f32 {
+    let score: u8 = state
+        .board
+        .iter()
+        .enumerate()
+        .filter_map(|(index, piece)| piece.filter(|piece| piece.owner == player).map(|_| index))
+        .map(|index| position_safety(Position(index as u8)))
+        .sum();
+    f32::from(score) / (f32::from(PIECES_PER_PLAYER) * 3.0)
+}
+
+fn position_safety(position: Position) -> u8 {
+    let row = position.row();
+    let column = position.column();
+    let edge_distance = row
+        .min(ROWS as u8 - 1 - row)
+        .min(column.min(COLUMNS as u8 - 1 - column));
+    match edge_distance {
+        0 => 1,
+        1 => 2,
+        _ => 3,
+    }
+}
+
 fn checked_position(row: i16, column: i16) -> Option<Position> {
     if (0..ROWS as i16).contains(&row) && (0..COLUMNS as i16).contains(&column) {
         Position::new(row as u8, column as u8)
@@ -553,7 +683,7 @@ mod tests {
         state.board[position(2, 2).index()] = Some(Piece::new(PlayerId::SECOND, PieceKind::Cat));
         state.board[position(3, 3).index()] = Some(Piece::new(PlayerId::SECOND, PieceKind::Kitten));
 
-        assert_eq!(game.heuristic_count(), 1);
+        assert_eq!(game.heuristic_count(), 2);
         assert_eq!(
             game.heuristic_utility(0, &state, PlayerId::FIRST),
             Some(0.1)
@@ -562,7 +692,8 @@ mod tests {
             game.heuristic_utility(0, &state, PlayerId::SECOND),
             Some(-0.1)
         );
-        assert_eq!(game.heuristic_utility(1, &state, PlayerId::FIRST), None);
+        assert!(game.heuristic_utility(1, &state, PlayerId::FIRST).is_some());
+        assert_eq!(game.heuristic_utility(2, &state, PlayerId::FIRST), None);
         assert_eq!(game.heuristic_utility(0, &state, PlayerId::new(2)), None);
     }
 
@@ -579,6 +710,126 @@ mod tests {
             game.heuristic_utility(0, &state, PlayerId::SECOND),
             Some(0.0)
         );
+    }
+
+    #[test]
+    fn strategic_heuristic_values_cats_in_the_pool_and_is_symmetric() {
+        let game = Boop;
+        let mut state = game.initial_state();
+        state.pools[0] = Pool {
+            kittens: 7,
+            cats: 1,
+        };
+
+        let first = game.heuristic_utility(1, &state, PlayerId::FIRST).unwrap();
+        let second = game.heuristic_utility(1, &state, PlayerId::SECOND).unwrap();
+
+        assert!(first > 0.0);
+        assert_eq!(first, -second);
+    }
+
+    #[test]
+    fn strategic_heuristic_preserves_cat_progress_between_pool_and_board() {
+        let mut pool_state = Boop.initial_state();
+        pool_state.pools[0] = Pool {
+            kittens: 7,
+            cats: 1,
+        };
+        let mut board_state = Boop.initial_state();
+        board_state.pools[0] = Pool {
+            kittens: 7,
+            cats: 0,
+        };
+        board_state.board[position(2, 2).index()] =
+            Some(Piece::new(PlayerId::FIRST, PieceKind::Cat));
+
+        assert_eq!(
+            normalized_total_cats(&pool_state, PlayerId::FIRST),
+            normalized_total_cats(&board_state, PlayerId::FIRST)
+        );
+        assert!(
+            strategic_heuristic_utility(&board_state, PlayerId::FIRST)
+                > strategic_heuristic_utility(&pool_state, PlayerId::FIRST)
+        );
+    }
+
+    #[test]
+    fn strategic_heuristic_detects_an_immediate_cat_win_only_with_a_pool_cat() {
+        let mut state = Boop.initial_state();
+        state.board[position(2, 1).index()] = Some(Piece::new(PlayerId::FIRST, PieceKind::Cat));
+        state.board[position(2, 2).index()] = Some(Piece::new(PlayerId::FIRST, PieceKind::Cat));
+        state.pools[0] = Pool {
+            kittens: 5,
+            cats: 1,
+        };
+
+        assert_eq!(winning_cat_pairs(&state, PlayerId::FIRST), 2);
+        assert_eq!(
+            strategic_heuristic_utility(&state, PlayerId::FIRST),
+            Some(0.9)
+        );
+        assert_eq!(
+            strategic_heuristic_utility(&state, PlayerId::SECOND),
+            Some(-0.9)
+        );
+
+        state.pools[0].cats = 0;
+        state.pools[0].kittens = 6;
+        assert_eq!(winning_cat_pairs(&state, PlayerId::FIRST), 0);
+        assert!(strategic_heuristic_utility(&state, PlayerId::FIRST).unwrap() < 0.9);
+    }
+
+    #[test]
+    fn strategic_heuristic_ranks_graduations_by_promoted_kittens() {
+        fn potential(first: PieceKind, second: PieceKind) -> u8 {
+            let mut state = Boop.initial_state();
+            state.board[position(2, 0).index()] =
+                Some(Piece::new(PlayerId::SECOND, PieceKind::Cat));
+            state.board[position(2, 1).index()] = Some(Piece::new(PlayerId::FIRST, first));
+            state.board[position(2, 2).index()] = Some(Piece::new(PlayerId::FIRST, second));
+            graduation_potential(&state, PlayerId::FIRST)
+        }
+
+        let kittens = potential(PieceKind::Kitten, PieceKind::Kitten);
+        let mixed = potential(PieceKind::Kitten, PieceKind::Cat);
+        let cats = potential(PieceKind::Cat, PieceKind::Cat);
+
+        assert!(kittens > mixed);
+        assert!(mixed > cats);
+    }
+
+    #[test]
+    fn strategic_heuristic_prefers_safe_central_positions() {
+        let mut edge = Boop.initial_state();
+        edge.board[position(0, 0).index()] = Some(Piece::new(PlayerId::FIRST, PieceKind::Kitten));
+        edge.pools[0].kittens -= 1;
+        let mut center = Boop.initial_state();
+        center.board[position(2, 2).index()] = Some(Piece::new(PlayerId::FIRST, PieceKind::Kitten));
+        center.pools[0].kittens -= 1;
+
+        assert!(
+            normalized_safe_presence(&center, PlayerId::FIRST)
+                > normalized_safe_presence(&edge, PlayerId::FIRST)
+        );
+        assert!(
+            strategic_heuristic_utility(&center, PlayerId::FIRST)
+                > strategic_heuristic_utility(&edge, PlayerId::FIRST)
+        );
+    }
+
+    #[test]
+    fn strategic_heuristic_is_bounded() {
+        let mut state = Boop.initial_state();
+        state.pools[0] = Pool {
+            kittens: 0,
+            cats: 8,
+        };
+
+        for player in [PlayerId::FIRST, PlayerId::SECOND] {
+            let utility = strategic_heuristic_utility(&state, player).unwrap();
+            assert!(utility.is_finite());
+            assert!((-0.95..=0.95).contains(&utility));
+        }
     }
 
     #[test]

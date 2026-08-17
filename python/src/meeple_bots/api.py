@@ -580,9 +580,9 @@ def _validate_game_heuristic(game: Game, heuristic: int | None) -> None:
     _non_negative_u32("heuristic", heuristic)
     if not isinstance(game, Boop):
         raise ValueError(f"{_game_display_name(game)} does not provide MCTS heuristics")
-    if heuristic != 0:
+    if heuristic not in (0, 1):
         raise ValueError(
-            f"boop does not provide MCTS heuristic {heuristic}; available indices: 0"
+            f"boop does not provide MCTS heuristic {heuristic}; available indices: 0..1"
         )
 
 

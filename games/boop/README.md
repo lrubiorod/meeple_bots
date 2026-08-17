@@ -90,5 +90,15 @@ meeple-bots match --game boop --first human --second mcts \
   --mcts-iterations 20 --mcts-rollout-depth 128 --seed 42
 ```
 
-Use the [complexity evaluation guide](../../crates/evaluation/README.md) to measure the current
-ruleset and obtain a hardware-aware configuration.
+Boop provides two cutoff heuristics:
+
+- Index `0` is a simple baseline based on cats currently on the board.
+- Index `1` values permanent cat progression, immediate winning pairs, graduation opportunities,
+  and pieces that are harder to push off the bed.
+
+The strategic heuristic scans the 80 possible three-cell lines without generating moves. An
+immediate cat-line completion for the active player receives `0.9`; other non-terminal evaluations
+are limited to `[-0.95, 0.95]`, leaving terminal wins and losses at `1.0` and `-1.0`.
+
+Use the [game evaluation guide](../../crates/evaluation/README.md) to measure the current ruleset
+and obtain a hardware-aware configuration.

@@ -55,21 +55,22 @@ Heuristics belong to games rather than to MCTS. A game may expose no heuristics 
 variants. Each variant evaluates a truncated state from the root player's perspective and returns a
 normalized utility between `-1.0` and `1.0`.
 
-Boop currently exposes heuristic `0`, which scores each cat on the board as `0.1` for the root
-player and `-0.1` for the opponent. Kittens and pieces in either pool do not affect the score:
+The availability and meaning of each index are documented by the game that provides it. MCTS treats
+the selected index as an opaque evaluator, which keeps the agent independent from concrete game
+rules. For example, a game-specific heuristic can be selected for shorter rollouts:
 
 ```python
 from meeple_bots import Boop, Match, MctsAgent, RandomAgent
 
 result = Match(
     game=Boop(),
-    first=MctsAgent(iterations=1_000, rollout_depth=16, heuristic=0),
+    first=MctsAgent(iterations=1_000, rollout_depth=16, heuristic=1),
     second=RandomAgent(),
 ).run()
 ```
 
-Tic-tac-toe and Connect Four currently expose no heuristics, so passing an index for either game is
-an error. Future boop variants can use indices `1`, `2`, and so on without changing the MCTS API.
+Passing an index that the selected game does not provide is an error. See the
+[games guide](../games/README.md) and each game's README for the available evaluators.
 
 ### Reusable profiles
 
