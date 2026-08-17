@@ -78,8 +78,8 @@ CLI matches and batch simulations load MCTS parameters from TOML text files. Cop
 [`template.toml`](../configs/mcts/template.toml) and edit its values:
 
 ```toml
-name = "boop-baseline"
-iterations = 100
+name = "example-mcts"
+iterations = 500
 rollout_depth = 16
 exploration = 1.4142135623730951
 use_heuristic = false

@@ -1,6 +1,6 @@
 # Copy this file to create a reproducible MCTS profile.
 name = "heuristic-mcts"
-iterations = 100
+iterations = 500
 rollout_depth = 16
 exploration = 1.4142135623730951
 

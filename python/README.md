@@ -243,8 +243,8 @@ The `match` and `batch` commands share the same MCTS profiles. Copy
 TOML text file:
 
 ```toml
-name = "boop-baseline"
-iterations = 100
+name = "example-mcts"
+iterations = 500
 rollout_depth = 16
 exploration = 1.4142135623730951
 use_heuristic = false
