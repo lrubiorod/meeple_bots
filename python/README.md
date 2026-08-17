@@ -100,6 +100,11 @@ The selector receives a read-only `HumanTurn` containing the game, active player
 actions, and boop. pools when applicable. It must return one of `turn.legal_actions`; returning a
 wrong type or illegal action stops the match with an error.
 
+An optional `observe_action` callback receives a `HumanMoveObservation` with the board and pools
+immediately after the selected action has been applied. The terminal CLI enables it automatically,
+so interactive matches show the result of the human move before the automated opponent starts
+thinking.
+
 ## Running simulation batches
 
 `Batch` runs automated participants repeatedly, alternates their player positions by default, and

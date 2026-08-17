@@ -16,6 +16,7 @@ from meeple_bots import (
     ConnectFour,
     ConnectFourAction,
     HumanAgent,
+    HumanMoveObservation,
     Match,
     MctsAgent,
     RandomAgent,
@@ -109,6 +110,8 @@ class MatchApiTests(unittest.TestCase):
             MctsAgent(heuristic=True)
         with self.assertRaises(ValueError):
             MctsAgent(heuristic=-1)
+        with self.assertRaises(TypeError):
+            HumanAgent(observe_action="not callable")
 
     def test_boop_match_accepts_both_heuristics(self) -> None:
         for heuristic in (0, 1):
@@ -268,6 +271,54 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(turn.pools[0].kittens, 8)
         self.assertEqual(turn.pools[0].cats, 0)
 
+    def test_human_boop_observer_receives_the_state_after_boops(self) -> None:
+        first_targets = iter([(2, 2), (2, 3)])
+        observations = []
+
+        def select_target(turn):
+            row, column = next(first_targets)
+            return next(
+                action
+                for action in turn.legal_actions
+                if action.piece is BoopPieceKind.KITTEN
+                and action.row == row
+                and action.column == column
+            )
+
+        def select_safe_move(turn):
+            return next(
+                action
+                for action in turn.legal_actions
+                if action.piece is BoopPieceKind.KITTEN
+                and action.row == 0
+                and action.column == 0
+            )
+
+        def observe(move):
+            observations.append(move)
+            if len(observations) == 2:
+                raise RuntimeError("observation complete")
+
+        with self.assertRaisesRegex(RuntimeError, "observation complete"):
+            Match(
+                game=Boop(),
+                first=HumanAgent(select_target, observe_action=observe),
+                second=HumanAgent(select_safe_move),
+            ).run()
+
+        result = observations[1]
+        self.assertIsInstance(result, HumanMoveObservation)
+        self.assertEqual(result.player, 0)
+        self.assertIsNone(result.board[2][2])
+        self.assertEqual(
+            result.board[2][1],
+            BoopPiece(player=0, kind=BoopPieceKind.KITTEN),
+        )
+        self.assertEqual(
+            result.board[2][3],
+            BoopPiece(player=0, kind=BoopPieceKind.KITTEN),
+        )
+
     def test_cli_prompts_for_human_moves(self) -> None:
         output = io.StringIO()
         prompts = io.StringIO()
@@ -285,6 +336,7 @@ class MatchApiTests(unittest.TestCase):
         self.assertIn("Final board:", output.getvalue())
         self.assertIn("0 | X X X", output.getvalue())
         self.assertIn("enter row and column", prompts.getvalue())
+        self.assertIn("Board after player 0's move:", prompts.getvalue())
 
     def test_cli_shows_final_board_for_automated_match(self) -> None:
         output = io.StringIO()

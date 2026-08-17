@@ -11,7 +11,7 @@ use meeple_bots_catalog::{
     run_match_with_trace, run_tic_tac_toe_match_with_trace,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
-use meeple_bots_core::{Agent, AgentError, DecisionContext, RandomSource};
+use meeple_bots_core::{Agent, AgentError, DecisionContext, Game, RandomSource};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -20,7 +20,10 @@ use pyo3::types::{PyAny, PyDict, PyList, PyModule};
 
 enum PythonAgentConfig {
     Automated(AgentConfig),
-    Human(Py<PyAny>),
+    Human {
+        selector: Py<PyAny>,
+        observer: Option<Py<PyAny>>,
+    },
 }
 
 #[pyclass(name = "AgentConfig", frozen)]
@@ -76,18 +79,26 @@ impl PyAgentConfig {
     }
 
     #[staticmethod]
-    fn human(py: Python<'_>, selector: Py<PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (selector, observer=None))]
+    fn human(py: Python<'_>, selector: Py<PyAny>, observer: Option<Py<PyAny>>) -> PyResult<Self> {
         if !selector.bind(py).is_callable() {
             return Err(PyValueError::new_err("human selector must be callable"));
         }
+        if observer
+            .as_ref()
+            .is_some_and(|callback| !callback.bind(py).is_callable())
+        {
+            return Err(PyValueError::new_err("human observer must be callable"));
+        }
         Ok(Self {
-            inner: PythonAgentConfig::Human(selector),
+            inner: PythonAgentConfig::Human { selector, observer },
         })
     }
 }
 
 struct PythonHumanAgent<'a> {
     selector: &'a Py<PyAny>,
+    observer: Option<&'a Py<PyAny>>,
 }
 
 #[pyfunction(name = "evaluate_game")]
@@ -176,6 +187,30 @@ impl Agent<TicTacToe> for PythonHumanAgent<'_> {
                 "human selected a cell that is not currently legal",
             ));
         }
+        if let Some(observer) = self.observer {
+            let mut state = decision.state().clone();
+            decision
+                .game()
+                .apply_action(&mut state, &action)
+                .map_err(|error| {
+                    AgentError::message(format!("failed to preview human action: {error}"))
+                })?;
+            let board: Vec<_> = state
+                .board()
+                .iter()
+                .map(|cell| cell.map(|occupant| occupant.index()))
+                .collect();
+            Python::attach(|py| -> PyResult<()> {
+                observer.bind(py).call1((
+                    player,
+                    board,
+                    py.None(),
+                    (action.row(), action.column()),
+                ))?;
+                Ok(())
+            })
+            .map_err(|error| AgentError::message(format!("human observer failed: {error}")))?;
+        }
         Ok(action)
     }
 }
@@ -209,6 +244,27 @@ impl Agent<ConnectFour> for PythonHumanAgent<'_> {
             return Err(AgentError::message(
                 "human selected a column that is not currently legal",
             ));
+        }
+        if let Some(observer) = self.observer {
+            let mut state = decision.state().clone();
+            decision
+                .game()
+                .apply_action(&mut state, &action)
+                .map_err(|error| {
+                    AgentError::message(format!("failed to preview human action: {error}"))
+                })?;
+            let board: Vec<_> = state
+                .board()
+                .iter()
+                .map(|cell| cell.map(|occupant| occupant.index()))
+                .collect();
+            Python::attach(|py| -> PyResult<()> {
+                observer
+                    .bind(py)
+                    .call1((player, board, py.None(), action.column()))?;
+                Ok(())
+            })
+            .map_err(|error| AgentError::message(format!("human observer failed: {error}")))?;
         }
         Ok(action)
     }
@@ -250,9 +306,43 @@ impl Agent<Boop> for PythonHumanAgent<'_> {
                 .extract()
         })
         .map_err(|error| AgentError::message(format!("human selector failed: {error}")))?;
-        legal_actions.get(selected).copied().ok_or_else(|| {
+        let action = legal_actions.get(selected).copied().ok_or_else(|| {
             AgentError::message("human selected an action index that is not currently legal")
-        })
+        })?;
+        if let Some(observer) = self.observer {
+            let mut state = decision.state().clone();
+            decision
+                .game()
+                .apply_action(&mut state, &action)
+                .map_err(|error| {
+                    AgentError::message(format!("failed to preview human action: {error}"))
+                })?;
+            let board: Vec<_> = state
+                .board()
+                .iter()
+                .map(|cell| {
+                    cell.map(|piece| {
+                        (
+                            piece.owner().index(),
+                            boop_piece_name(piece.kind()).to_owned(),
+                        )
+                    })
+                })
+                .collect();
+            let pools: Vec<_> = state
+                .pools()
+                .iter()
+                .map(|pool| (pool.kittens(), pool.cats()))
+                .collect();
+            Python::attach(|py| -> PyResult<()> {
+                observer
+                    .bind(py)
+                    .call1((player, board, pools, native_boop_action(&action)))?;
+                Ok(())
+            })
+            .map_err(|error| AgentError::message(format!("human observer failed: {error}")))?;
+        }
+        Ok(action)
     }
 }
 
@@ -274,15 +364,29 @@ fn py_run_match(
         (PythonAgentConfig::Automated(first), PythonAgentConfig::Automated(second)) => {
             run_match_with_trace(game, *first, *second, config)
         }
-        (PythonAgentConfig::Human(first), PythonAgentConfig::Automated(second)) => {
-            run_with_human_first(game, first, *second, config)
+        (PythonAgentConfig::Human { selector, observer }, PythonAgentConfig::Automated(second)) => {
+            run_with_human_first(game, selector, observer.as_ref(), *second, config)
         }
-        (PythonAgentConfig::Automated(first), PythonAgentConfig::Human(second)) => {
-            run_with_human_second(game, *first, second, config)
+        (PythonAgentConfig::Automated(first), PythonAgentConfig::Human { selector, observer }) => {
+            run_with_human_second(game, *first, selector, observer.as_ref(), config)
         }
-        (PythonAgentConfig::Human(first), PythonAgentConfig::Human(second)) => {
-            run_with_two_humans(game, first, second, config)
-        }
+        (
+            PythonAgentConfig::Human {
+                selector: first,
+                observer: first_observer,
+            },
+            PythonAgentConfig::Human {
+                selector: second,
+                observer: second_observer,
+            },
+        ) => run_with_two_humans(
+            game,
+            first,
+            first_observer.as_ref(),
+            second,
+            second_observer.as_ref(),
+            config,
+        ),
     }
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
 
@@ -381,10 +485,14 @@ fn py_run_match(
 fn run_with_human_first(
     game: GameId,
     first: &Py<PyAny>,
+    observer: Option<&Py<PyAny>>,
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
-    let mut first = PythonHumanAgent { selector: first };
+    let mut first = PythonHumanAgent {
+        selector: first,
+        observer,
+    };
     match (game, second) {
         (GameId::Boop, AgentConfig::Random) => {
             run_boop_match_with_trace(&mut first, &mut RandomAgent, config)
@@ -415,9 +523,13 @@ fn run_with_human_second(
     game: GameId,
     first: AgentConfig,
     second: &Py<PyAny>,
+    observer: Option<&Py<PyAny>>,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
-    let mut second = PythonHumanAgent { selector: second };
+    let mut second = PythonHumanAgent {
+        selector: second,
+        observer,
+    };
     match (game, first) {
         (GameId::Boop, AgentConfig::Random) => {
             run_boop_match_with_trace(&mut RandomAgent, &mut second, config)
@@ -447,23 +559,43 @@ fn run_with_human_second(
 fn run_with_two_humans(
     game: GameId,
     first: &Py<PyAny>,
+    first_observer: Option<&Py<PyAny>>,
     second: &Py<PyAny>,
+    second_observer: Option<&Py<PyAny>>,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
     match game {
         GameId::Boop => run_boop_match_with_trace(
-            &mut PythonHumanAgent { selector: first },
-            &mut PythonHumanAgent { selector: second },
+            &mut PythonHumanAgent {
+                selector: first,
+                observer: first_observer,
+            },
+            &mut PythonHumanAgent {
+                selector: second,
+                observer: second_observer,
+            },
             config,
         ),
         GameId::ConnectFour => run_connect_four_match_with_trace(
-            &mut PythonHumanAgent { selector: first },
-            &mut PythonHumanAgent { selector: second },
+            &mut PythonHumanAgent {
+                selector: first,
+                observer: first_observer,
+            },
+            &mut PythonHumanAgent {
+                selector: second,
+                observer: second_observer,
+            },
             config,
         ),
         GameId::TicTacToe => run_tic_tac_toe_match_with_trace(
-            &mut PythonHumanAgent { selector: first },
-            &mut PythonHumanAgent { selector: second },
+            &mut PythonHumanAgent {
+                selector: first,
+                observer: first_observer,
+            },
+            &mut PythonHumanAgent {
+                selector: second,
+                observer: second_observer,
+            },
             config,
         ),
     }

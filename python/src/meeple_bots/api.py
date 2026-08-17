@@ -225,14 +225,31 @@ MoveSelector: TypeAlias = Callable[[HumanTurn], GameAction]
 
 
 @dataclass(frozen=True, slots=True)
+class HumanMoveObservation:
+    """State immediately after an accepted human action."""
+
+    game: Game
+    player: int
+    action: GameAction
+    board: GameBoard
+    pools: tuple[BoopPool, BoopPool] | None = None
+
+
+HumanMoveObserver: TypeAlias = Callable[[HumanMoveObservation], None]
+
+
+@dataclass(frozen=True, slots=True)
 class HumanAgent:
     """A player controlled by a Python function or an interactive terminal prompt."""
 
     select_action: MoveSelector = field(default=lambda turn: _prompt_human_action(turn))
+    observe_action: HumanMoveObserver | None = None
 
     def __post_init__(self) -> None:
         if not callable(self.select_action):
             raise TypeError("select_action must be callable")
+        if self.observe_action is not None and not callable(self.observe_action):
+            raise TypeError("observe_action must be callable")
 
 
 Agent: TypeAlias = RandomAgent | MctsAgent | HumanAgent
@@ -559,7 +576,10 @@ def _native_agent(agent: Agent, game: Game):
             agent.rollout_depth,
             agent.heuristic,
         )
-    return _native.AgentConfig.human(_human_selector(agent, game))
+    return _native.AgentConfig.human(
+        _human_selector(agent, game),
+        _human_move_observer(agent, game),
+    )
 
 
 def _non_negative_u32(name: str, value: int) -> None:
@@ -658,6 +678,50 @@ def _human_selector(agent: HumanAgent, game: Game):
     return select
 
 
+def _human_move_observer(agent: HumanAgent, game: Game):
+    if agent.observe_action is None:
+        return None
+
+    def observe(player: int, flat_board, native_pools, native_action) -> None:
+        if isinstance(game, TicTacToe):
+            board = _board_rows(flat_board, columns=3)
+            pools = None
+            action: GameAction = TicTacToeAction(
+                row=native_action[0],
+                column=native_action[1],
+            )
+        elif isinstance(game, ConnectFour):
+            board = _board_rows(flat_board, columns=7)
+            pools = None
+            action = ConnectFourAction(column=native_action)
+        else:
+            board = _board_rows(
+                [
+                    None
+                    if piece is None
+                    else BoopPiece(player=piece[0], kind=BoopPieceKind(piece[1]))
+                    for piece in flat_board
+                ],
+                columns=6,
+            )
+            pools = tuple(
+                BoopPool(kittens=kittens, cats=cats)
+                for kittens, cats in native_pools
+            )
+            action = _boop_action_from_selector(native_action)
+        agent.observe_action(
+            HumanMoveObservation(
+                game=game,
+                player=player,
+                action=action,
+                board=board,
+                pools=pools,
+            )
+        )
+
+    return observe
+
+
 def _board_rows(flat_board: list[BoardCell], columns: int) -> GameBoard:
     return tuple(
         tuple(flat_board[start : start + columns])
@@ -667,6 +731,7 @@ def _board_rows(flat_board: list[BoardCell], columns: int) -> GameBoard:
 
 def _prompt_human_action(turn: HumanTurn) -> GameAction:
     print(file=sys.stderr)
+    print(f"Current board before player {turn.player}'s move:", file=sys.stderr)
     print("    " + " ".join(str(column) for column in range(len(turn.board[0]))), file=sys.stderr)
     for row, cells in enumerate(turn.board):
         rendered = " ".join(_board_symbol(cell) for cell in cells)

@@ -25,6 +25,7 @@ from .api import (
     ConnectFourAction,
     GameEvaluationReport,
     HumanAgent,
+    HumanMoveObservation,
     Match,
     MatchResult,
     MctsAgent,
@@ -442,7 +443,7 @@ def _agent(
     if heuristic is not None and name != "mcts":
         raise ValueError(f"{option} requires the corresponding player to be MCTS")
     if name == "human":
-        return HumanAgent()
+        return HumanAgent(observe_action=_print_human_move)
     if name == "mcts":
         return MctsAgent(
             iterations=mcts.iterations,
@@ -548,6 +549,24 @@ def _print_board(board) -> None:
     print("    " + " ".join(str(column) for column in range(len(board[0]))))
     for row, cells in enumerate(board):
         print(f"{row} | " + " ".join(_piece_symbol(cell) for cell in cells))
+
+
+def _print_human_move(observation: HumanMoveObservation) -> None:
+    print(file=sys.stderr)
+    print(f"Board after player {observation.player}'s move:", file=sys.stderr)
+    print(
+        "    " + " ".join(str(column) for column in range(len(observation.board[0]))),
+        file=sys.stderr,
+    )
+    for row, cells in enumerate(observation.board):
+        rendered = " ".join(_piece_symbol(cell) for cell in cells)
+        print(f"{row} | {rendered}", file=sys.stderr)
+    if observation.pools is not None:
+        for player, pool in enumerate(observation.pools):
+            print(
+                f"Player {player} pool: {pool.kittens} kittens, {pool.cats} cats",
+                file=sys.stderr,
+            )
 
 
 def _piece_symbol(piece) -> str:
