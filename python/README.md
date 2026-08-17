@@ -174,9 +174,15 @@ The `match` command runs one game and prints its move history and final board.
 | `--mcts-iterations` | `1000` | Manual MCTS search iterations. |
 | `--mcts-exploration` | `sqrt(2)` | MCTS exploration constant. |
 | `--mcts-rollout-depth` | `256` | Manual rollout-depth limit. |
+| `--first-mcts-config PATH` | disabled | Load player 0 MCTS parameters from a TOML profile. |
+| `--second-mcts-config PATH` | disabled | Load player 1 MCTS parameters from a TOML profile. |
 | `--first-mcts-heuristic [INDEX]` | disabled | Player 0 heuristic; omitting `INDEX` selects `0`. |
 | `--second-mcts-heuristic [INDEX]` | disabled | Player 1 heuristic; omitting `INDEX` selects `0`. |
 | `--json` | disabled | Emit machine-readable output. |
+
+A profile supplies the complete MCTS configuration for its player. The shared manual MCTS options
+apply only to MCTS players without a profile. Do not combine a player's profile with that player's
+heuristic flag.
 
 Examples:
 
@@ -187,6 +193,8 @@ meeple-bots match --game boop --first human --second mcts \
   --mcts-iterations 50000 --mcts-rollout-depth 64
 meeple-bots match --game boop --first mcts --second mcts \
   --first-mcts-heuristic --second-mcts-heuristic 0
+meeple-bots match --game boop --first mcts --second human \
+  --first-mcts-config configs/mcts/heuristic.toml
 ```
 
 ### analyze
@@ -226,8 +234,9 @@ participant rather than by board position.
 | `--no-alternate-sides` | disabled | Keep A as player 0 in every match. |
 | `--json` | disabled | Emit the final report as JSON; progress remains on stderr. |
 
-Copy [`configs/mcts/template.toml`](../configs/mcts/template.toml) for each MCTS configuration. A
-profile is a TOML text file:
+The `match` and `batch` commands share the same MCTS profiles. Copy
+[`configs/mcts/template.toml`](../configs/mcts/template.toml) for each configuration. A profile is a
+TOML text file:
 
 ```toml
 name = "boop-baseline"
@@ -243,15 +252,15 @@ Random against MCTS:
 ```bash
 meeple-bots batch --game boop --matches 20 \
   --agent-a random --agent-b mcts \
-  --agent-b-config configs/mcts/boop-baseline.toml --seed 42
+  --agent-b-config configs/mcts/template.toml --seed 42
 ```
 
 Two MCTS profiles against each other:
 
 ```bash
 meeple-bots batch --game boop --matches 20 \
-  --agent-a mcts --agent-a-config configs/mcts/boop-baseline.toml \
-  --agent-b mcts --agent-b-config configs/mcts/boop-heuristic.toml \
+  --agent-a mcts --agent-a-config configs/mcts/template.toml \
+  --agent-b mcts --agent-b-config configs/mcts/heuristic.toml \
   --seed 42 --json
 ```
 

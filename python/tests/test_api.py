@@ -444,6 +444,84 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("requires the corresponding player to be MCTS", errors.getvalue())
 
+    def test_cli_match_loads_an_mcts_profile(self) -> None:
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory, "match-profile.toml")
+            profile.write_text(
+                '\n'.join(
+                    [
+                        'name = "match-mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        "use_heuristic = true",
+                        "heuristic_index = 0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "match",
+                        "--game",
+                        "boop",
+                        "--first",
+                        "mcts",
+                        "--second",
+                        "random",
+                        "--first-mcts-config",
+                        str(profile),
+                        "--seed",
+                        "9",
+                        "--json",
+                    ]
+                )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["players"][0]["heuristic"], 0)
+
+    def test_cli_match_rejects_a_profile_for_a_non_mcts_player(self) -> None:
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            exit_code = main(
+                [
+                    "match",
+                    "--first",
+                    "random",
+                    "--first-mcts-config",
+                    "profile.toml",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn(
+            "--first-mcts-config requires the corresponding player to be MCTS",
+            errors.getvalue(),
+        )
+
+    def test_cli_match_rejects_a_profile_and_heuristic_for_the_same_player(
+        self,
+    ) -> None:
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            exit_code = main(
+                [
+                    "match",
+                    "--first-mcts-config",
+                    "profile.toml",
+                    "--first-mcts-heuristic",
+                    "0",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn(
+            "--first-mcts-config cannot be combined with --first-mcts-heuristic",
+            errors.getvalue(),
+        )
+
     def test_cli_analyze_returns_simple_evaluation_json(self) -> None:
         output = io.StringIO()
         with redirect_stdout(output):

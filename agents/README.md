@@ -73,7 +73,7 @@ an error. Future boop variants can use indices `1`, `2`, and so on without chang
 
 ### Reusable profiles
 
-Batch simulations load MCTS parameters from TOML text files. Copy the provided
+CLI matches and batch simulations load MCTS parameters from TOML text files. Copy the provided
 [`template.toml`](../configs/mcts/template.toml) and edit its values:
 
 ```toml

@@ -49,6 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     match.add_argument("--mcts-iterations", type=int)
     match.add_argument("--mcts-exploration", type=float, default=sqrt_two())
     match.add_argument("--mcts-rollout-depth", type=int)
+    match.add_argument("--first-mcts-config", type=Path)
+    match.add_argument("--second-mcts-config", type=Path)
     match.add_argument(
         "--first-mcts-heuristic",
         nargs="?",
@@ -120,16 +122,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_batch(args, game)
 
         mcts = _mcts_configuration(args)
-        first = _agent(
+        first = _match_agent(
             args.first,
+            args.first_mcts_config,
             mcts,
             args.first_mcts_heuristic,
+            "--first-mcts-config",
             "--first-mcts-heuristic",
         )
-        second = _agent(
+        second = _match_agent(
             args.second,
+            args.second_mcts_config,
             mcts,
             args.second_mcts_heuristic,
+            "--second-mcts-config",
             "--second-mcts-heuristic",
         )
         result = Match(
@@ -408,6 +414,23 @@ def _mcts_configuration(args: argparse.Namespace) -> MctsAgent:
             256 if args.mcts_rollout_depth is None else args.mcts_rollout_depth
         ),
     )
+
+
+def _match_agent(
+    name: str,
+    config_path: Path | None,
+    manual_mcts: MctsAgent,
+    heuristic: int | None,
+    config_option: str,
+    heuristic_option: str,
+) -> HumanAgent | MctsAgent | RandomAgent:
+    if config_path is None:
+        return _agent(name, manual_mcts, heuristic, heuristic_option)
+    if name != "mcts":
+        raise ValueError(f"{config_option} requires the corresponding player to be MCTS")
+    if heuristic is not None:
+        raise ValueError(f"{config_option} cannot be combined with {heuristic_option}")
+    return _load_mcts_profile(config_path).agent
 
 
 def _agent(
