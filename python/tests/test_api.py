@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import tempfile
@@ -799,6 +800,163 @@ class MatchApiTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertIn("agent names must be unique", errors.getvalue())
+
+    def test_cli_extracts_analysis_tables_from_a_boop_tournament(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = self._create_small_boop_tournament(root)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["extract", "--input", str(trace), "--json"])
+
+            summary = json.loads(output.getvalue())
+            output_dir = Path(summary["output_dir"])
+            manifest = json.loads((output_dir / "manifest.json").read_text())
+            matches = self._read_csv(output_dir / "matches.csv")
+            boop_matches = self._read_csv(output_dir / "boop_matches.csv")
+            turns = self._read_csv(output_dir / "turns.csv")
+            agents = self._read_csv(output_dir / "agents.csv")
+            boops = self._read_csv(output_dir / "boops.csv")
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(summary["complete"])
+            self.assertEqual(summary["processed_matches"], 1)
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(len(boop_matches), 1)
+            self.assertEqual(boop_matches[0]["match_number"], matches[0]["match_number"])
+            self.assertNotIn("win_by_cat_line", matches[0])
+            self.assertIn("win_by_cat_line", boop_matches[0])
+            self.assertEqual(len(agents), 2)
+            self.assertEqual(len(turns), int(matches[0]["plies"]))
+            self.assertEqual(manifest["row_counts"]["turns"], len(turns))
+            self.assertEqual(manifest["row_counts"]["boops"], len(boops))
+            self.assertTrue({turn["zone"] for turn in turns} <= {"center", "middle", "outer"})
+            self.assertEqual(turns[0]["strategic_phase"], "all_kittens")
+            self.assertEqual(turns[-1]["terminal_after"], "True")
+            for filename in (
+                "resolutions.csv",
+                "winning_lines.csv",
+            ):
+                self.assertTrue((output_dir / filename).is_file())
+            for filename in (
+                "agents.csv",
+                "matches.csv",
+                "boop_matches.csv",
+                "turns.csv",
+                "boops.csv",
+                "resolutions.csv",
+                "winning_lines.csv",
+            ):
+                with Path(output_dir, filename).open(encoding="utf-8", newline="") as source:
+                    header = next(csv.reader(source))
+                self.assertEqual(len(header), len(set(header)), filename)
+
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                repeated_exit = main(["extract", "--input", str(trace)])
+            self.assertEqual(repeated_exit, 1)
+            self.assertIn("--overwrite", errors.getvalue())
+            with redirect_stdout(io.StringIO()):
+                overwritten_exit = main(
+                    ["extract", "--input", str(trace), "--overwrite"]
+                )
+            self.assertEqual(overwritten_exit, 0)
+
+    def test_cli_extract_accepts_a_partial_trace_and_ignores_a_truncated_tail(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            complete_trace = self._create_small_boop_tournament(root)
+            records = complete_trace.read_text(encoding="utf-8").splitlines()
+            header = json.loads(records[0])
+            header["total_matches"] = 2
+            partial_trace = root / "partial.jsonl"
+            partial_trace.write_text(
+                json.dumps(header) + "\n" + records[1] + "\n" + '{"record_type"',
+                encoding="utf-8",
+            )
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    ["extract", "--input", str(partial_trace), "--json"]
+                )
+            summary = json.loads(output.getvalue())
+            manifest = json.loads(
+                Path(summary["output_dir"], "manifest.json").read_text()
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(summary["processed_matches"], 1)
+            self.assertFalse(summary["complete"])
+            self.assertTrue(summary["truncated_last_line"])
+            self.assertFalse(manifest["complete"])
+
+    def test_cli_extract_reports_games_without_an_analyzer_before_creating_output(
+        self,
+    ) -> None:
+        for game in ("connect-four", "tic-tac-toe"):
+            with self.subTest(game=game), tempfile.TemporaryDirectory() as directory:
+                trace = Path(directory, f"{game}.jsonl")
+                trace.write_text(
+                    json.dumps(
+                        {
+                            "record_type": "tournament",
+                            "schema_version": 1,
+                            "game": game,
+                            "total_matches": 0,
+                            "agents": [],
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                errors = io.StringIO()
+                with redirect_stderr(errors):
+                    exit_code = main(["extract", "--input", str(trace)])
+
+                self.assertEqual(exit_code, 1)
+                self.assertIn(
+                    f"tournament analysis is not available for {game}",
+                    errors.getvalue(),
+                )
+                self.assertFalse(Path(directory, f"{game}-data").exists())
+
+    @staticmethod
+    def _create_small_boop_tournament(root: Path) -> Path:
+        config = root / "boop-tournament.toml"
+        trace = root / "boop-study.jsonl"
+        config.write_text(
+            "\n".join(
+                [
+                    'game = "boop"',
+                    'output = "boop-study.jsonl"',
+                    "matches_per_pair = 1",
+                    "seed = 91",
+                    "max_plies = 1000",
+                    "",
+                    "[[agents]]",
+                    'name = "alpha"',
+                    'kind = "random"',
+                    "",
+                    "[[agents]]",
+                    'name = "beta"',
+                    'kind = "random"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            exit_code = main(["tournament", "--config", str(config)])
+        if exit_code != 0:
+            raise AssertionError("failed to create the boop extraction fixture")
+        return trace
+
+    @staticmethod
+    def _read_csv(path: Path) -> list[dict[str, str]]:
+        with path.open(encoding="utf-8", newline="") as source:
+            return list(csv.DictReader(source))
 
 
 if __name__ == "__main__":

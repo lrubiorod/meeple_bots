@@ -3,10 +3,13 @@
 use std::{error::Error, fmt, num::NonZeroU32};
 
 use meeple_bots_boop::{
-    Boop, BoopAction, PieceKind as BoopPieceKind, Resolution as BoopResolution,
+    Boop, BoopAction, BoopReplayAnalysis, GraduateLine, PieceKind as BoopPieceKind,
+    Position as BoopPosition, Resolution as BoopResolution, analyze_replay as analyze_boop_replay,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
-use meeple_bots_core::{Agent, AgentError, DecisionContext, Game, HeuristicGame, RandomSource};
+use meeple_bots_core::{
+    Agent, AgentError, DecisionContext, Game, HeuristicGame, PlayerId, RandomSource,
+};
 use meeple_bots_evaluation::evaluate_game as evaluate_typed_game;
 pub use meeple_bots_evaluation::{EvaluationConfig, EvaluationError, GameEvaluationReport};
 pub use meeple_bots_mcts_agent::MctsConfig;
@@ -104,6 +107,11 @@ pub struct CatalogMatchReport {
     pub pools: Option<[CatalogPool; 2]>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatalogTraceAnalysis {
+    Boop(BoopReplayAnalysis),
+}
+
 #[derive(Debug)]
 pub enum CatalogError {
     Match(MatchError),
@@ -112,6 +120,11 @@ pub enum CatalogError {
         game: GameId,
         index: u32,
         available: u32,
+    },
+    AnalysisUnavailable(GameId),
+    InvalidTrace {
+        game: GameId,
+        message: String,
     },
 }
 
@@ -135,6 +148,20 @@ impl fmt::Display for CatalogError {
                         available - 1
                     )
                 }
+            }
+            Self::AnalysisUnavailable(game) => {
+                write!(
+                    formatter,
+                    "tournament analysis is not available for {}",
+                    game_name(*game)
+                )
+            }
+            Self::InvalidTrace { game, message } => {
+                write!(
+                    formatter,
+                    "invalid {} tournament trace: {message}",
+                    game_name(*game)
+                )
             }
         }
     }
@@ -164,6 +191,78 @@ pub fn evaluate_game(
         GameId::TicTacToe => evaluate_typed_game(&TicTacToe, config),
     }?;
     Ok(report)
+}
+
+pub fn analyze_trace(
+    game: GameId,
+    moves: &[RecordedMove],
+) -> Result<CatalogTraceAnalysis, CatalogError> {
+    match game {
+        GameId::Boop => {
+            let actions = moves
+                .iter()
+                .enumerate()
+                .map(|(index, movement)| {
+                    let player = u8::try_from(movement.player)
+                        .ok()
+                        .filter(|player| *player < 2)
+                        .map(PlayerId::new)
+                        .ok_or_else(|| invalid_trace(game, index, "player must be 0 or 1"))?;
+                    let action = catalog_boop_action(&movement.action)
+                        .map_err(|message| invalid_trace(game, index, message))?;
+                    Ok((player, action))
+                })
+                .collect::<Result<Vec<_>, CatalogError>>()?;
+            analyze_boop_replay(&actions)
+                .map(CatalogTraceAnalysis::Boop)
+                .map_err(|error| CatalogError::InvalidTrace {
+                    game,
+                    message: error.to_string(),
+                })
+        }
+        GameId::ConnectFour | GameId::TicTacToe => Err(CatalogError::AnalysisUnavailable(game)),
+    }
+}
+
+fn invalid_trace(game: GameId, index: usize, message: impl fmt::Display) -> CatalogError {
+    CatalogError::InvalidTrace {
+        game,
+        message: format!("ply {}: {message}", index + 1),
+    }
+}
+
+fn catalog_boop_action(action: &CatalogAction) -> Result<BoopAction, &'static str> {
+    let CatalogAction::Boop {
+        piece,
+        row,
+        column,
+        resolution,
+    } = action
+    else {
+        return Err("expected a boop action");
+    };
+    let piece = match piece {
+        CatalogBoopPieceKind::Kitten => BoopPieceKind::Kitten,
+        CatalogBoopPieceKind::Cat => BoopPieceKind::Cat,
+    };
+    let position = BoopPosition::new(*row, *column).ok_or("placement is outside the board")?;
+    let resolution = match resolution {
+        CatalogBoopResolution::None => BoopResolution::None,
+        CatalogBoopResolution::Graduate { positions } => {
+            let positions = positions.map(|(row, column)| BoopPosition::new(row, column));
+            let [Some(first), Some(second), Some(third)] = positions else {
+                return Err("graduation contains a position outside the board");
+            };
+            BoopResolution::Graduate(
+                GraduateLine::new([first, second, third])
+                    .ok_or("graduation positions do not form a valid line")?,
+            )
+        }
+        CatalogBoopResolution::Recover { row, column } => BoopResolution::Recover(
+            BoopPosition::new(*row, *column).ok_or("recovery is outside the board")?,
+        ),
+    };
+    Ok(BoopAction::new(piece, position, resolution))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -849,6 +948,27 @@ mod tests {
             movement.action,
             CatalogAction::Boop { row, column, .. } if row < 6 && column < 6
         )));
+    }
+
+    #[test]
+    fn trace_analysis_dispatches_to_boop_and_rejects_unimplemented_games() {
+        let report = run_match_with_trace(
+            GameId::Boop,
+            AgentConfig::Random,
+            AgentConfig::Random,
+            MatchConfig::default(),
+        )
+        .unwrap();
+        let expected_winner = report.winner.unwrap();
+        let CatalogTraceAnalysis::Boop(analysis) =
+            analyze_trace(GameId::Boop, &report.moves).unwrap();
+        assert_eq!(analysis.winner.index(), expected_winner);
+
+        let unavailable = analyze_trace(GameId::ConnectFour, &[]).unwrap_err();
+        assert_eq!(
+            unavailable.to_string(),
+            "tournament analysis is not available for connect-four"
+        );
     }
 
     #[test]

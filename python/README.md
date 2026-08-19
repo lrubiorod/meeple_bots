@@ -327,3 +327,37 @@ Run large studies with a release build of the native extension. The provided
 [`boop-study.toml`](../configs/tournaments/boop-study.toml) contains Random plus 100, 1,000, and
 10,000-iteration MCTS agents with and without heuristic 0. The two 10,000-iteration agents also run
 self-play, producing 23 pairings and 460 matches with the default 20 matches per pairing.
+
+### extract
+
+The `extract` command reads the game from a tournament header, selects its Rust trace analyzer, and
+writes analysis-ready CSV tables without running the agents or their MCTS searches again:
+
+```bash
+meeple-bots extract \
+  --input results/tournaments/boop-study.jsonl
+```
+
+By default, this creates `results/tournaments/boop-study-data/`. Use `--output-dir PATH` to choose
+another directory. Existing extraction files are protected unless `--overwrite` is supplied.
+
+Every supported game receives common tournament tables:
+
+- `manifest.json`: source, schema, completeness, zone definitions, and row counts.
+- `agents.csv`: one row per configured tournament agent.
+- `matches.csv`: game-independent outcomes, sides, duration, and utilities.
+
+The boop analyzer additionally produces:
+
+- `boop_matches.csv`: first graduation and winning mechanism for each match.
+- `turns.csv`: placements, phases, zones, resolutions, boop totals, and state metrics.
+- `boops.csv`: one row per adjacent piece interaction.
+- `resolutions.csv`: one row per graduation or eight-piece recovery.
+- `winning_lines.csv`: positions and orientations of final cat lines.
+
+Extraction is streaming and accepts an interrupted or still-growing study. It processes every
+complete match available and marks `complete` as false in the manifest when the declared match
+count has not been reached. A truncated final JSONL line is ignored and reported; malformed lines
+elsewhere are rejected. Tournament schema version 1 is supported. Boop currently provides the only
+game-specific analyzer; Connect Four and tic-tac-toe are recognized but report that tournament
+analysis is not available until their analyzers are implemented.

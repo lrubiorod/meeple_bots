@@ -35,6 +35,7 @@ from .api import (
     TicTacToeAction,
     evaluate_game,
 )
+from .extraction import extract_tournament
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -105,6 +106,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tournament.add_argument("--json", action="store_true", help="print summary as JSON")
 
+    extract = commands.add_parser(
+        "extract",
+        help="extract game-specific analysis tables from a tournament trace",
+    )
+    extract.add_argument("--input", type=Path, required=True)
+    extract.add_argument(
+        "--output-dir",
+        type=Path,
+        help="write tables here instead of beside the tournament trace",
+    )
+    extract.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace known extraction files that already exist",
+    )
+    extract.add_argument("--json", action="store_true", help="print summary as JSON")
+
     analyze = commands.add_parser("analyze", help="measure game complexity and calibrate MCTS")
     analyze.add_argument(
         "--game", choices=["boop", "connect-four", "tic-tac-toe"], required=True
@@ -126,6 +144,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "tournament":
             return _run_tournament(args)
+        if args.command == "extract":
+            summary = extract_tournament(
+                args.input,
+                args.output_dir,
+                overwrite=args.overwrite,
+            )
+            if args.json:
+                print(json.dumps(summary, indent=2))
+            else:
+                _print_extraction_summary(summary)
+            return 0
         game = _game(args.game)
         if args.command == "analyze":
             report = evaluate_game(
@@ -180,6 +209,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         _print_result(result, args.first, args.second, first, second)
     return 0
+
+
+def _print_extraction_summary(summary: dict[str, object]) -> None:
+    print(f"Input: {summary['input']}")
+    print(f"Output directory: {summary['output_dir']}")
+    print(
+        f"Matches: {summary['processed_matches']}/{summary['declared_matches']} "
+        f"({'complete' if summary['complete'] else 'partial'})"
+    )
+    print(f"Rows: {summary['row_counts']}")
 
 
 @dataclass(frozen=True, slots=True)

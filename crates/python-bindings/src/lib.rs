@@ -2,13 +2,17 @@
 
 use std::num::NonZeroU32;
 
-use meeple_bots_boop::{Boop, BoopAction, PieceKind as BoopPieceKind, Resolution};
+use meeple_bots_boop::{
+    BoardZone, Boop, BoopAction, BoopInteractionOutcome, BoopStateMetrics, GraduateLine,
+    LineOrientation, PieceKind as BoopPieceKind, Resolution, StrategicPhase,
+};
 use meeple_bots_catalog::{
     AgentConfig, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution, CatalogError,
-    CatalogMatchReport, CatalogPieceKind, EvaluationConfig, GameId, MatchConfig, MctsAgentConfig,
-    MctsConfig, configured_boop_mcts, configured_connect_four_mcts, configured_tic_tac_toe_mcts,
-    evaluate_game, run_boop_match_with_trace, run_connect_four_match_with_trace,
-    run_match_with_trace, run_tic_tac_toe_match_with_trace,
+    CatalogMatchReport, CatalogPieceKind, CatalogTraceAnalysis, EvaluationConfig, GameId,
+    MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, analyze_trace, configured_boop_mcts,
+    configured_connect_four_mcts, configured_tic_tac_toe_mcts, evaluate_game,
+    run_boop_match_with_trace, run_connect_four_match_with_trace, run_match_with_trace,
+    run_tic_tac_toe_match_with_trace,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{Agent, AgentError, DecisionContext, Game, RandomSource};
@@ -482,6 +486,225 @@ fn py_run_match(
     Ok(result.unbind())
 }
 
+#[pyfunction(name = "analyze_trace")]
+fn py_analyze_trace(py: Python<'_>, game: &str, moves: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let game = parse_game(game)?;
+    let recorded = match game {
+        GameId::Boop => moves
+            .extract::<Vec<(u8, NativeBoopAction)>>()?
+            .into_iter()
+            .map(|(player, action)| {
+                Ok(RecordedMove {
+                    player: usize::from(player),
+                    action: parse_native_catalog_boop_action(action)?,
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?,
+        GameId::ConnectFour | GameId::TicTacToe => {
+            return Err(PyValueError::new_err(
+                analyze_trace(game, &[])
+                    .expect_err("games without analysis return an error")
+                    .to_string(),
+            ));
+        }
+    };
+    let analysis =
+        analyze_trace(game, &recorded).map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let CatalogTraceAnalysis::Boop(analysis) = analysis;
+
+    let result = PyDict::new(py);
+    result.set_item("winner", analysis.winner.index())?;
+    result.set_item("winner_has_cat_line", analysis.winner_has_cat_line)?;
+    result.set_item("winner_has_eight_cats", analysis.winner_has_eight_cats)?;
+
+    let turns = PyList::empty(py);
+    for turn in analysis.turns {
+        let item = PyDict::new(py);
+        item.set_item("ply", turn.ply)?;
+        item.set_item("player", turn.player.index())?;
+        item.set_item("zone", board_zone_name(turn.zone))?;
+        item.set_item("phase", strategic_phase_name(turn.phase))?;
+        item.set_item("before", serialize_boop_state_metrics(py, turn.before)?)?;
+        item.set_item("after", serialize_boop_state_metrics(py, turn.after)?)?;
+        item.set_item("terminal_after", turn.terminal_after)?;
+
+        let interactions = PyList::empty(py);
+        for (interaction_index, interaction) in turn.interactions.into_iter().enumerate() {
+            let serialized = PyDict::new(py);
+            serialized.set_item("interaction_number", interaction_index + 1)?;
+            serialized.set_item("target_player", interaction.target.owner().index())?;
+            serialized.set_item("target_piece", boop_piece_name(interaction.target.kind()))?;
+            serialized.set_item("origin_row", interaction.origin.row())?;
+            serialized.set_item("origin_column", interaction.origin.column())?;
+            serialized.set_item("destination_row", interaction.destination_row)?;
+            serialized.set_item("destination_column", interaction.destination_column)?;
+            serialized.set_item("outcome", interaction_outcome_name(interaction.outcome))?;
+            interactions.append(serialized)?;
+        }
+        item.set_item("interactions", interactions)?;
+
+        match turn.resolution {
+            None => item.set_item("resolution", py.None())?,
+            Some(resolution) => {
+                let serialized = PyDict::new(py);
+                serialized.set_item("kittens_promoted", resolution.kittens_promoted)?;
+                serialized.set_item("cats_recycled", resolution.cats_recycled)?;
+                serialized.set_item(
+                    "recovered_piece",
+                    resolution.recovered_piece.map(boop_piece_name),
+                )?;
+                serialized.set_item(
+                    "orientation",
+                    resolution.orientation.map(line_orientation_name),
+                )?;
+                match resolution.resolution {
+                    Resolution::Graduate(line) => {
+                        serialized.set_item("type", "graduate")?;
+                        serialized.set_item("positions", native_line_positions(line))?;
+                    }
+                    Resolution::Recover(position) => {
+                        serialized.set_item("type", "recover")?;
+                        serialized
+                            .set_item("positions", vec![(position.row(), position.column())])?;
+                    }
+                    Resolution::None => unreachable!("analyzed resolution is not none"),
+                }
+                item.set_item("resolution", serialized)?;
+            }
+        }
+        turns.append(item)?;
+    }
+    result.set_item("turns", turns)?;
+
+    let winning_lines = PyList::empty(py);
+    for (line_index, winning_line) in analysis.winning_lines.into_iter().enumerate() {
+        let item = PyDict::new(py);
+        item.set_item("line_number", line_index + 1)?;
+        item.set_item("player", winning_line.player.index())?;
+        item.set_item(
+            "orientation",
+            line_orientation_name(winning_line.orientation),
+        )?;
+        item.set_item("positions", native_line_positions(winning_line.line))?;
+        winning_lines.append(item)?;
+    }
+    result.set_item("winning_lines", winning_lines)?;
+
+    Ok(result.unbind())
+}
+
+fn parse_native_catalog_boop_action(action: NativeBoopAction) -> PyResult<CatalogAction> {
+    let (piece, row, column, (resolution_type, positions)) = action;
+    let piece = match piece.as_str() {
+        "kitten" => CatalogBoopPieceKind::Kitten,
+        "cat" => CatalogBoopPieceKind::Cat,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "unknown boop piece: {piece}"
+            )));
+        }
+    };
+    let resolution = match resolution_type.as_str() {
+        "none" if positions.is_empty() => CatalogBoopResolution::None,
+        "graduate" if positions.len() == 3 => CatalogBoopResolution::Graduate {
+            positions: positions.try_into().expect("graduation length was checked"),
+        },
+        "recover" if positions.len() == 1 => {
+            let (row, column) = positions[0];
+            CatalogBoopResolution::Recover { row, column }
+        }
+        "none" => {
+            return Err(PyValueError::new_err(
+                "none resolution must not contain positions",
+            ));
+        }
+        "graduate" => {
+            return Err(PyValueError::new_err(
+                "graduate resolution must contain three positions",
+            ));
+        }
+        "recover" => {
+            return Err(PyValueError::new_err(
+                "recover resolution must contain one position",
+            ));
+        }
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "unknown boop resolution: {resolution_type}"
+            )));
+        }
+    };
+    Ok(CatalogAction::Boop {
+        piece,
+        row,
+        column,
+        resolution,
+    })
+}
+
+fn serialize_boop_state_metrics(py: Python<'_>, metrics: BoopStateMetrics) -> PyResult<Py<PyDict>> {
+    let result = PyDict::new(py);
+    let players = PyList::empty(py);
+    for player in metrics.players {
+        let item = PyDict::new(py);
+        item.set_item("pool_kittens", player.pool_kittens)?;
+        item.set_item("pool_cats", player.pool_cats)?;
+        item.set_item("board_kittens", player.board_kittens)?;
+        item.set_item("board_cats", player.board_cats)?;
+        item.set_item("total_cats", player.total_cats())?;
+        item.set_item("center_pieces", player.center_pieces)?;
+        item.set_item("middle_pieces", player.middle_pieces)?;
+        item.set_item("outer_pieces", player.outer_pieces)?;
+        players.append(item)?;
+    }
+    result.set_item("players", players)?;
+    result.set_item("empty_center", metrics.empty_center)?;
+    result.set_item("empty_middle", metrics.empty_middle)?;
+    result.set_item("empty_outer", metrics.empty_outer)?;
+    Ok(result.unbind())
+}
+
+fn native_line_positions(line: GraduateLine) -> Vec<(u8, u8)> {
+    line.positions()
+        .into_iter()
+        .map(|position| (position.row(), position.column()))
+        .collect()
+}
+
+const fn board_zone_name(zone: BoardZone) -> &'static str {
+    match zone {
+        BoardZone::Center => "center",
+        BoardZone::Middle => "middle",
+        BoardZone::Outer => "outer",
+    }
+}
+
+const fn strategic_phase_name(phase: StrategicPhase) -> &'static str {
+    match phase {
+        StrategicPhase::AllKittens => "all_kittens",
+        StrategicPhase::OnePlayerHasCats => "one_player_has_cats",
+        StrategicPhase::BothPlayersHaveCats => "both_players_have_cats",
+    }
+}
+
+const fn line_orientation_name(orientation: LineOrientation) -> &'static str {
+    match orientation {
+        LineOrientation::Horizontal => "horizontal",
+        LineOrientation::Vertical => "vertical",
+        LineOrientation::DiagonalDown => "diagonal_down",
+        LineOrientation::DiagonalUp => "diagonal_up",
+    }
+}
+
+const fn interaction_outcome_name(outcome: BoopInteractionOutcome) -> &'static str {
+    match outcome {
+        BoopInteractionOutcome::Moved => "moved",
+        BoopInteractionOutcome::OffBoard => "off_board",
+        BoopInteractionOutcome::Blocked => "blocked",
+        BoopInteractionOutcome::Immune => "immune",
+    }
+}
+
 fn run_with_human_first(
     game: GameId,
     first: &Py<PyAny>,
@@ -654,5 +877,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAgentConfig>()?;
     module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;
     module.add_function(wrap_pyfunction!(py_run_match, module)?)?;
+    module.add_function(wrap_pyfunction!(py_analyze_trace, module)?)?;
     Ok(())
 }

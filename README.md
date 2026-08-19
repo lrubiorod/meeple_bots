@@ -74,6 +74,17 @@ The provided study compares Random with 100, 1,000, and 10,000-iteration MCTS ag
 without boop heuristic 0. See the [Python interface](python/README.md#tournament) for the TOML
 schema, self-play options, and JSONL output.
 
+Replay the recorded matches with the analyzer registered for their game and extract CSV tables for
+later statistics and plots:
+
+```bash
+python -m meeple_bots extract \
+  --input results/tournaments/boop-study.jsonl
+```
+
+See the [extraction guide](python/README.md#extract) for the generated table schemas and partial
+study behavior.
+
 ## Game evaluation
 
 Measure a game's initial actions, typical depth, effective branching, approximate game-tree size,

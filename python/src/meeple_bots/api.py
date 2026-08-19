@@ -566,6 +566,41 @@ def _action_from_native(raw: dict[str, object]) -> GameAction:
     )
 
 
+def _analyze_trace(game: Game, moves: tuple[Move, ...]):
+    """Dispatch a completed trace to the selected game's native analyzer."""
+
+    native_moves = []
+    if isinstance(game, Boop):
+        for move in moves:
+            if not isinstance(move.action, BoopAction):
+                raise TypeError("boop trace contains a non-boop action")
+            resolution = move.action.resolution
+            if isinstance(resolution, BoopGraduateLine):
+                native_resolution = (
+                    "graduate",
+                    [(position.row, position.column) for position in resolution.positions],
+                )
+            elif isinstance(resolution, BoopRecoverPiece):
+                native_resolution = (
+                    "recover",
+                    [(resolution.position.row, resolution.position.column)],
+                )
+            else:
+                native_resolution = ("none", [])
+            native_moves.append(
+                (
+                    move.player,
+                    (
+                        move.action.piece.value,
+                        move.action.row,
+                        move.action.column,
+                        native_resolution,
+                    ),
+                )
+            )
+    return _native.analyze_trace(_native_game(game), native_moves)
+
+
 def _native_agent(agent: Agent, game: Game):
     if isinstance(agent, RandomAgent):
         return _native.AgentConfig.random()
