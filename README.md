@@ -85,6 +85,18 @@ python -m meeple_bots extract \
 See the [extraction guide](python/README.md#extract) for the generated table schemas and partial
 study behavior.
 
+Install the optional reporting dependencies and turn those tables into a reproducible Boop report:
+
+```bash
+python -m pip install -e ".[report]"
+python -m meeple_bots report \
+  --input results/tournaments/boop-study/data
+```
+
+The trace remains at `boop-study.jsonl`; extracted tables and report artifacts are grouped under
+`boop-study/data/` and `boop-study/report/`. The report contains an HTML overview, reusable PNG
+figures, aggregate CSV tables, and a machine-readable summary.
+
 ## Game evaluation
 
 Measure a game's initial actions, typical depth, effective branching, approximate game-tree size,

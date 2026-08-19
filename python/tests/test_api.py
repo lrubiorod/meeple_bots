@@ -1,5 +1,6 @@
 import csv
 import io
+import importlib.util
 import json
 import tempfile
 import unittest
@@ -26,9 +27,25 @@ from meeple_bots import (
     evaluate_game,
 )
 from meeple_bots.cli import main
+from meeple_bots.reporting import wilson_interval
+
+
+REPORT_DEPENDENCIES_AVAILABLE = all(
+    importlib.util.find_spec(module) is not None
+    for module in ("matplotlib", "pandas", "seaborn")
+)
 
 
 class MatchApiTests(unittest.TestCase):
+    def test_wilson_interval_handles_known_and_invalid_counts(self) -> None:
+        low, high = wilson_interval(5, 10)
+
+        self.assertAlmostEqual(low, 0.236593, places=6)
+        self.assertAlmostEqual(high, 0.763407, places=6)
+        self.assertEqual(wilson_interval(0, 0), (0.0, 0.0))
+        with self.assertRaises(ValueError):
+            wilson_interval(2, 1)
+
     def test_batch_alternates_sides_and_aggregates_results(self) -> None:
         events = []
         result = Batch(
@@ -819,6 +836,7 @@ class MatchApiTests(unittest.TestCase):
             boops = self._read_csv(output_dir / "boops.csv")
 
             self.assertEqual(exit_code, 0)
+            self.assertEqual(output_dir, root / "boop-study" / "data")
             self.assertTrue(summary["complete"])
             self.assertEqual(summary["processed_matches"], 1)
             self.assertEqual(len(matches), 1)
@@ -921,7 +939,109 @@ class MatchApiTests(unittest.TestCase):
                     f"tournament analysis is not available for {game}",
                     errors.getvalue(),
                 )
-                self.assertFalse(Path(directory, f"{game}-data").exists())
+                self.assertFalse(Path(directory, game).exists())
+
+    def test_cli_report_rejects_an_unimplemented_game_before_creating_output(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            study = root / "connect-four"
+            data = study / "data"
+            data.mkdir(parents=True)
+            (data / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "game": "connect-four",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                exit_code = main(["report", "--input", str(data)])
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn(
+                "tournament report is not available for connect-four",
+                errors.getvalue(),
+            )
+            self.assertFalse((study / "report").exists())
+
+    @unittest.skipUnless(
+        REPORT_DEPENDENCIES_AVAILABLE,
+        "optional report dependencies are not installed",
+    )
+    def test_cli_generates_a_partial_boop_report_and_protects_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = self._create_small_boop_tournament(root)
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["extract", "--input", str(trace)]), 0)
+            study = root / "boop-study"
+            data = study / "data"
+            manifest_path = data / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["complete"] = False
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["report", "--input", str(data), "--json"])
+            summary = json.loads(output.getvalue())
+            report = study / "report"
+
+            self.assertEqual(exit_code, 0)
+            self.assertFalse(summary["complete"])
+            self.assertEqual(summary["figures"], 11)
+            self.assertEqual(summary["tables"], 16)
+            self.assertTrue((report / "index.html").is_file())
+            self.assertTrue((report / "summary.json").is_file())
+            self.assertEqual(len(list((report / "figures").glob("*.png"))), 11)
+            self.assertEqual(len(list((report / "tables").glob("*.csv"))), 16)
+            self.assertIn("Preliminary", (report / "index.html").read_text())
+
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                repeated_exit = main(["report", "--input", str(data)])
+            self.assertEqual(repeated_exit, 1)
+            self.assertIn("--overwrite", errors.getvalue())
+
+    @unittest.skipUnless(
+        REPORT_DEPENDENCIES_AVAILABLE,
+        "optional report dependencies are not installed",
+    )
+    def test_zone_density_accounts_for_different_zone_sizes(self) -> None:
+        import pandas as pd
+
+        from meeple_bots.reporting.boop import _placement_cells, _zone_rates
+
+        turns = pd.DataFrame(
+            {
+                "match_number": [1, 1],
+                "agent": ["alpha", "alpha"],
+                "zone": ["center", "outer"],
+            }
+        )
+        rates = _zone_rates(turns, ["match_number", "agent"]).set_index("zone")
+
+        self.assertEqual(rates.loc["center", "move_share"], 0.5)
+        self.assertEqual(rates.loc["outer", "move_share"], 0.5)
+        self.assertEqual(rates.loc["center", "density_per_cell"], 0.125)
+        self.assertEqual(rates.loc["outer", "density_per_cell"], 0.025)
+
+        placements = _placement_cells(
+            pd.DataFrame(
+                {
+                    "match_number": [1, 2, 2, 2],
+                    "row": [2, 0, 0, 0],
+                    "column": [2, 0, 0, 0],
+                }
+            )
+        ).set_index(["row", "column"])
+        self.assertEqual(placements.loc[(2, 2), "placement_share"], 0.5)
+        self.assertEqual(placements.loc[(0, 0), "placement_share"], 0.5)
 
     @staticmethod
     def _create_small_boop_tournament(root: Path) -> Path:

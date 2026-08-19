@@ -36,6 +36,7 @@ from .api import (
     evaluate_game,
 )
 from .extraction import extract_tournament
+from .reporting import generate_study_report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -123,6 +124,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     extract.add_argument("--json", action="store_true", help="print summary as JSON")
 
+    report = commands.add_parser(
+        "report",
+        help="generate statistics and figures from extracted tournament tables",
+    )
+    report.add_argument("--input", type=Path, required=True)
+    report.add_argument(
+        "--output-dir",
+        type=Path,
+        help="write the report here instead of beside the extracted tables",
+    )
+    report.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace known report files that already exist",
+    )
+    report.add_argument("--json", action="store_true", help="print summary as JSON")
+
     analyze = commands.add_parser("analyze", help="measure game complexity and calibrate MCTS")
     analyze.add_argument(
         "--game", choices=["boop", "connect-four", "tic-tac-toe"], required=True
@@ -154,6 +172,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(summary, indent=2))
             else:
                 _print_extraction_summary(summary)
+            return 0
+        if args.command == "report":
+            summary = generate_study_report(
+                args.input,
+                args.output_dir,
+                overwrite=args.overwrite,
+            )
+            if args.json:
+                print(json.dumps(summary, indent=2))
+            else:
+                _print_report_summary(summary)
             return 0
         game = _game(args.game)
         if args.command == "analyze":
@@ -219,6 +248,15 @@ def _print_extraction_summary(summary: dict[str, object]) -> None:
         f"({'complete' if summary['complete'] else 'partial'})"
     )
     print(f"Rows: {summary['row_counts']}")
+
+
+def _print_report_summary(summary: dict[str, object]) -> None:
+    print(f"Input directory: {summary['input_dir']}")
+    print(f"Output directory: {summary['output_dir']}")
+    print(f"Game: {summary['game']}")
+    print(f"Matches: {summary['matches']}")
+    print(f"Study: {'complete' if summary['complete'] else 'partial'}")
+    print(f"Artifacts: {summary['figures']} figures, {summary['tables']} tables")
 
 
 @dataclass(frozen=True, slots=True)

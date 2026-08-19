@@ -204,7 +204,7 @@ def extract_tournament(
 
     input_path = input_path.resolve()
     if output_dir is None:
-        output_dir = input_path.parent / f"{input_path.stem}-data"
+        output_dir = input_path.parent / input_path.stem / "data"
     else:
         output_dir = output_dir.resolve()
     with input_path.open(encoding="utf-8") as source:

@@ -338,8 +338,9 @@ meeple-bots extract \
   --input results/tournaments/boop-study.jsonl
 ```
 
-By default, this creates `results/tournaments/boop-study-data/`. Use `--output-dir PATH` to choose
-another directory. Existing extraction files are protected unless `--overwrite` is supplied.
+By default, this creates `results/tournaments/boop-study/data/`, grouping derived artifacts under a
+directory named after the JSONL file. Use `--output-dir PATH` to choose another directory. Existing
+extraction files are protected unless `--overwrite` is supplied.
 
 Every supported game receives common tournament tables:
 
@@ -361,3 +362,35 @@ count has not been reached. A truncated final JSONL line is ignored and reported
 elsewhere are rejected. Tournament schema version 1 is supported. Boop currently provides the only
 game-specific analyzer; Connect Four and tic-tac-toe are recognized but report that tournament
 analysis is not available until their analyzers are implemented.
+
+### report
+
+Install the optional statistical and plotting dependencies:
+
+```bash
+python -m pip install -e ".[report]"
+```
+
+Then generate a report from an extracted tournament directory:
+
+```bash
+meeple-bots report \
+  --input results/tournaments/boop-study/data
+```
+
+An input directory named `data` produces a sibling `report` directory by default, resulting in the
+grouped layout `boop-study/{data,report}/`. For any other input directory, `report/` is created
+inside it. Use `--output-dir PATH` to choose another location and `--overwrite` to replace known
+report artifacts. The command reads the game from `manifest.json`; Boop is currently the only
+registered report generator.
+
+The report directory contains:
+
+- `index.html`: a navigable statistical report.
+- `summary.json`: headline values for other tools.
+- `figures/`: standalone PNG charts.
+- `tables/`: the aggregate CSV data behind the charts.
+
+Competitive results exclude self-play. Strategic plots retain it, normalize board zones by their
+number of cells, and summarize turn-level behavior by match so long games do not dominate the
+averages. A partial extraction is accepted but clearly labeled as preliminary.
