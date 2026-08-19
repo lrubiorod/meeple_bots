@@ -5,6 +5,14 @@ use meeple_bots_core::{
     PositionStatus, TwoPlayerZeroSumGame,
 };
 
+mod analysis;
+
+pub use analysis::{
+    BoardZone, BoopInteraction, BoopInteractionOutcome, BoopReplayAnalysis, BoopReplayError,
+    BoopResolutionAnalysis, BoopStateMetrics, BoopTurnAnalysis, LineOrientation,
+    PlayerStateMetrics, StrategicPhase, WinningLineAnalysis, analyze_replay,
+};
+
 pub const ROWS: usize = 6;
 pub const COLUMNS: usize = 6;
 const CELL_COUNT: usize = ROWS * COLUMNS;
@@ -365,24 +373,62 @@ fn place_and_boop(state: &mut BoopState, player: PlayerId, kind: PieceKind, plac
             let Some(target) = before_boops[adjacent.index()] else {
                 continue;
             };
-            if kind == PieceKind::Kitten && target.kind == PieceKind::Cat {
-                continue;
-            }
-
-            let destination =
-                checked_position(adjacent_row + row_delta, adjacent_column + column_delta);
-            match destination {
-                None => {
+            match classify_boop_target(
+                &before_boops,
+                kind,
+                target,
+                adjacent_row,
+                adjacent_column,
+                row_delta,
+                column_delta,
+            ) {
+                ClassifiedBoop::Immune | ClassifiedBoop::Blocked(_) => {}
+                ClassifiedBoop::OffBoard { .. } => {
                     state.board[adjacent.index()] = None;
                     state.pools[target.owner.index()].add(target.kind);
                 }
-                Some(destination) if before_boops[destination.index()].is_none() => {
+                ClassifiedBoop::Moved(destination) => {
                     state.board[adjacent.index()] = None;
                     state.board[destination.index()] = Some(target);
                 }
-                Some(_) => {}
             }
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClassifiedBoop {
+    Immune,
+    Moved(Position),
+    OffBoard { row: i16, column: i16 },
+    Blocked(Position),
+}
+
+fn classify_boop_target(
+    board: &[Option<Piece>; CELL_COUNT],
+    placed_kind: PieceKind,
+    target: Piece,
+    adjacent_row: i16,
+    adjacent_column: i16,
+    row_delta: i16,
+    column_delta: i16,
+) -> ClassifiedBoop {
+    let destination_row = adjacent_row + row_delta;
+    let destination_column = adjacent_column + column_delta;
+    if placed_kind == PieceKind::Kitten && target.kind == PieceKind::Cat {
+        return ClassifiedBoop::Immune;
+    }
+
+    let Some(destination) = checked_position(destination_row, destination_column) else {
+        return ClassifiedBoop::OffBoard {
+            row: destination_row,
+            column: destination_column,
+        };
+    };
+    if board[destination.index()].is_some() {
+        ClassifiedBoop::Blocked(destination)
+    } else {
+        ClassifiedBoop::Moved(destination)
     }
 }
 
