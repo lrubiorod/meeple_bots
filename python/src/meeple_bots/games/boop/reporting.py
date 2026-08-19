@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from . import wilson_interval
+from ...reporting import wilson_interval
 
 
 _REQUIRED_TABLES = (

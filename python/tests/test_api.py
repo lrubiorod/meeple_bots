@@ -1015,7 +1015,7 @@ class MatchApiTests(unittest.TestCase):
     def test_zone_density_accounts_for_different_zone_sizes(self) -> None:
         import pandas as pd
 
-        from meeple_bots.reporting.boop import _placement_cells, _zone_rates
+        from meeple_bots.games.boop.reporting import _placement_cells, _zone_rates
 
         turns = pd.DataFrame(
             {

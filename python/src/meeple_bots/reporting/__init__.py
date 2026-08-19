@@ -82,7 +82,7 @@ def generate_study_report(
         )
 
     try:
-        from .boop import generate_boop_report
+        from ..games.boop.reporting import generate_boop_report
     except ModuleNotFoundError as error:
         if error.name in {"matplotlib", "numpy", "pandas", "seaborn"}:
             raise RuntimeError(
