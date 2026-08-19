@@ -9,6 +9,7 @@ import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 
 from .api import (
     Batch,
@@ -87,6 +88,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     batch.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
+    tournament = commands.add_parser(
+        "tournament",
+        help="run a configured round-robin tournament and save full match traces",
+    )
+    tournament.add_argument("--config", type=Path, required=True)
+    tournament.add_argument(
+        "--output",
+        type=Path,
+        help="override the output path configured in the tournament TOML",
+    )
+    tournament.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an existing output file instead of refusing to run",
+    )
+    tournament.add_argument("--json", action="store_true", help="print summary as JSON")
+
     analyze = commands.add_parser("analyze", help="measure game complexity and calibrate MCTS")
     analyze.add_argument(
         "--game", choices=["boop", "connect-four", "tic-tac-toe"], required=True
@@ -106,6 +124,8 @@ def sqrt_two() -> float:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "tournament":
+            return _run_tournament(args)
         game = _game(args.game)
         if args.command == "analyze":
             report = evaluate_game(
@@ -166,6 +186,371 @@ def main(argv: Sequence[str] | None = None) -> int:
 class _MctsProfile:
     name: str
     agent: MctsAgent
+
+
+@dataclass(frozen=True, slots=True)
+class _TournamentAgent:
+    name: str
+    agent: RandomAgent | MctsAgent
+    self_play: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _TournamentConfig:
+    game: TicTacToe | ConnectFour | Boop
+    output: Path | None
+    matches_per_pair: int
+    seed: int
+    max_plies: int
+    agents: tuple[_TournamentAgent, ...]
+
+
+def _run_tournament(args: argparse.Namespace) -> int:
+    config = _load_tournament_config(args.config)
+    output_path = args.output if args.output is not None else config.output
+    if output_path is None:
+        raise ValueError("tournament output is required in the config or with --output")
+    pairings = _tournament_pairings(config.agents)
+    total_matches = len(pairings) * config.matches_per_pair
+    output_mode = "w" if args.overwrite else "x"
+    standings = {
+        agent.name: {
+            "games": 0,
+            "wins": 0,
+            "losses": 0,
+            "draws": 0,
+            "self_play_games": 0,
+        }
+        for agent in config.agents
+    }
+    pairing_results = []
+    tournament_started = perf_counter()
+    match_number = 0
+
+    print(
+        f"Starting tournament: {_game_name(config.game)}, {len(config.agents)} agents, "
+        f"{len(pairings)} pairings, {total_matches} matches",
+        file=sys.stderr,
+        flush=True,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open(output_mode, encoding="utf-8") as output:
+        _write_jsonl(
+            output,
+            {
+                "record_type": "tournament",
+                "schema_version": 1,
+                "game": _game_name(config.game),
+                "output": str(output_path),
+                "matches_per_pair": config.matches_per_pair,
+                "seed": config.seed,
+                "max_plies": config.max_plies,
+                "total_pairings": len(pairings),
+                "total_matches": total_matches,
+                "agents": [
+                    _tournament_agent_dict(agent) for agent in config.agents
+                ],
+            },
+        )
+
+        for pairing_number, (agent_a, agent_b) in enumerate(pairings, start=1):
+            self_play = agent_a is agent_b
+            agent_a_wins = 0
+            agent_b_wins = 0
+            draws = 0
+            total_plies = 0
+            pairing_started = perf_counter()
+
+            for pairing_match_number in range(1, config.matches_per_pair + 1):
+                match_number += 1
+                agent_a_player = (pairing_match_number - 1) % 2
+                first, second = (
+                    (agent_a.agent, agent_b.agent)
+                    if agent_a_player == 0
+                    else (agent_b.agent, agent_a.agent)
+                )
+                match_seed = (config.seed + match_number - 1) & (2**64 - 1)
+                match_started = perf_counter()
+                result = Match(
+                    game=config.game,
+                    first=first,
+                    second=second,
+                    seed=match_seed,
+                    max_plies=config.max_plies,
+                ).run()
+                duration_seconds = perf_counter() - match_started
+                total_plies += result.plies
+
+                if result.winner is None:
+                    winner = None
+                    draws += 1
+                elif result.winner == agent_a_player:
+                    winner = "agent_a"
+                    agent_a_wins += 1
+                else:
+                    winner = "agent_b"
+                    agent_b_wins += 1
+
+                if self_play:
+                    standings[agent_a.name]["self_play_games"] += 1
+                else:
+                    _update_tournament_standings(
+                        standings,
+                        agent_a.name,
+                        agent_b.name,
+                        winner,
+                    )
+
+                players = (
+                    [agent_a.name, agent_b.name]
+                    if agent_a_player == 0
+                    else [agent_b.name, agent_a.name]
+                )
+                _write_jsonl(
+                    output,
+                    {
+                        "record_type": "match",
+                        "match_number": match_number,
+                        "pairing_number": pairing_number,
+                        "pairing_match_number": pairing_match_number,
+                        "agent_a": agent_a.name,
+                        "agent_b": agent_b.name,
+                        "self_play": self_play,
+                        "agent_a_player": agent_a_player,
+                        "players": players,
+                        "winner": winner,
+                        "duration_seconds": duration_seconds,
+                        "result": _result_dict(result),
+                    },
+                )
+                print(
+                    f"[{match_number}/{total_matches}] {agent_a.name} vs {agent_b.name}: "
+                    f"winner={winner or 'draw'}, plies={result.plies}, "
+                    f"time={duration_seconds:.3f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+            pairing_results.append(
+                {
+                    "agent_a": agent_a.name,
+                    "agent_b": agent_b.name,
+                    "self_play": self_play,
+                    "matches": config.matches_per_pair,
+                    "agent_a_wins": agent_a_wins,
+                    "agent_b_wins": agent_b_wins,
+                    "draws": draws,
+                    "average_plies": total_plies / config.matches_per_pair,
+                    "elapsed_seconds": perf_counter() - pairing_started,
+                }
+            )
+
+    summary = {
+        "game": _game_name(config.game),
+        "agents": len(config.agents),
+        "pairings": len(pairings),
+        "matches": total_matches,
+        "matches_per_pair": config.matches_per_pair,
+        "seed": config.seed,
+        "output": str(output_path),
+        "elapsed_seconds": perf_counter() - tournament_started,
+        "standings": standings,
+        "pairing_results": pairing_results,
+    }
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        _print_tournament_summary(summary)
+    return 0
+
+
+def _load_tournament_config(path: Path) -> _TournamentConfig:
+    with path.open("rb") as config_file:
+        values = tomllib.load(config_file)
+    allowed = {"game", "output", "matches_per_pair", "seed", "max_plies", "agents"}
+    unknown = sorted(values.keys() - allowed)
+    if unknown:
+        raise ValueError(f"unknown tournament fields: {', '.join(unknown)}")
+
+    game_name = values.get("game")
+    if game_name not in {"boop", "connect-four", "tic-tac-toe"}:
+        raise ValueError("tournament game must be boop, connect-four, or tic-tac-toe")
+    game = _game(game_name)
+    raw_output = values.get("output")
+    if raw_output is not None and (
+        not isinstance(raw_output, str) or not raw_output.strip()
+    ):
+        raise ValueError("tournament output must be a non-empty path string")
+    output = None if raw_output is None else Path(raw_output)
+    if output is not None and not output.is_absolute():
+        output = (path.parent / output).resolve()
+    matches_per_pair = _positive_tournament_integer(
+        "matches_per_pair", values.get("matches_per_pair")
+    )
+    max_plies = _positive_tournament_integer(
+        "max_plies", values.get("max_plies", 10_000)
+    )
+    seed = values.get("seed", 0)
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError("tournament seed must be an integer")
+    if not 0 <= seed <= 2**64 - 1:
+        raise ValueError("tournament seed must be between 0 and 18446744073709551615")
+
+    raw_agents = values.get("agents")
+    if not isinstance(raw_agents, list) or len(raw_agents) < 2:
+        raise ValueError("tournament agents must contain at least two entries")
+    agents = tuple(
+        _load_tournament_agent(raw, index, game)
+        for index, raw in enumerate(raw_agents, start=1)
+    )
+    names = [agent.name for agent in agents]
+    if len(names) != len(set(names)):
+        raise ValueError("tournament agent names must be unique")
+    return _TournamentConfig(
+        game=game,
+        output=output,
+        matches_per_pair=matches_per_pair,
+        seed=seed,
+        max_plies=max_plies,
+        agents=agents,
+    )
+
+
+def _load_tournament_agent(
+    values: object,
+    index: int,
+    game: TicTacToe | ConnectFour | Boop,
+) -> _TournamentAgent:
+    if not isinstance(values, dict):
+        raise TypeError(f"tournament agent {index} must be a TOML table")
+    allowed = {
+        "name",
+        "kind",
+        "iterations",
+        "exploration",
+        "rollout_depth",
+        "use_heuristic",
+        "heuristic_index",
+        "self_play",
+    }
+    unknown = sorted(values.keys() - allowed)
+    if unknown:
+        raise ValueError(
+            f"unknown fields for tournament agent {index}: {', '.join(unknown)}"
+        )
+    name = values.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"tournament agent {index} name must be a non-empty string")
+    kind = values.get("kind")
+    if kind not in {"mcts", "random"}:
+        raise ValueError(f"tournament agent {name} kind must be mcts or random")
+    self_play = values.get("self_play", False)
+    if not isinstance(self_play, bool):
+        raise TypeError(f"tournament agent {name} self_play must be a boolean")
+
+    mcts_fields = {
+        "iterations",
+        "exploration",
+        "rollout_depth",
+        "use_heuristic",
+        "heuristic_index",
+    }
+    if kind == "random":
+        unexpected = sorted(values.keys() & mcts_fields)
+        if unexpected:
+            raise ValueError(
+                f"random tournament agent {name} cannot use: {', '.join(unexpected)}"
+            )
+        return _TournamentAgent(name=name.strip(), agent=RandomAgent(), self_play=self_play)
+
+    missing = sorted({"iterations", "rollout_depth"} - values.keys())
+    if missing:
+        raise ValueError(
+            f"missing fields for tournament agent {name}: {', '.join(missing)}"
+        )
+    use_heuristic = values.get("use_heuristic", False)
+    if not isinstance(use_heuristic, bool):
+        raise TypeError(f"tournament agent {name} use_heuristic must be a boolean")
+    heuristic_index = values.get("heuristic_index", 0)
+    if isinstance(heuristic_index, bool) or not isinstance(heuristic_index, int):
+        raise TypeError(f"tournament agent {name} heuristic_index must be an integer")
+    agent = MctsAgent(
+        iterations=values["iterations"],
+        exploration=values.get("exploration", sqrt_two()),
+        rollout_depth=values["rollout_depth"],
+        heuristic=heuristic_index if use_heuristic else None,
+    )
+    Match(game=game, first=agent, second=RandomAgent())
+    return _TournamentAgent(name=name.strip(), agent=agent, self_play=self_play)
+
+
+def _positive_tournament_integer(name: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"tournament {name} must be an integer")
+    if not 1 <= value <= 2**32 - 1:
+        raise ValueError(f"tournament {name} must be between 1 and 4294967295")
+    return value
+
+
+def _tournament_pairings(
+    agents: tuple[_TournamentAgent, ...],
+) -> list[tuple[_TournamentAgent, _TournamentAgent]]:
+    pairings = [
+        (agent_a, agent_b)
+        for index, agent_a in enumerate(agents)
+        for agent_b in agents[index + 1 :]
+    ]
+    pairings.extend((agent, agent) for agent in agents if agent.self_play)
+    return pairings
+
+
+def _update_tournament_standings(
+    standings: dict[str, dict[str, int]],
+    agent_a: str,
+    agent_b: str,
+    winner: str | None,
+) -> None:
+    standings[agent_a]["games"] += 1
+    standings[agent_b]["games"] += 1
+    if winner is None:
+        standings[agent_a]["draws"] += 1
+        standings[agent_b]["draws"] += 1
+    elif winner == "agent_a":
+        standings[agent_a]["wins"] += 1
+        standings[agent_b]["losses"] += 1
+    else:
+        standings[agent_b]["wins"] += 1
+        standings[agent_a]["losses"] += 1
+
+
+def _tournament_agent_dict(agent: _TournamentAgent) -> dict[str, object]:
+    description = _batch_agent_dict(agent.name, agent.agent)
+    description["self_play"] = agent.self_play
+    return description
+
+
+def _write_jsonl(output, value: dict[str, object]) -> None:
+    output.write(json.dumps(value, separators=(",", ":")) + "\n")
+    output.flush()
+
+
+def _print_tournament_summary(summary: dict[str, object]) -> None:
+    print(f"Game: {summary['game']}")
+    print(f"Agents: {summary['agents']}")
+    print(f"Pairings: {summary['pairings']}")
+    print(f"Matches: {summary['matches']}")
+    print(f"Total time: {summary['elapsed_seconds']:.3f}s")
+    print(f"Trace output: {summary['output']}")
+    print()
+    print("Standings (self-play excluded):")
+    standings = summary["standings"]
+    if not isinstance(standings, dict):
+        raise RuntimeError("tournament standings have an invalid shape")
+    for name, result in standings.items():
+        print(
+            f"  {name}: {result['wins']}W {result['losses']}L {result['draws']}D "
+            f"({result['games']} games, {result['self_play_games']} self-play)"
+        )
 
 
 def _run_batch(

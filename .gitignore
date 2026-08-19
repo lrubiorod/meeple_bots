@@ -14,6 +14,10 @@ __pycache__/
 dist/
 build/
 
+# Generated tournament studies
+/results/
+*-study.jsonl
+
 # Extensiones nativas compiladas
 *.so
 *.pyd

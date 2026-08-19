@@ -270,3 +270,60 @@ meeple-bots batch --game boop --matches 20 \
 
 Use `meeple-bots match --help`, `meeple-bots analyze --help`, or `meeple-bots batch --help` for the
 options installed in the current environment.
+
+### tournament
+
+The `tournament` command loads a TOML study configuration, schedules every distinct pair of agents,
+alternates their player positions, and optionally schedules selected self-play pairings. It writes
+one compact JSON object per line so completed matches remain available if a long study is
+interrupted:
+
+```bash
+meeple-bots tournament \
+  --config configs/tournaments/boop-study.toml
+```
+
+The first JSONL record contains the complete tournament configuration and schema version. Every
+remaining record contains agent roles, physical player positions, seed, duration, result, and the
+full action trace. Existing output files are rejected by default; pass `--overwrite` intentionally
+to replace one. `--output PATH` can override the destination configured in the TOML.
+
+A tournament configuration defines shared execution parameters followed by at least two uniquely
+named agents:
+
+```toml
+game = "boop"
+output = "../../results/tournaments/boop-study.jsonl"
+matches_per_pair = 20
+seed = 42
+max_plies = 10000
+
+[[agents]]
+name = "random"
+kind = "random"
+
+[[agents]]
+name = "mcts-h0-10000"
+kind = "mcts"
+iterations = 10000
+rollout_depth = 16
+exploration = 1.4142135623730951
+use_heuristic = true
+heuristic_index = 0
+self_play = true
+```
+
+Relative output paths are resolved from the directory containing the tournament TOML, independently
+of the process working directory. Missing parent directories are created automatically. Keeping
+generated traces under `results/tournaments/` separates reproducible inputs in `configs/` from
+potentially large study outputs.
+
+`self_play = true` adds one same-configuration pairing for that agent without duplicating it in the
+standings. Self-play games are recorded separately and do not count as wins or losses in the
+cross-agent standings. Agents may still have identical parameters when different names are useful
+for an experiment.
+
+Run large studies with a release build of the native extension. The provided
+[`boop-study.toml`](../configs/tournaments/boop-study.toml) contains Random plus 100, 1,000, and
+10,000-iteration MCTS agents with and without heuristic 0. The two 10,000-iteration agents also run
+self-play, producing 23 pairings and 460 matches with the default 20 matches per pairing.

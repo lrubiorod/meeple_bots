@@ -63,6 +63,17 @@ Progress is printed before and after every game. Copy
 [`configs/mcts/template.toml`](configs/mcts/template.toml) to keep different MCTS configurations
 and compare them in later batches.
 
+Run a reproducible round-robin study across several agent strengths and preserve every action trace:
+
+```bash
+python -m meeple_bots tournament \
+  --config configs/tournaments/boop-study.toml
+```
+
+The provided study compares Random with 100, 1,000, and 10,000-iteration MCTS agents, both with and
+without boop heuristic 0. See the [Python interface](python/README.md#tournament) for the TOML
+schema, self-play options, and JSONL output.
+
 ## Game evaluation
 
 Measure a game's initial actions, typical depth, effective branching, approximate game-tree size,

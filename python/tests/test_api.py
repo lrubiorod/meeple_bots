@@ -706,6 +706,100 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(payload["agents"]["b"]["name"], "strategic")
         self.assertEqual(payload["agents"]["b"]["heuristic"], 1)
 
+    def test_cli_tournament_runs_round_robin_and_selected_self_play(self) -> None:
+        output = io.StringIO()
+        progress = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory, "tournament.toml")
+            trace = Path(directory, "generated", "matches.jsonl")
+            config.write_text(
+                '\n'.join(
+                    [
+                        'game = "tic-tac-toe"',
+                        'output = "generated/matches.jsonl"',
+                        "matches_per_pair = 2",
+                        "seed = 17",
+                        "max_plies = 9",
+                        "",
+                        "[[agents]]",
+                        'name = "alpha"',
+                        'kind = "random"',
+                        "self_play = true",
+                        "",
+                        "[[agents]]",
+                        'name = "beta"',
+                        'kind = "random"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(output), redirect_stderr(progress):
+                exit_code = main(
+                    [
+                        "tournament",
+                        "--config",
+                        str(config),
+                        "--json",
+                    ]
+                )
+
+            records = [json.loads(line) for line in trace.read_text().splitlines()]
+
+        summary = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(summary["pairings"], 2)
+        self.assertEqual(summary["matches"], 4)
+        self.assertEqual(summary["output"], str(trace))
+        self.assertEqual(summary["standings"]["alpha"]["games"], 2)
+        self.assertEqual(summary["standings"]["alpha"]["self_play_games"], 2)
+        self.assertEqual(records[0]["record_type"], "tournament")
+        self.assertEqual(records[0]["schema_version"], 1)
+        self.assertEqual(len(records), 5)
+        self.assertEqual(
+            [record["result"]["seed"] for record in records[1:]],
+            [17, 18, 19, 20],
+        )
+        self.assertEqual(
+            [record["agent_a_player"] for record in records[1:3]],
+            [0, 1],
+        )
+        self.assertTrue(all(record["result"]["moves"] for record in records[1:]))
+        self.assertIn("[4/4]", progress.getvalue())
+
+    def test_cli_tournament_rejects_duplicate_agent_names(self) -> None:
+        errors = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory, "tournament.toml")
+            config.write_text(
+                '\n'.join(
+                    [
+                        'game = "tic-tac-toe"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "same"',
+                        'kind = "random"',
+                        "[[agents]]",
+                        'name = "same"',
+                        'kind = "random"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with redirect_stderr(errors):
+                exit_code = main(
+                    [
+                        "tournament",
+                        "--config",
+                        str(config),
+                        "--output",
+                        str(Path(directory, "matches.jsonl")),
+                    ]
+                )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("agent names must be unique", errors.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

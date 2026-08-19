@@ -1,0 +1,64 @@
+# Round-robin study with 21 distinct pairings, two selected self-play pairings,
+# and 20 matches per pairing: 460 matches in total.
+game = "boop"
+output = "../../results/tournaments/boop-study.jsonl"
+matches_per_pair = 20
+seed = 42
+max_plies = 10000
+
+[[agents]]
+name = "random"
+kind = "random"
+
+[[agents]]
+name = "mcts-100"
+kind = "mcts"
+iterations = 100
+rollout_depth = 16
+exploration = 1.4142135623730951
+use_heuristic = false
+
+[[agents]]
+name = "mcts-h0-100"
+kind = "mcts"
+iterations = 100
+rollout_depth = 16
+exploration = 1.4142135623730951
+use_heuristic = true
+heuristic_index = 0
+
+[[agents]]
+name = "mcts-1000"
+kind = "mcts"
+iterations = 1000
+rollout_depth = 16
+exploration = 1.4142135623730951
+use_heuristic = false
+
+[[agents]]
+name = "mcts-h0-1000"
+kind = "mcts"
+iterations = 1000
+rollout_depth = 16
+exploration = 1.4142135623730951
+use_heuristic = true
+heuristic_index = 0
+
+[[agents]]
+name = "mcts-10000"
+kind = "mcts"
+iterations = 10000
+rollout_depth = 16
+exploration = 1.4142135623730951
+use_heuristic = false
+self_play = true
+
+[[agents]]
+name = "mcts-h0-10000"
+kind = "mcts"
+iterations = 10000
+rollout_depth = 16
+exploration = 1.4142135623730951
+use_heuristic = true
+heuristic_index = 0
+self_play = true
