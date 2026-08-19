@@ -77,6 +77,7 @@ dependencies = [
  "meeple_bots_core",
  "meeple_bots_mcts_agent",
  "meeple_bots_random_agent",
+ "meeple_bots_simulation",
  "meeple_bots_tic_tac_toe",
  "pyo3",
 ]

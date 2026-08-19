@@ -25,6 +25,24 @@ extension after Rust binding changes:
 maturin develop
 ```
 
+### Package layout
+
+Game-specific Python integrations live under `meeple_bots.games`, grouped by game. For example,
+Boop owns its statistical reporting implementation and tic-tac-toe owns its graphical controller
+and browser page:
+
+```text
+meeple_bots/games/
+├── boop/reporting.py
+├── connect_four/gui/
+└── tic_tac_toe/gui/
+```
+
+Generic orchestration remains in `meeple_bots.reporting` and `meeple_bots.gui`. Rust continues to
+own the authoritative rules under the repository's top-level `games/` workspace directories; the
+Python game packages contain presentation, reporting, and integration code rather than duplicate
+rule implementations.
+
 Activate the environment again with `source .venv/bin/activate` when opening a new terminal. Leave
 it with `deactivate`.
 
@@ -164,6 +182,34 @@ meeple-bots match --first mcts --second random --seed 42
 python -m meeple_bots match --first mcts --second random --seed 42
 ```
 
+### gui
+
+The `gui` command starts a dependency-free web interface on the local machine and opens it in the
+default browser:
+
+```bash
+meeple-bots gui
+```
+
+The interface supports tic-tac-toe and Connect Four. Each seat can be controlled by a human,
+Random, or MCTS, so the same screen can be used to play or to watch two agents. MCTS iterations and
+rollout depth, the random seed, and the minimum interval between displayed moves can be changed
+before each match. A move is displayed after `max(agent thinking time, configured interval)`,
+avoiding an extra delay when an agent already took longer than the selected pace.
+
+```bash
+meeple-bots gui --game connect-four
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--game` | `tic-tac-toe` | `tic-tac-toe` or `connect-four`. |
+| `--host` | `127.0.0.1` | Interface to bind. The default is accessible only locally. |
+| `--port` | `8765` | HTTP port for the local interface. |
+| `--no-browser` | disabled | Start the server without opening a browser automatically. |
+
+Use `Ctrl+C` in the terminal to stop the server.
+
 ### match
 
 The `match` command runs one game and prints its move history and final board.
@@ -268,8 +314,8 @@ meeple-bots batch --game boop --matches 20 \
   --seed 42 --json
 ```
 
-Use `meeple-bots match --help`, `meeple-bots analyze --help`, or `meeple-bots batch --help` for the
-options installed in the current environment.
+Use `meeple-bots gui --help`, `meeple-bots match --help`, `meeple-bots analyze --help`, or
+`meeple-bots batch --help` for the options installed in the current environment.
 
 ### tournament
 

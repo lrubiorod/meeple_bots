@@ -1,6 +1,11 @@
 //! Generic, reproducible match execution.
 
-use std::{error::Error, fmt, num::NonZeroU32};
+use std::{
+    error::Error,
+    fmt,
+    num::NonZeroU32,
+    time::{Duration, Instant},
+};
 
 use meeple_bots_core::{
     Agent, AgentError, DecisionContext, DeterministicGame, Game, IllegalAction, PlayerId,
@@ -85,9 +90,21 @@ impl Error for MatchError {}
 
 /// Compile-time observer: NoopObserver is optimized away when traces are disabled.
 pub trait MatchObserver<G: Game> {
+    fn measures_decision_time(&self) -> bool {
+        false
+    }
+
     fn on_start(&mut self, _game: &G, _state: &G::State) {}
 
-    fn on_action(&mut self, _game: &G, _state: &G::State, _player: PlayerId, _action: &G::Action) {}
+    fn on_action(
+        &mut self,
+        _game: &G,
+        _state: &G::State,
+        _player: PlayerId,
+        _action: &G::Action,
+        _decision_time: Duration,
+    ) {
+    }
 
     fn on_finish(&mut self, _game: &G, _state: &G::State, _result: &MatchResult) {}
 }
@@ -121,8 +138,53 @@ where
     G: Game<Action = A>,
     A: Clone,
 {
-    fn on_action(&mut self, _game: &G, _state: &G::State, player: PlayerId, action: &A) {
+    fn on_action(
+        &mut self,
+        _game: &G,
+        _state: &G::State,
+        player: PlayerId,
+        action: &A,
+        _decision_time: Duration,
+    ) {
         self.actions.push((player, action.clone()));
+    }
+}
+
+struct TracingObserver<'a, O, A> {
+    trace: ActionTrace<A>,
+    observer: &'a mut O,
+}
+
+impl<G, O, A> MatchObserver<G> for TracingObserver<'_, O, A>
+where
+    G: Game<Action = A>,
+    O: MatchObserver<G>,
+    A: Clone,
+{
+    fn measures_decision_time(&self) -> bool {
+        self.observer.measures_decision_time()
+    }
+
+    fn on_start(&mut self, game: &G, state: &G::State) {
+        self.observer.on_start(game, state);
+    }
+
+    fn on_action(
+        &mut self,
+        game: &G,
+        state: &G::State,
+        player: PlayerId,
+        action: &A,
+        decision_time: Duration,
+    ) {
+        self.trace
+            .on_action(game, state, player, action, decision_time);
+        self.observer
+            .on_action(game, state, player, action, decision_time);
+    }
+
+    fn on_finish(&mut self, game: &G, state: &G::State, result: &MatchResult) {
+        self.observer.on_finish(game, state, result);
     }
 }
 
@@ -183,6 +245,33 @@ where
     })
 }
 
+/// Run a match while retaining its trace and forwarding live observer events.
+pub fn play_match_with_trace_and_observer<G, A, B, O>(
+    game: &G,
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+    observer: &mut O,
+) -> Result<TracedMatchResult<G::Action>, MatchError>
+where
+    G: DeterministicGame,
+    G::Action: Clone,
+    A: Agent<G>,
+    B: Agent<G>,
+    O: MatchObserver<G>,
+{
+    let mut tracing_observer = TracingObserver {
+        trace: ActionTrace::default(),
+        observer,
+    };
+    let result = play_match_with_observer(game, first, second, config, &mut tracing_observer)?;
+
+    Ok(TracedMatchResult {
+        result,
+        actions: tracing_observer.trace.actions,
+    })
+}
+
 pub fn play_match_with_observer<G, A, B, O>(
     game: &G,
     first: &mut A,
@@ -230,6 +319,7 @@ where
                 }
 
                 let decision = DecisionContext::new(game, &state, player);
+                let decision_started = observer.measures_decision_time().then(Instant::now);
                 let action = match player {
                     PlayerId::FIRST => first
                         .select_action(decision, &mut first_rng)
@@ -239,11 +329,13 @@ where
                         .map_err(|source| MatchError::Agent { player, source })?,
                     _ => return Err(MatchError::InvalidPlayer(player)),
                 };
+                let decision_time =
+                    decision_started.map_or(Duration::ZERO, |start| start.elapsed());
 
                 game.apply_action(&mut state, &action)
                     .map_err(|source| MatchError::IllegalAction { player, source })?;
                 plies += 1;
-                observer.on_action(game, &state, player, &action);
+                observer.on_action(game, &state, player, &action, decision_time);
             }
             PositionStatus::Chance => return Err(MatchError::UnexpectedChance),
             _ => return Err(MatchError::UnexpectedChance),

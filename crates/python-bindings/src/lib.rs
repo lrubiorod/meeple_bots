@@ -1,6 +1,6 @@
 //! Private PyO3 boundary for the public Python package.
 
-use std::num::NonZeroU32;
+use std::{num::NonZeroU32, time::Duration};
 
 use meeple_bots_boop::{
     BoardZone, Boop, BoopAction, BoopInteractionOutcome, BoopStateMetrics, GraduateLine,
@@ -11,12 +11,15 @@ use meeple_bots_catalog::{
     CatalogMatchReport, CatalogPieceKind, CatalogTraceAnalysis, EvaluationConfig, GameId,
     MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, analyze_trace, configured_boop_mcts,
     configured_connect_four_mcts, configured_tic_tac_toe_mcts, evaluate_game,
-    run_boop_match_with_trace, run_connect_four_match_with_trace, run_match_with_trace,
+    run_boop_match_with_trace, run_connect_four_match_with_observer,
+    run_connect_four_match_with_trace, run_match_with_trace, run_tic_tac_toe_match_with_observer,
     run_tic_tac_toe_match_with_trace,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
-use meeple_bots_core::{Agent, AgentError, DecisionContext, Game, RandomSource};
+use meeple_bots_core::{Agent, AgentError, DecisionContext, Game, PlayerId, RandomSource};
+use meeple_bots_mcts_agent::MctsAgent;
 use meeple_bots_random_agent::RandomAgent;
+use meeple_bots_simulation::MatchObserver;
 use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -103,6 +106,120 @@ impl PyAgentConfig {
 struct PythonHumanAgent<'a> {
     selector: &'a Py<PyAny>,
     observer: Option<&'a Py<PyAny>>,
+}
+
+struct PythonTicTacToeMatchObserver<'a> {
+    callback: &'a Py<PyAny>,
+    error: Option<String>,
+}
+
+struct PythonConnectFourMatchObserver<'a> {
+    callback: &'a Py<PyAny>,
+    error: Option<String>,
+}
+
+enum PythonObservedAgent<'a> {
+    Human(PythonHumanAgent<'a>),
+    Mcts(MctsAgent),
+    Random(RandomAgent),
+}
+
+impl Agent<TicTacToe> for PythonObservedAgent<'_> {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, TicTacToe>,
+        rng: &mut R,
+    ) -> Result<TicTacToeAction, AgentError> {
+        match self {
+            Self::Human(agent) => agent.select_action(decision, rng),
+            Self::Mcts(agent) => agent.select_action(decision, rng),
+            Self::Random(agent) => agent.select_action(decision, rng),
+        }
+    }
+}
+
+impl Agent<ConnectFour> for PythonObservedAgent<'_> {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, ConnectFour>,
+        rng: &mut R,
+    ) -> Result<ConnectFourAction, AgentError> {
+        match self {
+            Self::Human(agent) => agent.select_action(decision, rng),
+            Self::Mcts(agent) => agent.select_action(decision, rng),
+            Self::Random(agent) => agent.select_action(decision, rng),
+        }
+    }
+}
+
+impl MatchObserver<TicTacToe> for PythonTicTacToeMatchObserver<'_> {
+    fn measures_decision_time(&self) -> bool {
+        true
+    }
+
+    fn on_action(
+        &mut self,
+        _game: &TicTacToe,
+        state: &<TicTacToe as Game>::State,
+        player: PlayerId,
+        action: &TicTacToeAction,
+        decision_time: Duration,
+    ) {
+        if self.error.is_some() {
+            return;
+        }
+        let board: Vec<_> = state
+            .board()
+            .iter()
+            .map(|cell| cell.map(|occupant| occupant.index()))
+            .collect();
+        if let Err(error) = Python::attach(|py| -> PyResult<()> {
+            self.callback.bind(py).call1((
+                player.index(),
+                board,
+                (action.row(), action.column()),
+                decision_time.as_secs_f64(),
+            ))?;
+            Ok(())
+        }) {
+            self.error = Some(error.to_string());
+        }
+    }
+}
+
+impl MatchObserver<ConnectFour> for PythonConnectFourMatchObserver<'_> {
+    fn measures_decision_time(&self) -> bool {
+        true
+    }
+
+    fn on_action(
+        &mut self,
+        _game: &ConnectFour,
+        state: &<ConnectFour as Game>::State,
+        player: PlayerId,
+        action: &ConnectFourAction,
+        decision_time: Duration,
+    ) {
+        if self.error.is_some() {
+            return;
+        }
+        let board: Vec<_> = state
+            .board()
+            .iter()
+            .map(|cell| cell.map(|occupant| occupant.index()))
+            .collect();
+        if let Err(error) = Python::attach(|py| -> PyResult<()> {
+            self.callback.bind(py).call1((
+                player.index(),
+                board,
+                action.column(),
+                decision_time.as_secs_f64(),
+            ))?;
+            Ok(())
+        }) {
+            self.error = Some(error.to_string());
+        }
+    }
 }
 
 #[pyfunction(name = "evaluate_game")]
@@ -351,7 +468,7 @@ impl Agent<Boop> for PythonHumanAgent<'_> {
 }
 
 #[pyfunction(name = "run_match")]
-#[pyo3(signature = (game, first, second, seed=0, max_plies=10_000))]
+#[pyo3(signature = (game, first, second, seed=0, max_plies=10_000, observer=None))]
 fn py_run_match(
     py: Python<'_>,
     game: &str,
@@ -359,40 +476,62 @@ fn py_run_match(
     second: PyRef<'_, PyAgentConfig>,
     seed: u64,
     max_plies: u32,
+    observer: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     let max_plies = NonZeroU32::new(max_plies)
         .ok_or_else(|| PyValueError::new_err("max_plies must be greater than zero"))?;
     let config = MatchConfig::new(seed, max_plies);
-    let report = match (&first.inner, &second.inner) {
-        (PythonAgentConfig::Automated(first), PythonAgentConfig::Automated(second)) => {
-            run_match_with_trace(game, *first, *second, config)
+    let report = if let Some(observer) = observer.as_ref() {
+        if !observer.bind(py).is_callable() {
+            return Err(PyValueError::new_err("match observer must be callable"));
         }
-        (PythonAgentConfig::Human { selector, observer }, PythonAgentConfig::Automated(second)) => {
-            run_with_human_first(game, selector, observer.as_ref(), *second, config)
+        match game {
+            GameId::ConnectFour => {
+                run_observed_connect_four_match(&first.inner, &second.inner, observer, config)?
+            }
+            GameId::TicTacToe => {
+                run_observed_tic_tac_toe_match(&first.inner, &second.inner, observer, config)?
+            }
+            GameId::Boop => {
+                return Err(PyValueError::new_err(
+                    "live match observation is not yet available for boop",
+                ));
+            }
         }
-        (PythonAgentConfig::Automated(first), PythonAgentConfig::Human { selector, observer }) => {
-            run_with_human_second(game, *first, selector, observer.as_ref(), config)
+    } else {
+        match (&first.inner, &second.inner) {
+            (PythonAgentConfig::Automated(first), PythonAgentConfig::Automated(second)) => {
+                run_match_with_trace(game, *first, *second, config)
+            }
+            (
+                PythonAgentConfig::Human { selector, observer },
+                PythonAgentConfig::Automated(second),
+            ) => run_with_human_first(game, selector, observer.as_ref(), *second, config),
+            (
+                PythonAgentConfig::Automated(first),
+                PythonAgentConfig::Human { selector, observer },
+            ) => run_with_human_second(game, *first, selector, observer.as_ref(), config),
+            (
+                PythonAgentConfig::Human {
+                    selector: first,
+                    observer: first_observer,
+                },
+                PythonAgentConfig::Human {
+                    selector: second,
+                    observer: second_observer,
+                },
+            ) => run_with_two_humans(
+                game,
+                first,
+                first_observer.as_ref(),
+                second,
+                second_observer.as_ref(),
+                config,
+            ),
         }
-        (
-            PythonAgentConfig::Human {
-                selector: first,
-                observer: first_observer,
-            },
-            PythonAgentConfig::Human {
-                selector: second,
-                observer: second_observer,
-            },
-        ) => run_with_two_humans(
-            game,
-            first,
-            first_observer.as_ref(),
-            second,
-            second_observer.as_ref(),
-            config,
-        ),
-    }
-    .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        .map_err(|error| PyRuntimeError::new_err(error.to_string()))?
+    };
 
     let result = PyDict::new(py);
     result.set_item("seed", report.seed)?;
@@ -702,6 +841,93 @@ const fn interaction_outcome_name(outcome: BoopInteractionOutcome) -> &'static s
         BoopInteractionOutcome::OffBoard => "off_board",
         BoopInteractionOutcome::Blocked => "blocked",
         BoopInteractionOutcome::Immune => "immune",
+    }
+}
+
+fn run_observed_tic_tac_toe_match(
+    first: &PythonAgentConfig,
+    second: &PythonAgentConfig,
+    callback: &Py<PyAny>,
+    config: MatchConfig,
+) -> PyResult<CatalogMatchReport> {
+    let mut first = python_tic_tac_toe_agent(first)?;
+    let mut second = python_tic_tac_toe_agent(second)?;
+    let mut observer = PythonTicTacToeMatchObserver {
+        callback,
+        error: None,
+    };
+    let report =
+        run_tic_tac_toe_match_with_observer(&mut first, &mut second, config, &mut observer)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+
+    if let Some(error) = observer.error {
+        return Err(PyRuntimeError::new_err(format!(
+            "match observer failed: {error}"
+        )));
+    }
+    Ok(report)
+}
+
+fn run_observed_connect_four_match(
+    first: &PythonAgentConfig,
+    second: &PythonAgentConfig,
+    callback: &Py<PyAny>,
+    config: MatchConfig,
+) -> PyResult<CatalogMatchReport> {
+    let mut first = python_connect_four_agent(first)?;
+    let mut second = python_connect_four_agent(second)?;
+    let mut observer = PythonConnectFourMatchObserver {
+        callback,
+        error: None,
+    };
+    let report =
+        run_connect_four_match_with_observer(&mut first, &mut second, config, &mut observer)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+
+    if let Some(error) = observer.error {
+        return Err(PyRuntimeError::new_err(format!(
+            "match observer failed: {error}"
+        )));
+    }
+    Ok(report)
+}
+
+fn configured_tic_tac_toe_mcts_for_python(config: MctsAgentConfig) -> PyResult<MctsAgent> {
+    configured_tic_tac_toe_mcts(config).map_err(|error| PyRuntimeError::new_err(error.to_string()))
+}
+
+fn python_tic_tac_toe_agent(configured: &PythonAgentConfig) -> PyResult<PythonObservedAgent<'_>> {
+    match configured {
+        PythonAgentConfig::Automated(AgentConfig::Random) => {
+            Ok(PythonObservedAgent::Random(RandomAgent))
+        }
+        PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => Ok(PythonObservedAgent::Mcts(
+            configured_tic_tac_toe_mcts_for_python(*config)?,
+        )),
+        PythonAgentConfig::Human { selector, observer } => {
+            Ok(PythonObservedAgent::Human(PythonHumanAgent {
+                selector,
+                observer: observer.as_ref(),
+            }))
+        }
+    }
+}
+
+fn python_connect_four_agent(configured: &PythonAgentConfig) -> PyResult<PythonObservedAgent<'_>> {
+    match configured {
+        PythonAgentConfig::Automated(AgentConfig::Random) => {
+            Ok(PythonObservedAgent::Random(RandomAgent))
+        }
+        PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => Ok(PythonObservedAgent::Mcts(
+            configured_connect_four_mcts(*config)
+                .map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
+        )),
+        PythonAgentConfig::Human { selector, observer } => {
+            Ok(PythonObservedAgent::Human(PythonHumanAgent {
+                selector,
+                observer: observer.as_ref(),
+            }))
+        }
     }
 }
 

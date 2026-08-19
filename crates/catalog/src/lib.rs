@@ -16,8 +16,8 @@ pub use meeple_bots_mcts_agent::MctsConfig;
 use meeple_bots_mcts_agent::{GameHeuristic, MctsAgent};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{
-    BatchConfig, MatchError, TracedMatchResult, play_batch, play_match,
-    play_match_with_trace as play_typed_match_with_trace,
+    BatchConfig, MatchError, MatchObserver, TracedMatchResult, play_batch, play_match,
+    play_match_with_trace as play_typed_match_with_trace, play_match_with_trace_and_observer,
 };
 pub use meeple_bots_simulation::{MatchConfig, MatchResult};
 use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
@@ -395,6 +395,21 @@ where
     Ok(connect_four_report(traced))
 }
 
+pub fn run_connect_four_match_with_observer<A, B, O>(
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+    observer: &mut O,
+) -> Result<CatalogMatchReport, CatalogError>
+where
+    A: Agent<ConnectFour>,
+    B: Agent<ConnectFour>,
+    O: MatchObserver<ConnectFour>,
+{
+    let traced = play_match_with_trace_and_observer(&ConnectFour, first, second, config, observer)?;
+    Ok(connect_four_report(traced))
+}
+
 pub fn run_tic_tac_toe_match_with_trace<A, B>(
     first: &mut A,
     second: &mut B,
@@ -405,6 +420,21 @@ where
     B: Agent<TicTacToe>,
 {
     let traced = play_typed_match_with_trace(&TicTacToe, first, second, config)?;
+    Ok(tic_tac_toe_report(traced))
+}
+
+pub fn run_tic_tac_toe_match_with_observer<A, B, O>(
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+    observer: &mut O,
+) -> Result<CatalogMatchReport, CatalogError>
+where
+    A: Agent<TicTacToe>,
+    B: Agent<TicTacToe>,
+    O: MatchObserver<TicTacToe>,
+{
+    let traced = play_match_with_trace_and_observer(&TicTacToe, first, second, config, observer)?;
     Ok(tic_tac_toe_report(traced))
 }
 

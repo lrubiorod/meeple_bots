@@ -3,6 +3,7 @@ import io
 import importlib.util
 import json
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -20,6 +21,7 @@ from meeple_bots import (
     HumanAgent,
     HumanMoveObservation,
     Match,
+    MatchMoveObservation,
     MctsAgent,
     RandomAgent,
     TicTacToe,
@@ -27,6 +29,9 @@ from meeple_bots import (
     evaluate_game,
 )
 from meeple_bots.cli import main
+from meeple_bots.games.connect_four.gui import ConnectFourGui
+from meeple_bots.games.tic_tac_toe.gui import GuiPlayer, TicTacToeGui
+from meeple_bots.gui.server import run_gui
 from meeple_bots.reporting import wilson_interval
 
 
@@ -37,6 +42,16 @@ REPORT_DEPENDENCIES_AVAILABLE = all(
 
 
 class MatchApiTests(unittest.TestCase):
+    @staticmethod
+    def wait_for_gui(gui, predicate, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = gui.snapshot()
+            if predicate(state):
+                return state
+            time.sleep(0.005)
+        raise AssertionError(f"GUI state did not arrive: {gui.snapshot()}")
+
     def test_wilson_interval_handles_known_and_invalid_counts(self) -> None:
         low, high = wilson_interval(5, 10)
 
@@ -120,6 +135,122 @@ class MatchApiTests(unittest.TestCase):
         if result.winner is not None:
             other = 1 - result.winner
             self.assertGreater(result.utilities[result.winner], result.utilities[other])
+
+    def test_match_observer_receives_every_tic_tac_toe_move(self) -> None:
+        observations = []
+        result = Match(
+            game=TicTacToe(),
+            first=RandomAgent(),
+            second=RandomAgent(),
+            seed=7,
+            observe_move=observations.append,
+        ).run()
+
+        self.assertEqual(len(observations), result.plies)
+        self.assertTrue(all(isinstance(item, MatchMoveObservation) for item in observations))
+        self.assertTrue(all(item.decision_seconds >= 0 for item in observations))
+        self.assertEqual(observations[-1].board, result.final_board)
+        self.assertEqual(
+            [item.action for item in observations],
+            [move.action for move in result.moves],
+        )
+
+    def test_match_observer_receives_every_connect_four_move(self) -> None:
+        observations = []
+        result = Match(
+            game=ConnectFour(),
+            first=RandomAgent(),
+            second=RandomAgent(),
+            seed=11,
+            observe_move=observations.append,
+        ).run()
+
+        self.assertEqual(len(observations), result.plies)
+        self.assertTrue(
+            all(isinstance(item.action, ConnectFourAction) for item in observations)
+        )
+        self.assertTrue(all(item.decision_seconds >= 0 for item in observations))
+        self.assertEqual(observations[-1].board, result.final_board)
+        self.assertEqual(
+            [item.action for item in observations],
+            [move.action for move in result.moves],
+        )
+
+    def test_tic_tac_toe_gui_runs_agents_and_accepts_human_moves(self) -> None:
+        watched = TicTacToeGui()
+        watched.start(
+            GuiPlayer("random"),
+            GuiPlayer("random"),
+            seed=4,
+            minimum_move_seconds=0,
+        )
+        finished = self.wait_for_gui(watched, lambda state: state["status"] == "finished")
+        self.assertGreaterEqual(len(finished["moves"]), 5)
+        self.assertEqual(
+            sum(cell is not None for cell in finished["board"]),
+            len(finished["moves"]),
+        )
+
+        played = TicTacToeGui()
+        played.start(
+            GuiPlayer("human"),
+            GuiPlayer("human"),
+            minimum_move_seconds=0,
+        )
+        waiting = self.wait_for_gui(
+            played,
+            lambda state: state["status"] == "waiting_human",
+        )
+        self.assertEqual(waiting["active_player"], 0)
+        played.submit_move(1, 1)
+        waiting = self.wait_for_gui(
+            played,
+            lambda state: state["status"] == "waiting_human"
+            and state["active_player"] == 1,
+        )
+        self.assertEqual(waiting["board"][4], 0)
+        played.cancel()
+
+    def test_connect_four_gui_runs_agents_and_accepts_columns(self) -> None:
+        watched = ConnectFourGui()
+        watched.start(
+            GuiPlayer("random"),
+            GuiPlayer("random"),
+            seed=6,
+            minimum_move_seconds=0,
+        )
+        finished = self.wait_for_gui(watched, lambda state: state["status"] == "finished")
+        self.assertGreaterEqual(len(finished["moves"]), 7)
+        self.assertEqual(sum(cell is not None for cell in finished["board"]), len(finished["moves"]))
+
+        played = ConnectFourGui()
+        played.start(
+            GuiPlayer("human"),
+            GuiPlayer("human"),
+            minimum_move_seconds=0,
+        )
+        waiting = self.wait_for_gui(
+            played,
+            lambda state: state["status"] == "waiting_human",
+        )
+        self.assertEqual(waiting["legal_actions"], list(range(7)))
+        played.submit_move(3)
+        waiting = self.wait_for_gui(
+            played,
+            lambda state: state["status"] == "waiting_human"
+            and state["active_player"] == 1,
+        )
+        self.assertEqual(waiting["board"][5 * 7 + 3], 0)
+        self.assertEqual(waiting["last_move"], [5, 3])
+        played.cancel()
+
+    def test_gui_dispatches_connect_four_without_changing_the_server(self) -> None:
+        with patch("meeple_bots.gui.server.serve_gui") as serve:
+            run_gui(game="connect-four", open_browser=False)
+
+        application, page = serve.call_args.args
+        self.assertEqual(application.snapshot()["game"], "connect-four")
+        self.assertIn("Connect Four", page)
 
     def test_invalid_mcts_configuration_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

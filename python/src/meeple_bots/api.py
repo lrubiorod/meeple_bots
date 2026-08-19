@@ -239,6 +239,21 @@ HumanMoveObserver: TypeAlias = Callable[[HumanMoveObservation], None]
 
 
 @dataclass(frozen=True, slots=True)
+class MatchMoveObservation:
+    """State after any accepted action, including the agent's thinking time."""
+
+    game: Game
+    player: int
+    action: GameAction
+    board: GameBoard
+    decision_seconds: float
+    pools: tuple[BoopPool, BoopPool] | None = None
+
+
+MatchMoveObserver: TypeAlias = Callable[[MatchMoveObservation], None]
+
+
+@dataclass(frozen=True, slots=True)
 class HumanAgent:
     """A player controlled by a Python function or an interactive terminal prompt."""
 
@@ -337,6 +352,7 @@ class Match:
     second: Agent = field(default_factory=RandomAgent)
     seed: int = 0
     max_plies: int = 10_000
+    observe_move: MatchMoveObserver | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.game, (TicTacToe, ConnectFour, Boop)):
@@ -352,6 +368,13 @@ class Match:
         if not 0 <= self.seed <= _MAX_U64:
             raise ValueError(f"seed must be between 0 and {_MAX_U64}")
         _positive_u32("max_plies", self.max_plies)
+        if self.observe_move is not None:
+            if not callable(self.observe_move):
+                raise TypeError("observe_move must be callable")
+            if not isinstance(self.game, (TicTacToe, ConnectFour)):
+                raise ValueError(
+                    "live match observation is not yet available for boop"
+                )
 
     def run(self) -> MatchResult:
         """Execute the match and return its complete immutable report."""
@@ -362,6 +385,7 @@ class Match:
             _native_agent(self.second, self.game),
             self.seed,
             self.max_plies,
+            _match_move_observer(self.observe_move, self.game),
         )
         moves = tuple(
             Move(
@@ -751,6 +775,40 @@ def _human_move_observer(agent: HumanAgent, game: Game):
                 action=action,
                 board=board,
                 pools=pools,
+            )
+        )
+
+    return observe
+
+
+def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
+    if observer is None:
+        return None
+
+    def observe(
+        player: int,
+        flat_board,
+        native_action,
+        decision_seconds: float,
+    ) -> None:
+        if isinstance(game, TicTacToe):
+            action: GameAction = TicTacToeAction(
+                row=native_action[0],
+                column=native_action[1],
+            )
+            board = _board_rows(flat_board, columns=3)
+        elif isinstance(game, ConnectFour):
+            action = ConnectFourAction(column=native_action)
+            board = _board_rows(flat_board, columns=7)
+        else:
+            raise ValueError("live match observation is not yet available for boop")
+        observer(
+            MatchMoveObservation(
+                game=game,
+                player=player,
+                action=action,
+                board=board,
+                decision_seconds=decision_seconds,
             )
         )
 

@@ -36,12 +36,27 @@ from .api import (
     evaluate_game,
 )
 from .extraction import extract_tournament
+from .gui import run_gui
 from .reporting import generate_study_report
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="meeple-bots")
     commands = parser.add_subparsers(dest="command", required=True)
+    gui = commands.add_parser("gui", help="play or watch a game in a local browser")
+    gui.add_argument(
+        "--game",
+        choices=["connect-four", "tic-tac-toe"],
+        default="tic-tac-toe",
+    )
+    gui.add_argument("--host", default="127.0.0.1")
+    gui.add_argument("--port", type=int, default=8765)
+    gui.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="serve the interface without opening a browser automatically",
+    )
+
     match = commands.add_parser("match", help="run and display one match")
     match.add_argument(
         "--game", choices=["boop", "connect-four", "tic-tac-toe"], default="tic-tac-toe"
@@ -160,6 +175,14 @@ def sqrt_two() -> float:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "gui":
+            run_gui(
+                game=args.game,
+                host=args.host,
+                port=args.port,
+                open_browser=not args.no_browser,
+            )
+            return 0
         if args.command == "tournament":
             return _run_tournament(args)
         if args.command == "extract":
