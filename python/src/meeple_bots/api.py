@@ -371,10 +371,6 @@ class Match:
         if self.observe_move is not None:
             if not callable(self.observe_move):
                 raise TypeError("observe_move must be callable")
-            if not isinstance(self.game, (TicTacToe, ConnectFour)):
-                raise ValueError(
-                    "live match observation is not yet available for boop"
-                )
 
     def run(self) -> MatchResult:
         """Execute the match and return its complete immutable report."""
@@ -785,6 +781,40 @@ def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
     if observer is None:
         return None
 
+    if isinstance(game, Boop):
+        def observe_boop(
+            player: int,
+            flat_board,
+            native_pools,
+            native_action,
+            decision_seconds: float,
+        ) -> None:
+            board = _board_rows(
+                [
+                    None
+                    if piece is None
+                    else BoopPiece(player=piece[0], kind=BoopPieceKind(piece[1]))
+                    for piece in flat_board
+                ],
+                columns=6,
+            )
+            pools = tuple(
+                BoopPool(kittens=kittens, cats=cats)
+                for kittens, cats in native_pools
+            )
+            observer(
+                MatchMoveObservation(
+                    game=game,
+                    player=player,
+                    action=_boop_action_from_selector(native_action),
+                    board=board,
+                    decision_seconds=decision_seconds,
+                    pools=pools,
+                )
+            )
+
+        return observe_boop
+
     def observe(
         player: int,
         flat_board,
@@ -800,8 +830,6 @@ def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
         elif isinstance(game, ConnectFour):
             action = ConnectFourAction(column=native_action)
             board = _board_rows(flat_board, columns=7)
-        else:
-            raise ValueError("live match observation is not yet available for boop")
         observer(
             MatchMoveObservation(
                 game=game,

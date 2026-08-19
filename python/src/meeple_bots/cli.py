@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     gui = commands.add_parser("gui", help="play or watch a game in a local browser")
     gui.add_argument(
         "--game",
-        choices=["connect-four", "tic-tac-toe"],
+        choices=["boop", "connect-four", "tic-tac-toe"],
         default="tic-tac-toe",
     )
     gui.add_argument("--host", default="127.0.0.1")

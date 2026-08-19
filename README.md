@@ -10,7 +10,7 @@ exposed through a typed Python API and command-line interface.
 - Agents: interactive humans, uniform random play, and configurable MCTS.
 - Reproducible matches with seeded, independent random streams.
 - Complete move histories, utilities, winners, and authoritative final boards.
-- Local graphical tic-tac-toe and Connect Four matches for humans and live agent spectators.
+- Local graphical tic-tac-toe, Connect Four, and Boop matches for humans and live agent spectators.
 - Reproducible simulation batches with side alternation and live progress.
 - Simple game-tree sampling and local MCTS cost estimation.
 - Statically dispatched Rust game and agent implementations behind a Python-friendly catalog.
@@ -38,12 +38,14 @@ Or open a graphical playroom:
 ```bash
 python -m meeple_bots gui
 python -m meeple_bots gui --game connect-four
+python -m meeple_bots gui --game boop
 ```
 
-The tic-tac-toe and Connect Four browser interfaces support human, Random, and MCTS players in
-either seat. Agent-versus-agent matches are shown live. The selected interval is a minimum display
-interval, so a move appears after whichever is longer: the agent's actual thinking time or the
-configured interval.
+The browser interfaces support human, Random, and MCTS players in either seat. Agent-versus-agent
+matches are shown live without blocking the server while an agent thinks. The selected interval is
+a minimum display interval, so a move appears after whichever is longer: the agent's actual
+thinking time or the configured interval. Boop additionally exposes both MCTS heuristics, piece
+reserves, and explicit graduation or recovery choices.
 
 The equivalent Python API is:
 
@@ -157,4 +159,6 @@ Run the Python tests from the activated virtual environment:
 python -m unittest discover -s python/tests -v
 ```
 
-After changing the Rust bindings, update the editable native extension with `maturin develop`.
+After changing the Rust bindings, update the editable native extension with
+`maturin develop --release`. The release profile is important for MCTS workloads; an unoptimized
+development build can make the same match take dramatically longer.

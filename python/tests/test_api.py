@@ -29,6 +29,7 @@ from meeple_bots import (
     evaluate_game,
 )
 from meeple_bots.cli import main
+from meeple_bots.games.boop.gui import BoopGui
 from meeple_bots.games.connect_four.gui import ConnectFourGui
 from meeple_bots.games.tic_tac_toe.gui import GuiPlayer, TicTacToeGui
 from meeple_bots.gui.server import run_gui
@@ -176,6 +177,22 @@ class MatchApiTests(unittest.TestCase):
             [move.action for move in result.moves],
         )
 
+    def test_match_observer_receives_every_boop_move_and_pool(self) -> None:
+        observations = []
+        result = Match(
+            game=Boop(),
+            first=RandomAgent(),
+            second=RandomAgent(),
+            seed=9,
+            observe_move=observations.append,
+        ).run()
+
+        self.assertEqual(len(observations), result.plies)
+        self.assertTrue(all(isinstance(item.action, BoopAction) for item in observations))
+        self.assertTrue(all(item.pools is not None for item in observations))
+        self.assertEqual(observations[-1].board, result.final_board)
+        self.assertEqual(observations[-1].pools, result.pools)
+
     def test_tic_tac_toe_gui_runs_agents_and_accepts_human_moves(self) -> None:
         watched = TicTacToeGui()
         watched.start(
@@ -244,6 +261,49 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(waiting["last_move"], [5, 3])
         played.cancel()
 
+    def test_boop_gui_runs_agents_and_accepts_action_indices(self) -> None:
+        watched = BoopGui()
+        watched.start(
+            GuiPlayer("random"),
+            GuiPlayer("random"),
+            seed=9,
+            minimum_move_seconds=0,
+        )
+        finished = self.wait_for_gui(
+            watched,
+            lambda state: state["status"] == "finished",
+            timeout=5,
+        )
+        self.assertGreater(len(finished["moves"]), 0)
+        self.assertEqual(finished["moves"][-1]["board"], finished["board"])
+        self.assertEqual(finished["moves"][-1]["pools"], finished["pools"])
+        pieces_in_pools = sum(
+            pool["kittens"] + pool["cats"] for pool in finished["pools"]
+        )
+        pieces_on_board = sum(cell is not None for cell in finished["board"])
+        self.assertEqual(pieces_in_pools, 16 - pieces_on_board)
+
+        played = BoopGui()
+        played.start(
+            GuiPlayer("human"),
+            GuiPlayer("human"),
+            minimum_move_seconds=0,
+        )
+        waiting = self.wait_for_gui(
+            played,
+            lambda state: state["status"] == "waiting_human",
+        )
+        self.assertEqual(len(waiting["legal_actions"]), 36)
+        played.submit_move(waiting["legal_actions"][0]["index"])
+        waiting = self.wait_for_gui(
+            played,
+            lambda state: state["status"] == "waiting_human"
+            and state["active_player"] == 1,
+        )
+        self.assertEqual(waiting["pools"][0]["kittens"], 7)
+        self.assertIsNotNone(waiting["board"][0])
+        played.cancel()
+
     def test_gui_dispatches_connect_four_without_changing_the_server(self) -> None:
         with patch("meeple_bots.gui.server.serve_gui") as serve:
             run_gui(game="connect-four", open_browser=False)
@@ -251,6 +311,14 @@ class MatchApiTests(unittest.TestCase):
         application, page = serve.call_args.args
         self.assertEqual(application.snapshot()["game"], "connect-four")
         self.assertIn("Connect Four", page)
+
+    def test_gui_dispatches_boop_without_changing_the_server(self) -> None:
+        with patch("meeple_bots.gui.server.serve_gui") as serve:
+            run_gui(game="boop", open_browser=False)
+
+        application, page = serve.call_args.args
+        self.assertEqual(application.snapshot()["game"], "boop")
+        self.assertIn("Meeple Bots · Boop", page)
 
     def test_invalid_mcts_configuration_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

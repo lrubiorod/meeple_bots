@@ -22,18 +22,24 @@ The editable installation makes Python source changes immediately available. Reb
 extension after Rust binding changes:
 
 ```bash
-maturin develop
+maturin develop --release
 ```
+
+Use the release profile for normal matches, tournaments, and graphical interfaces. A plain
+`maturin develop` installs an unoptimized native module and is only appropriate when debugging the
+Rust binding itself.
 
 ### Package layout
 
-Game-specific Python integrations live under `meeple_bots.games`, grouped by game. For example,
-Boop owns its statistical reporting implementation and tic-tac-toe owns its graphical controller
-and browser page:
+Game-specific Python integrations live under `meeple_bots.games`, grouped by game. Boop owns its
+statistical reporting and graphical interface, while each simpler game owns its graphical
+controller and browser page:
 
 ```text
 meeple_bots/games/
-├── boop/reporting.py
+├── boop/
+│   ├── gui/
+│   └── reporting.py
 ├── connect_four/gui/
 └── tic_tac_toe/gui/
 ```
@@ -191,19 +197,26 @@ default browser:
 meeple-bots gui
 ```
 
-The interface supports tic-tac-toe and Connect Four. Each seat can be controlled by a human,
+The interface supports tic-tac-toe, Connect Four, and Boop. Each seat can be controlled by a human,
 Random, or MCTS, so the same screen can be used to play or to watch two agents. MCTS iterations and
 rollout depth, the random seed, and the minimum interval between displayed moves can be changed
 before each match. A move is displayed after `max(agent thinking time, configured interval)`,
-avoiding an extra delay when an agent already took longer than the selected pace.
+avoiding an extra delay when an agent already took longer than the selected pace. Native matches
+run without retaining Python's GIL, so the page and HTTP server remain responsive during long MCTS
+decisions.
 
 ```bash
 meeple-bots gui --game connect-four
+meeple-bots gui --game boop
 ```
+
+The Boop interface also configures heuristic `0`, heuristic `1`, or no cutoff heuristic per MCTS
+player. A human first chooses a kitten or cat and its destination. When that placement allows more
+than one mandatory graduation or recovery, the interface then asks which legal resolution to use.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--game` | `tic-tac-toe` | `tic-tac-toe` or `connect-four`. |
+| `--game` | `tic-tac-toe` | `tic-tac-toe`, `connect-four`, or `boop`. |
 | `--host` | `127.0.0.1` | Interface to bind. The default is accessible only locally. |
 | `--port` | `8765` | HTTP port for the local interface. |
 | `--no-browser` | disabled | Start the server without opening a browser automatically. |

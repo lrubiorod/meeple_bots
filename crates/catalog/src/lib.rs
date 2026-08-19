@@ -382,6 +382,21 @@ where
     Ok(boop_report(traced))
 }
 
+pub fn run_boop_match_with_observer<A, B, O>(
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+    observer: &mut O,
+) -> Result<CatalogMatchReport, CatalogError>
+where
+    A: Agent<Boop>,
+    B: Agent<Boop>,
+    O: MatchObserver<Boop>,
+{
+    let traced = play_match_with_trace_and_observer(&Boop, first, second, config, observer)?;
+    Ok(boop_report(traced))
+}
+
 pub fn run_connect_four_match_with_trace<A, B>(
     first: &mut A,
     second: &mut B,

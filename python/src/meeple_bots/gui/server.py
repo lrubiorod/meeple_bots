@@ -101,7 +101,11 @@ def run_gui(
 ) -> None:
     """Select and serve one supported game's GUI."""
 
-    if game == "connect-four":
+    if game == "boop":
+        from ..games.boop.gui import PAGE, BoopApplication
+
+        application = BoopApplication()
+    elif game == "connect-four":
         from ..games.connect_four.gui import PAGE, ConnectFourApplication
 
         application = ConnectFourApplication()
@@ -112,7 +116,7 @@ def run_gui(
     else:
         raise ValueError(
             f"graphical interface is not available for {game}; "
-            "available games: connect-four, tic-tac-toe"
+            "available games: boop, connect-four, tic-tac-toe"
         )
 
     serve_gui(
