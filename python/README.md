@@ -2,13 +2,14 @@
 
 [Back to the project overview](../README.md)
 
-The public `meeple_bots` package provides typed game, agent, match, result, and game-evaluation
-objects. Its private PyO3 extension delegates game rules and simulation to Rust.
+The public `meeple_bots` package provides typed games, agents, matches, results, and evaluation
+reports. Rust remains responsible for authoritative rules and automated simulation; Python provides
+configuration, interactive input, browser interfaces, study orchestration, and reporting.
 
-## Installation
+## Install for development
 
 Python 3.11 or newer and a Rust toolchain compatible with the 2024 edition are required. Create the
-virtual environment inside the repository so the complete Python setup remains workspace-local:
+virtual environment inside the repository:
 
 ```bash
 python3 -m venv .venv
@@ -18,55 +19,39 @@ python -m pip install "maturin>=1.9.4,<2.0"
 python -m pip install --no-build-isolation -e .
 ```
 
-The editable installation makes Python source changes immediately available. Rebuild the native
-extension after Rust binding changes:
+The editable installation exposes Python source changes immediately. Rebuild the native extension
+after changing Rust bindings:
 
 ```bash
 maturin develop --release
 ```
 
-Use the release profile for normal matches, tournaments, and graphical interfaces. A plain
-`maturin develop` installs an unoptimized native module and is only appropriate when debugging the
-Rust binding itself.
+Use the release profile for normal games and experiments. A plain `maturin develop` is useful when
+debugging bindings, but its unoptimized MCTS timings are not representative.
 
-### Package layout
+Activate the environment with `source .venv/bin/activate` in each new terminal and leave it with
+`deactivate`.
 
-Game-specific Python integrations live under `meeple_bots.games`, grouped by game. Boop owns its
-statistical reporting and graphical interface, while each simpler game owns its graphical
-controller and browser page:
+## Choose an interface
 
-```text
-meeple_bots/games/
-├── boop/
-│   ├── gui/
-│   └── reporting.py
-├── connect_four/gui/
-└── tic_tac_toe/gui/
-```
+| Need | Recommended interface |
+| --- | --- |
+| Integrate a game into Python code | `Match`, `Batch`, and `evaluate_game` |
+| Play or watch locally | `meeple-bots gui` |
+| Run one visible terminal match | `meeple-bots match` |
+| Compare two configurations repeatedly | `meeple-bots batch` |
+| Run a reproducible round-robin study | `tournament`, `extract`, and `report` |
 
-Generic orchestration remains in `meeple_bots.reporting` and `meeple_bots.gui`. Rust continues to
-own the authoritative rules under the repository's top-level `games/` workspace directories; the
-Python game packages contain presentation, reporting, and integration code rather than duplicate
-rule implementations.
-
-Activate the environment again with `source .venv/bin/activate` when opening a new terminal. Leave
-it with `deactivate`.
-
-### Systems without ensurepip
-
-On Debian or Ubuntu, `python3 -m venv` can report that `ensurepip` is unavailable. Installing the
-distribution's `python3-venv` package is the usual system-wide solution. If the system `pip`
-supports `--python`, the environment can instead be bootstrapped without writing Python packages
-globally:
+The installed command and module entry points are equivalent:
 
 ```bash
-python3 -m venv --without-pip .venv
-python3 -m pip --python .venv/bin/python install --upgrade pip "maturin>=1.9.4,<2.0"
-source .venv/bin/activate
-python -m pip install --no-build-isolation -e .
+meeple-bots match --first mcts --second random --seed 42
+python -m meeple_bots match --first mcts --second random --seed 42
 ```
 
-## Running a match
+## Python API
+
+### Run one match
 
 `Match` accepts one game, two agents, a seed, and a safety limit for the number of plies:
 
@@ -75,27 +60,28 @@ from meeple_bots import Match, MctsAgent, RandomAgent, TicTacToe
 
 result = Match(
     game=TicTacToe(),
-    first=MctsAgent(iterations=1_000, rollout_depth=256, heuristic=None),
+    first=MctsAgent(iterations=1_000, rollout_depth=256),
     second=RandomAgent(),
     seed=42,
 ).run()
 
 print(result.winner)
 print(result.utilities)
+print(result.final_board)
 for move in result.moves:
     print(move.player, move.action)
 ```
 
-Player identifiers, rows, and columns are zero-based. `winner` is `None` for a draw. Reusing the
-same seed and configuration reproduces the same match.
+`winner` is player `0`, player `1`, or `None` for a draw. Rows, columns, and player identifiers are
+zero-based. The same game, agents, and seed reproduce the same automated decisions.
 
-Available games and their action types are documented in the [games guide](../games/README.md).
+The result contains the complete action history and final board. Boop results also contain both
+piece pools. Available games and action types are listed in the [games guide](../games/README.md).
 
-An MCTS heuristic is selected by a zero-based index owned by the game. Availability and meaning
-therefore vary between games, and selecting an unsupported index raises a validation error. See the
-[games guide](../games/README.md) and each game's README for the available evaluators.
+MCTS configuration and heuristic indices are documented in the
+[agents guide](../agents/README.md#monte-carlo-tree-search).
 
-## Human players
+### Human-controlled matches
 
 `HumanAgent()` uses the built-in terminal prompt:
 
@@ -105,7 +91,7 @@ from meeple_bots import HumanAgent, Match, MctsAgent
 result = Match(first=HumanAgent(), second=MctsAgent(), seed=42).run()
 ```
 
-Pass a selector function to connect another input source such as a graphical interface:
+Pass a selector to connect another input source:
 
 ```python
 from meeple_bots import HumanAgent, Match, RandomAgent
@@ -113,7 +99,8 @@ from meeple_bots import HumanAgent, Match, RandomAgent
 
 def choose_move(turn):
     print(turn.board)
-    print(turn.legal_actions)
+    for index, action in enumerate(turn.legal_actions):
+        print(index, action)
     return turn.legal_actions[0]
 
 
@@ -121,19 +108,16 @@ result = Match(first=HumanAgent(choose_move), second=RandomAgent()).run()
 ```
 
 The selector receives a read-only `HumanTurn` containing the game, active player, board, legal
-actions, and boop. pools when applicable. It must return one of `turn.legal_actions`; returning a
-wrong type or illegal action stops the match with an error.
+actions, and Boop pools when applicable. It must return one of the supplied legal actions; a wrong
+type or illegal action stops the match with an error.
 
-An optional `observe_action` callback receives a `HumanMoveObservation` with the board and pools
-immediately after the selected action has been applied. The terminal CLI enables it automatically,
-so interactive matches show the result of the human move before the automated opponent starts
-thinking.
+`HumanAgent` can also receive an `observe_action` callback for the state immediately after its own
+accepted action. `Match` has an `observe_move` callback for every accepted move, including decision
+time. These callbacks support custom interfaces without duplicating game rules in Python.
 
-## Running simulation batches
+### Compare two agents
 
-`Batch` runs automated participants repeatedly, alternates their player positions by default, and
-returns participant-oriented results. In `BatchMatchResult`, winner `0` means agent A, winner `1`
-means agent B, and `None` means draw:
+`Batch` runs automated participants repeatedly and alternates their seats by default:
 
 ```python
 from meeple_bots import Batch, MctsAgent, RandomAgent, TicTacToe
@@ -149,168 +133,97 @@ result = Batch(
 print(result.agent_a_wins, result.agent_b_wins, result.draws)
 ```
 
-Seeds are assigned sequentially starting at the batch seed. Timing fields are observational; game
-results remain reproducible for the same configuration and seed.
+Batch winners are participant-oriented: `0` means agent A, `1` means agent B, and `None` means a
+draw. Match seeds increase sequentially from the batch seed. Durations are observational; results
+remain reproducible for a fixed configuration and seed.
 
-## Game evaluation
+### Estimate game and search scale
 
-The Python API returns a compact estimate of a game's structure and MCTS compute requirements:
+`evaluate_game` samples random paths and calibrates a small MCTS probe locally:
 
 ```python
-from meeple_bots import Boop, MctsAgent, evaluate_game
+from meeple_bots import Boop, evaluate_game
 
 report = evaluate_game(Boop(), samples=128, max_depth=256, seed=42)
+
 print(report.initial_legal_actions)
 print(report.estimated_depth)
 print(report.recommended_iterations)
-print(report.milliseconds_per_iteration)
 print(report.estimated_decision_time_ms)
-
-agent = MctsAgent(
-    iterations=report.recommended_iterations,
-    rollout_depth=report.recommended_rollout_depth,
-)
 ```
 
-The recommendation uses the initial action count, effective branching factor, and sampled
-95th-percentile depth. It is capped at one million iterations. Timing comes from a short MCTS
-calibration on the current machine, so it is approximate and can vary with load and build mode.
-It indicates computational scale rather than playing strength. See the
-[game evaluation guide](../crates/evaluation/README.md) for the formula and limitations.
+The result estimates computational scale, not playing strength. See the
+[game evaluation guide](../crates/evaluation/README.md) before using its recommendation.
 
-## Command-line interface
+## Command-line workflows
 
-The installed script and module entry points are equivalent while the virtual environment is
-active:
+| Command | Purpose | Main output |
+| --- | --- | --- |
+| `gui` | Play or watch a local browser match. | Interactive web page |
+| `match` | Run and display one match. | Terminal text or JSON |
+| `batch` | Compare two automated participants. | Progress and aggregate result |
+| `analyze` | Sample game structure and calibrate MCTS. | Evaluation report |
+| `tournament` | Run configured round-robin pairings. | JSONL trace |
+| `extract` | Convert a tournament trace into tables. | Manifest and CSV files |
+| `report` | Build statistics and figures from extracted tables. | HTML, JSON, PNG, and CSV |
 
-```bash
-meeple-bots match --first mcts --second random --seed 42
-python -m meeple_bots match --first mcts --second random --seed 42
-```
+Use `meeple-bots COMMAND --help` for the complete options and defaults installed in the active
+environment.
 
-### gui
+### Play or watch
 
-The `gui` command starts a dependency-free web interface on the local machine and opens it in the
-default browser:
+Start the local browser interface:
 
 ```bash
 meeple-bots gui
-```
-
-The interface supports tic-tac-toe, Connect Four, and Boop. Each seat can be controlled by a human,
-Random, or MCTS, so the same screen can be used to play or to watch two agents. MCTS iterations and
-rollout depth, the random seed, and the minimum interval between displayed moves can be changed
-before each match. A move is displayed after `max(agent thinking time, configured interval)`,
-avoiding an extra delay when an agent already took longer than the selected pace. Native matches
-run without retaining Python's GIL, so the page and HTTP server remain responsive during long MCTS
-decisions.
-
-```bash
 meeple-bots gui --game connect-four
 meeple-bots gui --game boop
 ```
 
-The Boop interface also configures heuristic `0`, heuristic `1`, or no cutoff heuristic per MCTS
-player. A human first chooses a kitten or cat and its destination. When that placement allows more
-than one mandatory graduation or recovery, the interface then asks which legal resolution to use.
+Each seat can be human, Random, or MCTS. Before a match, the page configures player types, MCTS
+budget, seed, and minimum display interval. Boop also exposes both cutoff heuristics and asks humans
+to choose a graduation or recovery when a placement has several legal resolutions.
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `--game` | `tic-tac-toe` | `tic-tac-toe`, `connect-four`, or `boop`. |
-| `--host` | `127.0.0.1` | Interface to bind. The default is accessible only locally. |
-| `--port` | `8765` | HTTP port for the local interface. |
-| `--no-browser` | disabled | Start the server without opening a browser automatically. |
+The server binds to `127.0.0.1:8765` by default. Use `--host`, `--port`, or `--no-browser` to change
+startup behavior, and `Ctrl+C` to stop it. Automated native matches release Python's GIL, keeping
+the page responsive during long decisions.
 
-Use `Ctrl+C` in the terminal to stop the server.
-
-### match
-
-The `match` command runs one game and prints its move history and final board.
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--game` | `tic-tac-toe` | `tic-tac-toe`, `connect-four`, or `boop`. |
-| `--first` | `mcts` | Player 0: `human`, `mcts`, or `random`. |
-| `--second` | `random` | Player 1: `human`, `mcts`, or `random`. |
-| `--seed` | `0` | Seed for reproducible random streams. |
-| `--max-plies` | `10000` | Match safety limit. |
-| `--mcts-iterations` | `1000` | Manual MCTS search iterations. |
-| `--mcts-exploration` | `sqrt(2)` | MCTS exploration constant. |
-| `--mcts-rollout-depth` | `256` | Manual rollout-depth limit. |
-| `--first-mcts-config PATH` | disabled | Load player 0 MCTS parameters from a TOML profile. |
-| `--second-mcts-config PATH` | disabled | Load player 1 MCTS parameters from a TOML profile. |
-| `--first-mcts-heuristic [INDEX]` | disabled | Player 0 heuristic; omitting `INDEX` selects `0`. |
-| `--second-mcts-heuristic [INDEX]` | disabled | Player 1 heuristic; omitting `INDEX` selects `0`. |
-| `--json` | disabled | Emit machine-readable output. |
-
-A profile supplies the complete MCTS configuration for its player. The shared manual MCTS options
-apply only to MCTS players without a profile. Do not combine a player's profile with that player's
-heuristic flag.
-
-Examples:
+For a terminal match:
 
 ```bash
 meeple-bots match --game connect-four --first human --second mcts --seed 42
 meeple-bots match --game boop --first random --second random --seed 9 --json
+```
+
+`match` defaults to tic-tac-toe with MCTS as player 0 and Random as player 1. Common options select
+the game, players, seed, ply limit, manual MCTS parameters, and JSON output.
+
+Manual MCTS options apply to every MCTS player that does not load a profile. Heuristics are selected
+per seat:
+
+```bash
 meeple-bots match --game boop --first human --second mcts \
-  --mcts-iterations 50000 --mcts-rollout-depth 64
-meeple-bots match --game boop --first mcts --second mcts \
-  --first-mcts-heuristic --second-mcts-heuristic 0
+  --mcts-iterations 1000 --mcts-rollout-depth 16 \
+  --second-mcts-heuristic 1 --seed 42
+```
+
+Omitting the value after `--first-mcts-heuristic` or `--second-mcts-heuristic` selects index `0`.
+Unsupported indices and heuristics on unsupported games are rejected.
+
+Load a complete profile for one seat when the configuration should be reusable:
+
+```bash
 meeple-bots match --game boop --first mcts --second human \
   --first-mcts-config configs/mcts/heuristic.toml
 ```
 
-### analyze
+Do not combine a player's profile with that player's heuristic flag. The profile format is
+documented in [Reusable profiles](../agents/README.md#reusable-profiles).
 
-The `analyze` command samples a game and prints its structural metrics, suggested MCTS iteration
-count, and approximate timing on the current machine.
+### Compare agents from the CLI
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `--game` | required | Game to analyze. |
-| `--samples` | `128` | Number of sampled games. |
-| `--max-depth` | `256` | Sampling depth ceiling and suggested rollout depth. |
-| `--seed` | `0` | Seed for reproducible structural sampling. |
-| `--json` | disabled | Emit machine-readable output. |
-
-```bash
-meeple-bots analyze --game boop --samples 128 --max-depth 256
-meeple-bots analyze --game boop --samples 128 --max-depth 256 --json
-```
-
-### batch
-
-The `batch` command runs automated matches and prints progress to standard error before and after
-every game. Agent A and B swap player positions on alternating matches, so wins are summarized by
-participant rather than by board position.
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--game` | required | Game to simulate. |
-| `--matches` | `20` | Number of matches. |
-| `--agent-a` | `random` | Participant A: `random` or `mcts`. |
-| `--agent-b` | `mcts` | Participant B: `random` or `mcts`. |
-| `--agent-a-config` | disabled | TOML profile required when A is MCTS. |
-| `--agent-b-config` | disabled | TOML profile required when B is MCTS. |
-| `--seed` | `0` | Seed of the first match. |
-| `--max-plies` | `10000` | Safety limit for each match. |
-| `--no-alternate-sides` | disabled | Keep A as player 0 in every match. |
-| `--json` | disabled | Emit the final report as JSON; progress remains on stderr. |
-
-The `match` and `batch` commands share the same MCTS profiles. Copy
-[`configs/mcts/template.toml`](../configs/mcts/template.toml) for each configuration. A profile is a
-TOML text file:
-
-```toml
-name = "example-mcts"
-iterations = 500
-rollout_depth = 16
-exploration = 1.4142135623730951
-use_heuristic = false
-heuristic_index = 0
-```
-
-Random against MCTS:
+The `batch` command runs automated matches, reports progress on standard error, and alternates
+seats by default. Every MCTS participant requires a profile:
 
 ```bash
 meeple-bots batch --game boop --matches 20 \
@@ -318,7 +231,7 @@ meeple-bots batch --game boop --matches 20 \
   --agent-b-config configs/mcts/template.toml --seed 42
 ```
 
-Two MCTS profiles against each other:
+Compare two MCTS profiles:
 
 ```bash
 meeple-bots batch --game boop --matches 20 \
@@ -327,28 +240,45 @@ meeple-bots batch --game boop --matches 20 \
   --seed 42 --json
 ```
 
-Use `meeple-bots gui --help`, `meeple-bots match --help`, `meeple-bots analyze --help`, or
-`meeple-bots batch --help` for the options installed in the current environment.
+Use `--no-alternate-sides` only when keeping agent A in seat 0 is intentional. Batch summaries are
+participant-oriented, so normal comparisons should leave alternation enabled.
 
-### tournament
+### Analyze a game
 
-The `tournament` command loads a TOML study configuration, schedules every distinct pair of agents,
-alternates their player positions, and optionally schedules selected self-play pairings. It writes
-one compact JSON object per line so completed matches remain available if a long study is
-interrupted:
+```bash
+meeple-bots analyze --game boop --samples 128 --max-depth 256 --seed 42
+meeple-bots analyze --game boop --samples 128 --max-depth 256 --seed 42 --json
+```
+
+This command is the CLI equivalent of `evaluate_game`. Its formula, fields, and interpretation are
+kept in the [evaluation guide](../crates/evaluation/README.md).
+
+## Run a study
+
+Use a tournament when more than two configurations must be compared or when every action trace
+must be preserved for later analysis.
+
+```text
+tournament TOML
+       |
+       v
+tournament JSONL trace
+       |
+       v
+extracted manifest and CSV tables
+       |
+       v
+HTML report, figures, summary, and aggregate tables
+```
+
+### 1. Configure and run the tournament
 
 ```bash
 meeple-bots tournament \
   --config configs/tournaments/boop-study.toml
 ```
 
-The first JSONL record contains the complete tournament configuration and schema version. Every
-remaining record contains agent roles, physical player positions, seed, duration, result, and the
-full action trace. Existing output files are rejected by default; pass `--overwrite` intentionally
-to replace one. `--output PATH` can override the destination configured in the TOML.
-
-A tournament configuration defines shared execution parameters followed by at least two uniquely
-named agents:
+A configuration defines shared execution settings and at least two uniquely named agents:
 
 ```toml
 game = "boop"
@@ -372,84 +302,138 @@ heuristic_index = 0
 self_play = true
 ```
 
-Relative output paths are resolved from the directory containing the tournament TOML, independently
-of the process working directory. Missing parent directories are created automatically. Keeping
-generated traces under `results/tournaments/` separates reproducible inputs in `configs/` from
-potentially large study outputs.
+The tournament schedules every distinct pair of agents and alternates their seats. `self_play =
+true` adds one same-configuration pairing without including those games in competitive standings.
+Different names may intentionally use identical parameters.
 
-`self_play = true` adds one same-configuration pairing for that agent without duplicating it in the
-standings. Self-play games are recorded separately and do not count as wins or losses in the
-cross-agent standings. Agents may still have identical parameters when different names are useful
-for an experiment.
+Relative output paths are resolved from the directory containing the TOML, not from the current
+working directory. Missing parent directories are created. Existing trace files are protected;
+pass `--overwrite` only when replacement is intentional or use `--output PATH` for another target.
 
-Run large studies with a release build of the native extension. The provided
-[`boop-study.toml`](../configs/tournaments/boop-study.toml) contains Random plus 100, 1,000, and
-10,000-iteration MCTS agents with and without heuristic 0. The two 10,000-iteration agents also run
-self-play, producing 23 pairings and 460 matches with the default 20 matches per pairing.
+The JSONL header stores the complete configuration and schema version. Each following line stores
+roles, physical seats, seed, duration, result, and full action trace. Because each match is flushed
+immediately, completed work remains available if a long tournament is interrupted.
 
-### extract
+The supplied `boop-study.toml` defines seven configurations, 21 cross-agent pairings, two selected
+self-play pairings, and 20 matches per pairing: 460 matches in total.
 
-The `extract` command reads the game from a tournament header, selects its Rust trace analyzer, and
-writes analysis-ready CSV tables without running the agents or their MCTS searches again:
+### 2. Extract analysis tables
 
 ```bash
 meeple-bots extract \
   --input results/tournaments/boop-study.jsonl
 ```
 
-By default, this creates `results/tournaments/boop-study/data/`, grouping derived artifacts under a
-directory named after the JSONL file. Use `--output-dir PATH` to choose another directory. Existing
-extraction files are protected unless `--overwrite` is supplied.
+The default output is `results/tournaments/boop-study/data/`. Use `--output-dir PATH` to override
+it. Existing known outputs are protected unless `--overwrite` is supplied.
 
-Every supported game receives common tournament tables:
+Extraction is currently registered only for Boop. It starts with three generic tournament tables:
 
-- `manifest.json`: source, schema, completeness, zone definitions, and row counts.
-- `agents.csv`: one row per configured tournament agent.
-- `matches.csv`: game-independent outcomes, sides, duration, and utilities.
+- `manifest.json`: schemas, completeness, table names, and row counts;
+- `agents.csv`: one row per configured agent;
+- `matches.csv`: game-independent outcomes, seats, durations, and utilities.
 
-The boop analyzer additionally produces:
+Boop additionally produces:
 
-- `boop_matches.csv`: first graduation and winning mechanism for each match.
-- `turns.csv`: placements, phases, zones, resolutions, boop totals, and state metrics.
-- `boops.csv`: one row per adjacent piece interaction.
-- `resolutions.csv`: one row per graduation or eight-piece recovery.
-- `winning_lines.csv`: positions and orientations of final cat lines.
+- `boop_matches.csv`: first graduation and winning mechanism per match;
+- `turns.csv`: placements, phases, zones, resolutions, boops, and state metrics;
+- `boops.csv`: one row per adjacent-piece interaction;
+- `resolutions.csv`: one row per graduation or eight-piece recovery;
+- `winning_lines.csv`: final cat-line positions and orientations.
 
-Extraction is streaming and accepts an interrupted or still-growing study. It processes every
-complete match available and marks `complete` as false in the manifest when the declared match
-count has not been reached. A truncated final JSONL line is ignored and reported; malformed lines
-elsewhere are rejected. Tournament schema version 1 is supported. Boop currently provides the only
-game-specific analyzer; Connect Four and tic-tac-toe are recognized but report that tournament
-analysis is not available until their analyzers are implemented.
+Extraction streams the trace and accepts interrupted studies. It marks the manifest as partial when
+fewer matches than declared are available. A truncated final JSONL line is ignored and reported;
+malformed records elsewhere are rejected.
 
-### report
+Tournaments can still record Connect Four and tic-tac-toe traces, but `extract` rejects them until
+their analyzers are implemented.
 
-Install the optional statistical and plotting dependencies:
+### 3. Generate a Boop report
+
+Install the optional plotting and statistics dependencies once:
 
 ```bash
 python -m pip install -e ".[report]"
 ```
 
-Then generate a report from an extracted tournament directory:
+Then generate the report:
 
 ```bash
 meeple-bots report \
   --input results/tournaments/boop-study/data
 ```
 
-An input directory named `data` produces a sibling `report` directory by default, resulting in the
-grouped layout `boop-study/{data,report}/`. For any other input directory, `report/` is created
-inside it. Use `--output-dir PATH` to choose another location and `--overwrite` to replace known
-report artifacts. The command reads the game from `manifest.json`; Boop is currently the only
-registered report generator.
+An input directory named `data` produces a sibling `report` directory. Other input names receive a
+nested `report/` by default. Use `--output-dir PATH` or `--overwrite` to change that behavior.
 
-The report directory contains:
+Boop is currently the only registered report generator. It accepts a partial extraction but labels
+the result as preliminary.
 
-- `index.html`: a navigable statistical report.
-- `summary.json`: headline values for other tools.
-- `figures/`: standalone PNG charts.
-- `tables/`: the aggregate CSV data behind the charts.
+## Study artifacts
 
-Competitive results exclude self-play. Strategic plots retain it, normalize board zones by their
-number of cells, and summarize turn-level behavior by match so long games do not dominate the
-averages. A partial extraction is accepted but clearly labeled as preliminary.
+The default study layout keeps source traces, derived data, and presentation separate:
+
+```text
+results/tournaments/
+├── boop-study.jsonl
+└── boop-study/
+    ├── data/
+    │   ├── manifest.json
+    │   └── *.csv
+    └── report/
+        ├── index.html
+        ├── summary.json
+        ├── figures/*.png
+        └── tables/*.csv
+```
+
+Competitive report results exclude self-play. Strategic summaries retain it, normalize board
+zones by cell count, and aggregate turn-level behavior by match so long games do not dominate.
+
+The JSONL trace is the durable source record. Extracted tables and reports can be regenerated from
+it without rerunning MCTS.
+
+## Reproducibility and performance
+
+- Match seeds create independent deterministic random streams for both seats.
+- Batch and tournament match seeds advance sequentially from their configured base seed.
+- Batch and tournament comparisons alternate seats unless explicitly configured otherwise.
+- Timing fields vary with hardware, system load, and build profile.
+- Use `maturin develop --release` before performance measurements or large studies.
+- Preserve agent profiles and tournament TOML alongside results so experiments can be repeated.
+
+## Package boundary
+
+Game-specific Python presentation lives under `meeple_bots.games`. Generic GUI and report
+dispatch live under `meeple_bots.gui` and `meeple_bots.reporting`. The private
+`meeple_bots._native` module is an implementation detail; applications should import public values
+from `meeple_bots`.
+
+Rust remains the single source of truth for rules under the repository's top-level `games/`
+workspace. Python game packages provide presentation, reporting, and integration rather than a
+second rule implementation.
+
+## Troubleshooting
+
+### `ensurepip` is unavailable
+
+On Debian or Ubuntu, installing the distribution's `python3-venv` package is the usual system-wide
+solution. If system `pip` supports `--python`, bootstrap the local environment without installing
+Python packages globally:
+
+```bash
+python3 -m venv --without-pip .venv
+python3 -m pip --python .venv/bin/python install --upgrade pip "maturin>=1.9.4,<2.0"
+source .venv/bin/activate
+python -m pip install --no-build-isolation -e .
+```
+
+### MCTS is unexpectedly slow
+
+Confirm that the virtual environment contains a release build:
+
+```bash
+maturin develop --release
+```
+
+Debug native builds are intentionally unoptimized and should not be used for search comparisons.

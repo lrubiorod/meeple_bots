@@ -2,88 +2,112 @@
 
 [Back to the project overview](../README.md)
 
-Meeple Bots keeps concrete states and actions strongly typed while allowing games and agents to be
-selected at runtime outside performance-critical loops.
+Meeple Bots keeps game states and actions strongly typed throughout simulation. Runtime choices are
+resolved once at the catalog boundary, before entering generic, performance-critical Rust loops.
 
-## Workspace layout
+## Layers
 
 ```text
-python-bindings
-      |
-   catalog
-   ├── games ───────────────> core
-   ├── agents ──────────────> core
-   ├── simulation ──────────> core
-   ├── evaluation ──> MCTS, simulation, core
-   └── core
+Python API and CLI
+        |
+PyO3 bindings
+        |
+runtime catalog
+   |       |       |
+ games   agents  evaluation
+    \       |       /
+     simulation and core contracts
 ```
 
-- `meeple_bots_core` defines games, agents, players, errors, randomness, and capability traits.
-- `meeple_bots_simulation` runs reproducible matches and sequential batches.
-- `meeple_bots_evaluation` samples game trees and estimates local MCTS compute requirements.
-- `games/*` owns concrete state, action, and rule implementations.
-- `agents/*` contains policies generic over the core contracts.
-- `meeple_bots_catalog` maps runtime game and agent identifiers to monomorphized calls.
-- `meeple_bots_python_bindings` translates public Python values at the PyO3 boundary.
+| Workspace area | Responsibility |
+| --- | --- |
+| `crates/core` | Games, agents, players, errors, randomness, and capability traits. |
+| `crates/simulation` | Reproducible matches, batches, observers, and typed traces. |
+| `games/*` | Concrete state, action, legal-action, and transition rules. |
+| `agents/*` | Search and selection policies generic over core contracts. |
+| `crates/evaluation` | Structural sampling and local MCTS cost calibration. |
+| `crates/catalog` | Runtime identifiers mapped to concrete generic calls. |
+| `crates/python-bindings` | PyO3 conversion between Rust and the public Python model. |
+
+Dependencies point inward toward `meeple_bots_core`. Concrete games do not depend on agents,
+Python, or the catalog.
+
+## Match execution
+
+A normal automated match follows one short path:
+
+1. Python converts a public game and agent configuration at the binding boundary.
+2. The catalog selects one concrete game and agent combination.
+3. `play_match<G, A, B>` creates the initial state and independent seeded RNG streams.
+4. The active `Agent<G>` receives a read-only `DecisionContext` and returns one `G::Action`.
+5. The game validates and applies the action to its authoritative state.
+6. An optional observer records the accepted action and decision time.
+7. Terminal utilities and the typed trace are converted back to the public result model.
+
+The Python interpreter does not participate in automated decision loops. Python is called during a
+match only for a human selector or observer callback.
 
 ## Game contract
 
 Each game implements `Game` with its own associated types:
 
-- `State`: the authoritative mutable position.
-- `Action`: one complete legal decision.
-- `Observation`: the information visible to a player.
-- `LegalActions`: an iterator over currently legal actions.
+| Associated type | Role |
+| --- | --- |
+| `State` | Complete authoritative position mutated by legal transitions. |
+| `Action` | One complete player decision. |
+| `Observation<'a>` | Information visible to one player. |
+| `LegalActions<'a>` | Iterator over actions legal in the current state. |
 
-The contract also provides initial state construction, position status, state transitions, and
-terminal utilities. `PositionStatus` distinguishes player turns, terminal positions, and a reserved
-chance boundary.
+The trait also constructs the initial state, reports whose turn it is, applies actions, and returns
+normalized terminal utility. `PositionStatus` distinguishes player turns, terminal positions, and
+a reserved chance boundary.
 
-Capability traits describe assumptions required by generic algorithms:
+Capability traits state additional guarantees required by algorithms:
 
-- `DeterministicGame`
-- `PerfectInformationGame`
-- `HeuristicGame` for games that optionally expose indexed state evaluators.
-- `TwoPlayerZeroSumGame`
+- `DeterministicGame`: the game never requests a chance transition.
+- `PerfectInformationGame`: every player can observe the authoritative state.
+- `HeuristicGame`: the game exposes one or more indexed state evaluators.
+- `TwoPlayerZeroSumGame`: the current two-seat adversarial model.
 
-MCTS declares these capabilities as trait bounds, so unsupported games fail at compile time instead
-of relying on runtime checks inside the search.
+MCTS expresses its supported domain through these trait bounds. An incompatible Rust game cannot
+silently enter a search that assumes determinism or full state access.
 
 ## Agent contract
 
-An `Agent<G>` receives a `DecisionContext` for a concrete game and selects one `G::Action`.
-`DecisionContext` exposes legal actions and the player's observation; the authoritative state is
-available only when `G` implements `PerfectInformationGame`.
+`Agent<G>` selects one `G::Action` from a `DecisionContext`. Every agent can access the game, legal
+actions, active player, and player observation. Full state access exists only for agents whose game
+implements `PerfectInformationGame`.
 
-Randomness is supplied through the small `RandomSource` abstraction. The simulation crate derives
-an independent deterministic stream for each player from the match seed.
+Randomness is explicit through `RandomSource`. The simulation crate derives a separate
+deterministic stream for each seat from the match seed, avoiding accidental coupling between the
+two agents' random choices.
 
 ## Static and runtime dispatch
 
-Matches use generic functions such as `play_match<G, A, B>`. Concrete game and agent combinations
-are therefore monomorphized, without trait objects or erased actions in the match loop.
+The simulation functions are generic, so Rust monomorphizes every supported `G`, `A`, and `B`
+combination. There are no erased action types or agent trait objects inside the match loop.
 
-Runtime selection occurs once in the catalog. `GameId` and `AgentConfig` choose the corresponding
-generic call before simulation begins. The same boundary converts typed traces and final states
-into catalog reports for Python serialization.
+The catalog provides the dynamic edge needed by Python and the CLI. `GameId` and `AgentConfig`
+select the corresponding concrete call once, then convert the typed trace and final state into a
+catalog report.
 
-## Simulation and observation
+## Where changes belong
 
-The simulation crate owns:
-
-- Match and batch configuration.
-- Independent seeded RNG streams.
-- Turn and ply-limit enforcement.
-- Agent and illegal-action error propagation.
-- Compile-time observers and typed action traces.
-
-The Python bindings do not participate in automated decision loops. Python is called during a
-match only when a `HumanAgent` selector is active.
+| Change | Primary location | Integration points |
+| --- | --- | --- |
+| New game rules | `games/<game>` | Catalog, bindings, Python model, and presentation. |
+| New generic agent | `agents/<agent>` | Catalog, bindings, and Python configuration. |
+| Match behavior | `crates/simulation` | Catalog and binding tests when public behavior changes. |
+| Shared capability | `crates/core` | Every algorithm and game that relies on it. |
+| Structural metric | `crates/evaluation` | Catalog, bindings, and Python report model. |
+| Python-only UI or report | `python/src/meeple_bots` | Public API or CLI registration as needed. |
 
 ## Current boundaries
 
-Current implementations are sequential, deterministic, two-player, zero-sum, and
-perfect-information games. `PositionStatus::Chance` and per-player observations reserve extension
-points, but stochastic transitions and hidden-information algorithms are not implemented yet.
+The implemented games are sequential, deterministic, perfect-information, two-player, and
+zero-sum. `PositionStatus::Chance` and per-player observations reserve useful extension points, but
+chance execution and hidden-information search are not implemented yet.
 
-For the empirical analysis layer, see the [evaluation crate guide](evaluation/README.md).
+See the [agents guide](../agents/README.md) for current MCTS behavior, the
+[MCTS roadmap](../agents/MCTS_ROADMAP.md) for possible extensions, and the
+[evaluation guide](evaluation/README.md) for empirical analysis.

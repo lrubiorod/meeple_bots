@@ -2,24 +2,29 @@
 
 [Back to the project overview](../README.md)
 
-Each game owns its strongly typed Rust `State` and `Action` representations while implementing the
-shared `Game` contract. Python exposes matching game and action types.
+Every game owns its authoritative Rust state, action type, legal-action generator, transition
+rules, and terminal utilities. Python exposes matching game and action values without duplicating
+the rules.
 
 ## Supported games
 
-| Game | CLI identifier | Python game | Action | Human input |
-| --- | --- | --- | --- | --- |
-| Tic-tac-toe | `tic-tac-toe` | `TicTacToe` | `TicTacToeAction(row, column)` | `row column` |
-| Connect Four | `connect-four` | `ConnectFour` | `ConnectFourAction(column)` | `column` |
-| boop. | `boop` | `Boop` | `BoopAction(piece, row, column, resolution)` | `k/c row column` |
+| Game | CLI identifier | Python type | Human input |
+| --- | --- | --- | --- |
+| Tic-tac-toe | `tic-tac-toe` | `TicTacToe` | `row column` |
+| Connect Four | `connect-four` | `ConnectFour` | `column` |
+| boop. | `boop` | `Boop` | `k/c row column` |
 
-Rows, columns, and player identifiers are zero-based. All current games are deterministic,
-sequential, two-player, zero-sum, and perfect-information rulesets.
+Rows, columns, and player identifiers are zero-based. All current games are sequential,
+deterministic, perfect-information, two-player, and zero-sum.
 
 ## Tic-tac-toe
 
-The standard 3x3 game. Players alternate placing pieces in empty cells and win with three pieces
-in a horizontal, vertical, or diagonal line. A full board without a winning line is a draw.
+The standard 3x3 game. Players place pieces in empty cells and win with a horizontal, vertical, or
+diagonal line of three. A full board without a winner is a draw.
+
+- Python action: `TicTacToeAction(row, column)`
+- Board: 3 rows by 3 columns
+- MCTS cutoff heuristics: none
 
 ```bash
 meeple-bots match --game tic-tac-toe --first human --second mcts --seed 42
@@ -27,9 +32,13 @@ meeple-bots match --game tic-tac-toe --first human --second mcts --seed 42
 
 ## Connect Four
 
-The standard 6x7 game. An action selects a column; the Rust rules apply gravity and place the piece
-in its lowest available row. Four connected pieces horizontally, vertically, or diagonally win.
-A full board without a winner is a draw.
+The standard 6x7 game. An action selects a column; the rules apply gravity and place the piece in
+its lowest free row. Four connected pieces horizontally, vertically, or diagonally win. A full
+board without a winner is a draw.
+
+- Python action: `ConnectFourAction(column)`
+- Board: 6 rows by 7 columns
+- MCTS cutoff heuristics: none
 
 ```bash
 meeple-bots match --game connect-four --first human --second mcts --seed 42
@@ -37,19 +46,31 @@ meeple-bots match --game connect-four --first human --second mcts --seed 42
 
 ## boop.
 
-boop. uses a 6x6 board, two piece ranks, displacement rules, and explicit graduation or recovery
-choices. These choices are encoded in the action so Random, MCTS, and human players all operate on
-the same complete legal-action set.
+boop. uses a 6x6 board, kittens and cats, displacement rules, and mandatory end-of-turn choices.
+Each legal action includes both the placement and any required graduation or recovery, so human,
+Random, and MCTS players share one complete action model.
 
-See the [boop. rules and interface guide](boop/README.md) for the full model.
+- Python action: `BoopAction(piece, row, column, resolution)`
+- Board: 6 rows by 6 columns
+- MCTS cutoff heuristics: indices `0` and `1`
 
 ```bash
 meeple-bots match --game boop --first human --second mcts --seed 42
 ```
 
-## Adding another game
+Read the [Boop rules and interface guide](boop/README.md) before constructing its actions directly.
 
-A new Rust game belongs under `games/` and implements the contracts defined by `meeple_bots_core`.
-Runtime selection is added at the catalog boundary, while Python-facing types and serialization are
-added in the bindings and public package. See the [Rust architecture guide](../crates/README.md) for
-the dependency and dispatch model.
+## Adding a game
+
+A new game begins as an independent Rust crate under `games/`:
+
+1. Define its complete `State`, one-turn `Action`, and legal-action iterator.
+2. Implement `Game`, including observation, transitions, and terminal utility.
+3. Implement only the capability traits that the rules genuinely satisfy.
+4. Add catalog dispatch and Python binding conversions.
+5. Add the public Python game, action, board, and result representations.
+6. Register CLI and presentation support where appropriate.
+7. Test rules in Rust and public behavior in Python.
+
+See the [Rust architecture guide](../crates/README.md#game-contract) for the contracts and
+[where changes belong](../crates/README.md#where-changes-belong) for integration boundaries.
