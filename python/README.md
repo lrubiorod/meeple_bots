@@ -289,7 +289,8 @@ meeple-bots tournament \
   --config configs/tournaments/boop-study.toml
 ```
 
-A configuration defines shared execution settings and at least two uniquely named agents:
+A configuration defines shared execution settings and enough agent entries or matrix combinations
+to produce at least two uniquely named agents:
 
 ```toml
 game = "boop"
@@ -316,6 +317,31 @@ self_play = true
 The tournament schedules every distinct pair of agents and alternates their seats. `self_play =
 true` adds one same-configuration pairing without including those games in competitive standings.
 Different names may intentionally use identical parameters.
+
+An MCTS entry can use arrays for `iterations`, `rollout_depth`, `exploration`, and
+`heuristic_index`. The loader creates the Cartesian product, so this compact entry produces nine
+agents:
+
+```toml
+[[agents]]
+name = "mcts-h0"
+kind = "mcts"
+iterations = [100, 1000, 10000]
+rollout_depth = [8, 16, 32]
+exploration = 1.4142135623730951
+use_heuristic = true
+heuristic_index = 0
+```
+
+Generated names append only the fields written as arrays. The suffixes are `i` for iterations, `d`
+for rollout depth, `c` for exploration, and `h` for heuristic index. The example therefore creates
+names from `mcts-h0-i100-d8` through `mcts-h0-i10000-d32`. Scalar entries retain their original
+names, so existing tournament files remain compatible.
+
+Lists must be non-empty and cannot contain duplicate values. One matrix entry can generate at most
+256 agents, preventing an accidental quadratic explosion in round-robin pairings. `use_heuristic`
+and `self_play` remain scalar; when `self_play = true` is present on a matrix, every generated agent
+gets its own self-play pairing. The JSONL tournament header records the fully expanded agents.
 
 Relative output paths are resolved from the directory containing the TOML, not from the current
 working directory. Missing parent directories are created. Existing trace files are protected;
@@ -356,8 +382,8 @@ Extraction streams the trace and accepts interrupted studies. It marks the manif
 fewer matches than declared are available. A truncated final JSONL line is ignored and reported;
 malformed records elsewhere are rejected.
 
-Tournaments can still record Connect Four and tic-tac-toe traces, but `extract` rejects them until
-their analyzers are implemented.
+Tournaments can still record SPOTF, Connect Four, and tic-tac-toe traces, but `extract` rejects
+them until their analyzers are implemented.
 
 ### 3. Generate a Boop report
 

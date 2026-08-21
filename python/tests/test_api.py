@@ -31,7 +31,7 @@ from meeple_bots import (
     TicTacToeAction,
     evaluate_game,
 )
-from meeple_bots.cli import build_parser, main
+from meeple_bots.cli import _load_tournament_config, build_parser, main
 from meeple_bots.games.boop.gui import BoopGui
 from meeple_bots.games.connect_four.gui import ConnectFourGui
 from meeple_bots.games.spirits_of_the_forest.gui import SpiritsOfTheForestGui
@@ -1160,6 +1160,117 @@ class MatchApiTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertIn("agent names must be unique", errors.getvalue())
+
+    def test_tournament_agent_grid_expands_cartesian_product(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "grid.toml")
+            config_path.write_text(
+                '\n'.join(
+                    [
+                        'game = "spotf"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "mcts-h0"',
+                        'kind = "mcts"',
+                        "iterations = [100, 1000, 10000]",
+                        "rollout_depth = [8, 16, 32]",
+                        "use_heuristic = true",
+                        "heuristic_index = 0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+
+        self.assertIsInstance(config.game, SpiritsOfTheForest)
+        self.assertEqual(len(config.agents), 9)
+        self.assertEqual(
+            [agent.name for agent in config.agents],
+            [
+                "mcts-h0-i100-d8",
+                "mcts-h0-i100-d16",
+                "mcts-h0-i100-d32",
+                "mcts-h0-i1000-d8",
+                "mcts-h0-i1000-d16",
+                "mcts-h0-i1000-d32",
+                "mcts-h0-i10000-d8",
+                "mcts-h0-i10000-d16",
+                "mcts-h0-i10000-d32",
+            ],
+        )
+        self.assertEqual(
+            [
+                (agent.agent.iterations, agent.agent.rollout_depth)
+                for agent in config.agents
+                if isinstance(agent.agent, MctsAgent)
+            ],
+            [
+                (100, 8),
+                (100, 16),
+                (100, 32),
+                (1000, 8),
+                (1000, 16),
+                (1000, 32),
+                (10000, 8),
+                (10000, 16),
+                (10000, 32),
+            ],
+        )
+
+    def test_tournament_agent_grid_rejects_duplicate_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "grid.toml")
+            config_path.write_text(
+                '\n'.join(
+                    [
+                        'game = "tic-tac-toe"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "mcts"',
+                        'kind = "mcts"',
+                        "iterations = [10, 10]",
+                        "rollout_depth = 4",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "contains duplicate values"):
+                _load_tournament_config(config_path)
+
+    def test_tournament_agent_grid_supports_exploration_and_heuristics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "grid.toml")
+            config_path.write_text(
+                '\n'.join(
+                    [
+                        'game = "boop"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "mcts"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        "exploration = [0.5, 1.5]",
+                        "use_heuristic = true",
+                        "heuristic_index = [0, 1]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+
+        self.assertEqual(
+            [agent.name for agent in config.agents],
+            [
+                "mcts-c0.5-h0",
+                "mcts-c0.5-h1",
+                "mcts-c1.5-h0",
+                "mcts-c1.5-h1",
+            ],
+        )
 
     def test_cli_extracts_analysis_tables_from_a_boop_tournament(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

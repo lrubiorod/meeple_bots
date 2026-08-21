@@ -8,6 +8,7 @@ import sys
 import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from time import perf_counter
 
@@ -47,6 +48,13 @@ from .gui import run_gui
 from .reporting import generate_study_report
 
 _PLAYABLE_GAMES = ["boop", "connect-four", "spotf", "tic-tac-toe"]
+_TOURNAMENT_GRID_FIELDS = (
+    ("iterations", "i"),
+    ("rollout_depth", "d"),
+    ("exploration", "c"),
+    ("heuristic_index", "h"),
+)
+_MAX_AGENTS_PER_TOURNAMENT_GRID = 256
 
 
 def _game_tag(value: str) -> str:
@@ -318,7 +326,7 @@ class _TournamentAgent:
 
 @dataclass(frozen=True, slots=True)
 class _TournamentConfig:
-    game: TicTacToe | ConnectFour | Boop
+    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest
     output: Path | None
     matches_per_pair: int
     seed: int
@@ -494,8 +502,10 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
         raise ValueError(f"unknown tournament fields: {', '.join(unknown)}")
 
     game_name = values.get("game")
-    if game_name not in {"boop", "connect-four", "tic-tac-toe"}:
-        raise ValueError("tournament game must be boop, connect-four, or tic-tac-toe")
+    if game_name not in _PLAYABLE_GAMES:
+        raise ValueError(
+            "tournament game must be boop, connect-four, spotf, or tic-tac-toe"
+        )
     game = _game(game_name)
     raw_output = values.get("output")
     if raw_output is not None and (
@@ -518,12 +528,17 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
         raise ValueError("tournament seed must be between 0 and 18446744073709551615")
 
     raw_agents = values.get("agents")
-    if not isinstance(raw_agents, list) or len(raw_agents) < 2:
-        raise ValueError("tournament agents must contain at least two entries")
+    if not isinstance(raw_agents, list) or not raw_agents:
+        raise ValueError("tournament agents must contain at least one entry")
     agents = tuple(
-        _load_tournament_agent(raw, index, game)
+        agent
         for index, raw in enumerate(raw_agents, start=1)
+        for agent in _load_tournament_agents(raw, index, game)
     )
+    if len(agents) < 2:
+        raise ValueError(
+            "tournament agents must expand to at least two configurations"
+        )
     names = [agent.name for agent in agents]
     if len(names) != len(set(names)):
         raise ValueError("tournament agent names must be unique")
@@ -537,11 +552,11 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
     )
 
 
-def _load_tournament_agent(
+def _load_tournament_agents(
     values: object,
     index: int,
-    game: TicTacToe | ConnectFour | Boop,
-) -> _TournamentAgent:
+    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
+) -> tuple[_TournamentAgent, ...]:
     if not isinstance(values, dict):
         raise TypeError(f"tournament agent {index} must be a TOML table")
     allowed = {
@@ -582,7 +597,11 @@ def _load_tournament_agent(
             raise ValueError(
                 f"random tournament agent {name} cannot use: {', '.join(unexpected)}"
             )
-        return _TournamentAgent(name=name.strip(), agent=RandomAgent(), self_play=self_play)
+        return (
+            _TournamentAgent(
+                name=name.strip(), agent=RandomAgent(), self_play=self_play
+            ),
+        )
 
     missing = sorted({"iterations", "rollout_depth"} - values.keys())
     if missing:
@@ -592,6 +611,59 @@ def _load_tournament_agent(
     use_heuristic = values.get("use_heuristic", False)
     if not isinstance(use_heuristic, bool):
         raise TypeError(f"tournament agent {name} use_heuristic must be a boolean")
+    if isinstance(values.get("heuristic_index"), list) and not use_heuristic:
+        raise ValueError(
+            f"tournament agent {name} cannot vary heuristic_index when "
+            "use_heuristic is false"
+        )
+
+    grid_fields: list[str] = []
+    grid_options: list[list[object]] = []
+    combination_count = 1
+    for field, _suffix in _TOURNAMENT_GRID_FIELDS:
+        if field not in values or not isinstance(values[field], list):
+            continue
+        options = values[field]
+        if not options:
+            raise ValueError(f"tournament agent {name} {field} list cannot be empty")
+        if any(value in options[:option_index] for option_index, value in enumerate(options)):
+            raise ValueError(
+                f"tournament agent {name} {field} list contains duplicate values"
+            )
+        grid_fields.append(field)
+        grid_options.append(options)
+        combination_count *= len(options)
+    if combination_count > _MAX_AGENTS_PER_TOURNAMENT_GRID:
+        raise ValueError(
+            f"tournament agent {name} expands to {combination_count} configurations; "
+            f"the maximum is {_MAX_AGENTS_PER_TOURNAMENT_GRID}"
+        )
+
+    combinations = product(*grid_options) if grid_options else [()]
+    expanded = []
+    for combination in combinations:
+        concrete = dict(values)
+        concrete.update(zip(grid_fields, combination, strict=True))
+        agent = _build_tournament_mcts_agent(concrete, name, game)
+        suffix = "".join(
+            _tournament_grid_suffix(field, agent) for field in grid_fields
+        )
+        expanded.append(
+            _TournamentAgent(
+                name=f"{name.strip()}{suffix}",
+                agent=agent,
+                self_play=self_play,
+            )
+        )
+    return tuple(expanded)
+
+
+def _build_tournament_mcts_agent(
+    values: dict[str, object],
+    name: str,
+    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
+) -> MctsAgent:
+    use_heuristic = values.get("use_heuristic", False)
     heuristic_index = values.get("heuristic_index", 0)
     if isinstance(heuristic_index, bool) or not isinstance(heuristic_index, int):
         raise TypeError(f"tournament agent {name} heuristic_index must be an integer")
@@ -602,7 +674,18 @@ def _load_tournament_agent(
         heuristic=heuristic_index if use_heuristic else None,
     )
     Match(game=game, first=agent, second=RandomAgent())
-    return _TournamentAgent(name=name.strip(), agent=agent, self_play=self_play)
+    return agent
+
+
+def _tournament_grid_suffix(field: str, agent: MctsAgent) -> str:
+    suffix = dict(_TOURNAMENT_GRID_FIELDS)[field]
+    value = {
+        "iterations": agent.iterations,
+        "rollout_depth": agent.rollout_depth,
+        "exploration": agent.exploration,
+        "heuristic_index": agent.heuristic,
+    }[field]
+    return f"-{suffix}{value}"
 
 
 def _positive_tournament_integer(name: str, value: object) -> int:
