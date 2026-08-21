@@ -359,25 +359,32 @@ impl MatchObserver<SpiritsOfTheForest> for PythonSpiritsMatchObserver<'_> {
 }
 
 #[pyfunction(name = "evaluate_game")]
-#[pyo3(signature = (game, samples=128, max_depth=256, seed=0))]
+#[pyo3(signature = (game, samples=128, max_depth=256, seed=0, target_time=5.0))]
 fn py_evaluate_game(
     py: Python<'_>,
     game: &str,
     samples: u32,
     max_depth: u32,
     seed: u64,
+    target_time: f64,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     let samples = NonZeroU32::new(samples)
         .ok_or_else(|| PyValueError::new_err("samples must be greater than zero"))?;
     let max_depth = NonZeroU32::new(max_depth)
         .ok_or_else(|| PyValueError::new_err("max_depth must be greater than zero"))?;
+    if !target_time.is_finite() || target_time <= 0.0 || target_time > 3_600.0 {
+        return Err(PyValueError::new_err(
+            "target_time must be finite, greater than zero, and at most 3600 seconds",
+        ));
+    }
     let report = evaluate_game(
         game,
         EvaluationConfig {
             samples,
             max_depth,
             seed,
+            target_time: Duration::from_secs_f64(target_time),
         },
     )
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
@@ -391,9 +398,72 @@ fn py_evaluate_game(
         "effective_branching_factor",
         report.effective_branching_factor,
     )?;
+    serialized.set_item(
+        "player_turn_choice_product_log10",
+        report.player_turn_choice_product_log10,
+    )?;
+    serialized.set_item("depth_p50", report.depth_p50)?;
     serialized.set_item("estimated_depth", report.estimated_depth)?;
+    serialized.set_item("player_turn_depth_p50", report.player_turn_depth_p50)?;
+    serialized.set_item("player_turn_depth_p95", report.player_turn_depth_p95)?;
+    serialized.set_item("player_changes_p50", report.player_changes_p50)?;
+    serialized.set_item("player_changes_p95", report.player_changes_p95)?;
+    serialized.set_item(
+        "actions_per_player_turn_mean",
+        report.actions_per_player_turn_mean,
+    )?;
+    serialized.set_item(
+        "actions_per_player_turn_p95",
+        report.actions_per_player_turn_p95,
+    )?;
+    serialized.set_item(
+        "actions_per_player_turn_max",
+        report.actions_per_player_turn_max,
+    )?;
     serialized.set_item("depth_is_lower_bound", report.depth_is_lower_bound)?;
     serialized.set_item("estimated_tree_log10", report.estimated_tree_log10)?;
+    serialized.set_item("calibration_positions", report.calibration_positions)?;
+    serialized.set_item("target_time_seconds", report.target_time_seconds)?;
+
+    let costs = PyList::empty(py);
+    for cost in &report.rollout_costs {
+        let item = PyDict::new(py);
+        item.set_item("rollout_depth", cost.rollout_depth)?;
+        item.set_item("approximate_player_turns", cost.approximate_player_turns)?;
+        item.set_item(
+            "milliseconds_per_iteration",
+            cost.milliseconds_per_iteration,
+        )?;
+        let budgets = PyList::empty(py);
+        for budget in &cost.iteration_budgets {
+            let entry = PyDict::new(py);
+            entry.set_item("seconds", budget.seconds)?;
+            entry.set_item("iterations", budget.iterations)?;
+            budgets.append(entry)?;
+        }
+        item.set_item("iteration_budgets", budgets)?;
+        costs.append(item)?;
+    }
+    serialized.set_item("rollout_costs", costs)?;
+
+    let experiments = PyList::empty(py);
+    for experiment in &report.suggested_experiments {
+        let item = PyDict::new(py);
+        item.set_item("label", &experiment.label)?;
+        item.set_item("iterations", experiment.iterations)?;
+        item.set_item("iterations_capped", experiment.iterations_capped)?;
+        item.set_item("rollout_depth", experiment.rollout_depth)?;
+        item.set_item(
+            "approximate_player_turns",
+            experiment.approximate_player_turns,
+        )?;
+        item.set_item(
+            "estimated_decision_time_ms",
+            experiment.estimated_decision_time_ms,
+        )?;
+        experiments.append(item)?;
+    }
+    serialized.set_item("suggested_experiments", experiments)?;
     serialized.set_item(
         "recommended_rollout_depth",
         report.recommended_rollout_depth,

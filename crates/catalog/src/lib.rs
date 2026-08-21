@@ -11,7 +11,10 @@ use meeple_bots_core::{
     Agent, AgentError, DecisionContext, Game, HeuristicGame, PlayerId, RandomSource,
 };
 use meeple_bots_evaluation::evaluate_game as evaluate_typed_game;
-pub use meeple_bots_evaluation::{EvaluationConfig, EvaluationError, GameEvaluationReport};
+pub use meeple_bots_evaluation::{
+    EvaluationConfig, EvaluationError, GameEvaluationReport, IterationBudgetEstimate,
+    RolloutCostEstimate, SuggestedMctsExperiment,
+};
 pub use meeple_bots_mcts_agent::MctsConfig;
 use meeple_bots_mcts_agent::{GameHeuristic, MctsAgent};
 use meeple_bots_random_agent::RandomAgent;

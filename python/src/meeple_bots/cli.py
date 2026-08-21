@@ -177,6 +177,12 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--samples", type=int, default=128)
     analyze.add_argument("--max-depth", type=int, default=256)
     analyze.add_argument("--seed", type=int, default=0)
+    analyze.add_argument(
+        "--target-time",
+        type=float,
+        default=5.0,
+        help="target seconds per decision for suggested experiments (default: 5)",
+    )
     analyze.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
     return parser
@@ -228,6 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 samples=args.samples,
                 max_depth=args.max_depth,
                 seed=args.seed,
+                target_time=args.target_time,
             )
             if args.json:
                 print(json.dumps(_evaluation_dict(report), indent=2))
@@ -1194,9 +1201,46 @@ def _evaluation_dict(report: GameEvaluationReport) -> dict[str, object]:
         "terminal_rate": report.terminal_rate,
         "initial_legal_actions": report.initial_legal_actions,
         "effective_branching_factor": report.effective_branching_factor,
+        "player_turn_choice_product_log10": report.player_turn_choice_product_log10,
+        "depth_p50": report.depth_p50,
         "estimated_depth": report.estimated_depth,
+        "player_turn_depth_p50": report.player_turn_depth_p50,
+        "player_turn_depth_p95": report.player_turn_depth_p95,
+        "player_changes_p50": report.player_changes_p50,
+        "player_changes_p95": report.player_changes_p95,
+        "actions_per_player_turn_mean": report.actions_per_player_turn_mean,
+        "actions_per_player_turn_p95": report.actions_per_player_turn_p95,
+        "actions_per_player_turn_max": report.actions_per_player_turn_max,
         "depth_is_lower_bound": report.depth_is_lower_bound,
         "estimated_tree_log10": report.estimated_tree_log10,
+        "calibration_positions": report.calibration_positions,
+        "target_time_seconds": report.target_time_seconds,
+        "rollout_costs": [
+            {
+                "rollout_depth": cost.rollout_depth,
+                "approximate_player_turns": cost.approximate_player_turns,
+                "milliseconds_per_iteration": cost.milliseconds_per_iteration,
+                "iteration_budgets": [
+                    {
+                        "seconds": budget.seconds,
+                        "iterations": budget.iterations,
+                    }
+                    for budget in cost.iteration_budgets
+                ],
+            }
+            for cost in report.rollout_costs
+        ],
+        "suggested_experiments": [
+            {
+                "label": experiment.label,
+                "iterations": experiment.iterations,
+                "iterations_capped": experiment.iterations_capped,
+                "rollout_depth": experiment.rollout_depth,
+                "approximate_player_turns": experiment.approximate_player_turns,
+                "estimated_decision_time_ms": experiment.estimated_decision_time_ms,
+            }
+            for experiment in report.suggested_experiments
+        ],
         "recommended_rollout_depth": report.recommended_rollout_depth,
         "recommended_iterations": report.recommended_iterations,
         "iterations_capped": report.iterations_capped,
@@ -1207,37 +1251,93 @@ def _evaluation_dict(report: GameEvaluationReport) -> dict[str, object]:
 
 def _print_evaluation(report: GameEvaluationReport) -> None:
     depth_note = " (lower bound)" if report.depth_is_lower_bound else ""
-    iteration_note = (
-        " (capped; structural estimate is higher)" if report.iterations_capped else ""
+    choices_log10 = report.player_turn_choice_product_log10
+    choices_text = (
+        f"~{10**choices_log10:,.1f} (10^{choices_log10:.2f})"
+        if choices_log10 <= 6
+        else f"~10^{choices_log10:.2f}"
     )
 
     print(f"Game: {_game_name(report.game)}")
     print()
-    print("Game structure:")
+    print("Structural complexity:")
     print(f"  Initial legal actions: {report.initial_legal_actions}")
-    print(f"  Effective branching factor: {report.effective_branching_factor:.2f}")
-    print(f"  Estimated depth (p95): {report.estimated_depth}{depth_note}")
+    print(f"  Branching per tree node: {report.effective_branching_factor:.2f}")
+    print(
+        f"  Observed choices across one player turn: {choices_text} "
+        "(geometric mean of sampled phase products)"
+    )
     print(f"  Terminal samples: {report.terminal_rate:.1%}")
     print(f"  Estimated tree size: 10^{report.estimated_tree_log10:.1f}")
     print()
-    print("MCTS estimate for this machine:")
-    print(f"  Rollout depth: {report.recommended_rollout_depth}")
-    print(f"  Recommended iterations: {report.recommended_iterations:,}{iteration_note}")
-    print(f"  Cost per iteration: ~{report.milliseconds_per_iteration:.6f} ms")
-    print(f"  Estimated decision time: ~{report.estimated_decision_time_ms:.1f} ms")
+    print("Depth structure:")
+    print(f"  Tree depth p50: {report.depth_p50} plies{depth_note}")
+    print(f"  Tree depth p95: {report.estimated_depth} plies{depth_note}")
+    print(f"  Player-turn depth p50: {report.player_turn_depth_p50}")
+    print(f"  Player-turn depth p95: {report.player_turn_depth_p95}")
+    print(
+        f"  Player changes p50 / p95: {report.player_changes_p50} / "
+        f"{report.player_changes_p95}"
+    )
+    print("  Actions per player turn:")
+    print(f"    mean: {report.actions_per_player_turn_mean:.2f}")
+    print(f"    p95: {report.actions_per_player_turn_p95}")
+    print(f"    max sampled: {report.actions_per_player_turn_max}")
     print()
-    print("Interpretation:")
+    print("Practical MCTS configuration:")
+    print(
+        f"  Measured at {report.calibration_positions} sampled position(s); "
+        "timings are machine-dependent approximations."
+    )
+    print("  Candidate rollout depths and approximate iteration budgets:")
+    for cost in report.rollout_costs:
+        budgets = ", ".join(
+            f"{budget.seconds}s={budget.iterations:,}" for budget in cost.iteration_budgets
+        )
+        print(
+            f"    depth {cost.rollout_depth:<4} ≈ {cost.approximate_player_turns:>5.1f} "
+            f"player turns | ~{cost.milliseconds_per_iteration:.4f} ms/iteration "
+            f"| {budgets}"
+        )
+    print()
+    print("Suggested starting experiments (benchmark points, not strength guarantees):")
+    for experiment in report.suggested_experiments:
+        cap_note = " (capped)" if experiment.iterations_capped else ""
+        print(
+            f"  {experiment.label}: {experiment.iterations:,} iterations{cap_note}, "
+            f"depth {experiment.rollout_depth} ≈ "
+            f"{experiment.approximate_player_turns:.1f} player turns, "
+            f"~{experiment.estimated_decision_time_ms / 1_000:.2f} s"
+        )
+    print()
+    balanced = next(
+        experiment
+        for experiment in report.suggested_experiments
+        if experiment.label == "Balanced"
+    )
+    comparison_iterations = " / ".join(
+        f"{experiment.iterations:,}"
+        for experiment in report.suggested_experiments
+        if experiment.label in {"Fast", "Balanced", "Wide"}
+    )
+    print("Next experiment:")
+    print(
+        f"  Compare {comparison_iterations} iterations at depth "
+        f"{balanced.rollout_depth}."
+    )
+    print(
+        "  If extra iterations stop improving results, compare the Deep point; "
+        "if that also plateaus, introduce or improve the state heuristic."
+    )
+    print(
+        "  If Deep beats Balanced at similar time, the game is more horizon/heuristic "
+        "constrained; if only Wide improves, it is more search-width constrained."
+    )
     if report.depth_is_lower_bound:
         print(
-            "  - Some samples did not finish. Increase --max-depth or consider "
-            "a heuristic for truncated rollouts."
+            "  Some samples did not finish: increase --max-depth before treating "
+            "the full-depth row as representative."
         )
-    else:
-        print("  - Sampled full-depth rollouts usually reach a terminal result.")
-    print(
-        "  - If the estimated decision time is too high, reducing rollout depth "
-        "usually makes a state heuristic more useful."
-    )
 
 
 def _game_name(game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest) -> str:

@@ -69,8 +69,38 @@ class MctsAgent:
 
 
 @dataclass(frozen=True, slots=True)
+class IterationBudgetEstimate:
+    """Approximate iterations that fit in one time budget."""
+
+    seconds: int
+    iterations: int
+
+
+@dataclass(frozen=True, slots=True)
+class RolloutCostEstimate:
+    """Measured MCTS cost for one candidate rollout horizon."""
+
+    rollout_depth: int
+    approximate_player_turns: float
+    milliseconds_per_iteration: float
+    iteration_budgets: tuple[IterationBudgetEstimate, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SuggestedMctsExperiment:
+    """A starting point for comparative MCTS benchmarks, not a strength claim."""
+
+    label: str
+    iterations: int
+    iterations_capped: bool
+    rollout_depth: int
+    approximate_player_turns: float
+    estimated_decision_time_ms: float
+
+
+@dataclass(frozen=True, slots=True)
 class GameEvaluationReport:
-    """Structural game metrics and a local MCTS cost estimate."""
+    """Structural metrics and practical, locally measured MCTS starting points."""
 
     game: Game
     samples: int
@@ -78,9 +108,23 @@ class GameEvaluationReport:
     terminal_rate: float
     initial_legal_actions: int
     effective_branching_factor: float
+    player_turn_choice_product_log10: float
+    depth_p50: int
     estimated_depth: int
+    player_turn_depth_p50: int
+    player_turn_depth_p95: int
+    player_changes_p50: int
+    player_changes_p95: int
+    actions_per_player_turn_mean: float
+    actions_per_player_turn_p95: int
+    actions_per_player_turn_max: int
     depth_is_lower_bound: bool
     estimated_tree_log10: float
+    calibration_positions: int
+    target_time_seconds: float
+    rollout_costs: tuple[RolloutCostEstimate, ...]
+    suggested_experiments: tuple[SuggestedMctsExperiment, ...]
+    # Compatibility aliases for the Balanced experiment.
     recommended_rollout_depth: int
     recommended_iterations: int
     iterations_capped: bool
@@ -722,8 +766,9 @@ def evaluate_game(
     samples: int = 128,
     max_depth: int = 256,
     seed: int = 0,
+    target_time: float = 5.0,
 ) -> GameEvaluationReport:
-    """Estimate game structure and the local cost of a reasonable MCTS."""
+    """Measure game structure and produce practical local MCTS starting points."""
 
     if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest)):
         raise TypeError(
@@ -735,12 +780,19 @@ def evaluate_game(
         raise TypeError("seed must be an integer")
     if not 0 <= seed <= _MAX_U64:
         raise ValueError(f"seed must be between 0 and {_MAX_U64}")
+    if isinstance(target_time, bool) or not isinstance(target_time, (int, float)):
+        raise TypeError("target_time must be a number")
+    if not isfinite(target_time) or not 0 < target_time <= 3_600:
+        raise ValueError(
+            "target_time must be finite, greater than zero, and at most 3600 seconds"
+        )
 
     raw = _native.evaluate_game(
         _native_game(game),
         samples,
         max_depth,
         seed,
+        target_time,
     )
     return GameEvaluationReport(
         game=game,
@@ -749,9 +801,46 @@ def evaluate_game(
         terminal_rate=raw["terminal_rate"],
         initial_legal_actions=raw["initial_legal_actions"],
         effective_branching_factor=raw["effective_branching_factor"],
+        player_turn_choice_product_log10=raw["player_turn_choice_product_log10"],
+        depth_p50=raw["depth_p50"],
         estimated_depth=raw["estimated_depth"],
+        player_turn_depth_p50=raw["player_turn_depth_p50"],
+        player_turn_depth_p95=raw["player_turn_depth_p95"],
+        player_changes_p50=raw["player_changes_p50"],
+        player_changes_p95=raw["player_changes_p95"],
+        actions_per_player_turn_mean=raw["actions_per_player_turn_mean"],
+        actions_per_player_turn_p95=raw["actions_per_player_turn_p95"],
+        actions_per_player_turn_max=raw["actions_per_player_turn_max"],
         depth_is_lower_bound=raw["depth_is_lower_bound"],
         estimated_tree_log10=raw["estimated_tree_log10"],
+        calibration_positions=raw["calibration_positions"],
+        target_time_seconds=raw["target_time_seconds"],
+        rollout_costs=tuple(
+            RolloutCostEstimate(
+                rollout_depth=cost["rollout_depth"],
+                approximate_player_turns=cost["approximate_player_turns"],
+                milliseconds_per_iteration=cost["milliseconds_per_iteration"],
+                iteration_budgets=tuple(
+                    IterationBudgetEstimate(
+                        seconds=budget["seconds"],
+                        iterations=budget["iterations"],
+                    )
+                    for budget in cost["iteration_budgets"]
+                ),
+            )
+            for cost in raw["rollout_costs"]
+        ),
+        suggested_experiments=tuple(
+            SuggestedMctsExperiment(
+                label=experiment["label"],
+                iterations=experiment["iterations"],
+                iterations_capped=experiment["iterations_capped"],
+                rollout_depth=experiment["rollout_depth"],
+                approximate_player_turns=experiment["approximate_player_turns"],
+                estimated_decision_time_ms=experiment["estimated_decision_time_ms"],
+            )
+            for experiment in raw["suggested_experiments"]
+        ),
         recommended_rollout_depth=raw["recommended_rollout_depth"],
         recommended_iterations=raw["recommended_iterations"],
         iterations_capped=raw["iterations_capped"],

@@ -378,12 +378,30 @@ class MatchApiTests(unittest.TestCase):
             repeated.effective_branching_factor,
         )
         self.assertEqual(first.estimated_depth, repeated.estimated_depth)
-        self.assertEqual(first.recommended_iterations, repeated.recommended_iterations)
+        self.assertEqual(first.player_turn_depth_p95, repeated.player_turn_depth_p95)
+        self.assertEqual(first.actions_per_player_turn_mean, 1.0)
+        self.assertEqual(first.actions_per_player_turn_p95, 1)
+        self.assertGreaterEqual(len(first.rollout_costs), 1)
+        self.assertEqual(
+            [budget.seconds for budget in first.rollout_costs[0].iteration_budgets],
+            [1, 2, 5, 10, 20],
+        )
+        self.assertEqual(
+            [experiment.label for experiment in first.suggested_experiments[:3]],
+            ["Fast", "Balanced", "Wide"],
+        )
         self.assertGreater(first.milliseconds_per_iteration, 0.0)
         self.assertAlmostEqual(
             first.estimated_decision_time_ms,
             first.recommended_iterations * first.milliseconds_per_iteration,
         )
+
+    def test_game_evaluation_validates_target_time(self) -> None:
+        with self.assertRaisesRegex(ValueError, "target_time"):
+            evaluate_game(TicTacToe(), samples=8, target_time=0)
+
+        with self.assertRaisesRegex(TypeError, "target_time"):
+            evaluate_game(TicTacToe(), samples=8, target_time=True)
 
     def test_game_evaluation_marks_a_truncated_depth(self) -> None:
         report = evaluate_game(TicTacToe(), samples=8, max_depth=1)
@@ -921,6 +939,8 @@ class MatchApiTests(unittest.TestCase):
                     "tic-tac-toe",
                     "--samples",
                     "8",
+                    "--target-time",
+                    "1",
                     "--json",
                 ]
             )
@@ -930,6 +950,14 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(payload["game"], "tic-tac-toe")
         self.assertEqual(payload["initial_legal_actions"], 9)
         self.assertLessEqual(payload["estimated_depth"], 9)
+        self.assertEqual(payload["target_time_seconds"], 1.0)
+        self.assertIn("player_turn_depth_p95", payload)
+        self.assertGreaterEqual(len(payload["rollout_costs"]), 1)
+        self.assertEqual(
+            [budget["seconds"] for budget in payload["rollout_costs"][0]["iteration_budgets"]],
+            [1, 2, 5, 10, 20],
+        )
+        self.assertEqual(payload["suggested_experiments"][1]["label"], "Balanced")
         self.assertIn("recommended_iterations", payload)
         self.assertIn("milliseconds_per_iteration", payload)
         self.assertIn("estimated_decision_time_ms", payload)

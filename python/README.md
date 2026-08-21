@@ -144,16 +144,20 @@ remain reproducible for a fixed configuration and seed.
 ```python
 from meeple_bots import Boop, evaluate_game
 
-report = evaluate_game(Boop(), samples=128, max_depth=256, seed=42)
+report = evaluate_game(
+    Boop(), samples=128, max_depth=256, seed=42, target_time=5
+)
 
 print(report.initial_legal_actions)
-print(report.estimated_depth)
-print(report.recommended_iterations)
-print(report.estimated_decision_time_ms)
+print(report.depth_p50, report.estimated_depth)
+print(report.player_turn_depth_p50, report.player_turn_depth_p95)
+print(report.rollout_costs)
+print(report.suggested_experiments)
 ```
 
-The result estimates computational scale, not playing strength. See the
-[game evaluation guide](../crates/evaluation/README.md) before using its recommendation.
+The result separates structural complexity from locally measured MCTS budgets. Suggested
+experiments are starting points, not playing-strength guarantees. See the
+[game evaluation guide](../crates/evaluation/README.md) before interpreting them.
 
 ## Command-line workflows
 
@@ -252,11 +256,13 @@ participant-oriented, so normal comparisons should leave alternation enabled.
 
 ```bash
 meeple-bots analyze --game boop --samples 128 --max-depth 256 --seed 42
-meeple-bots analyze --game boop --samples 128 --max-depth 256 --seed 42 --json
+meeple-bots analyze --game boop --target-time 5 --seed 42 --json
 ```
 
-This command is the CLI equivalent of `evaluate_game`. Its formula, fields, and interpretation are
-kept in the [evaluation guide](../crates/evaluation/README.md).
+This command is the CLI equivalent of `evaluate_game`. `--target-time` chooses the approximate
+seconds per decision used for the suggested benchmark points; it does not lengthen calibration to
+that duration. Its measurements, fields, and interpretation are kept in the
+[evaluation guide](../crates/evaluation/README.md).
 
 ## Run a study
 
