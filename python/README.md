@@ -178,11 +178,14 @@ Start the local browser interface:
 meeple-bots gui
 meeple-bots gui --game connect-four
 meeple-bots gui --game boop
+meeple-bots gui --game spotf
 ```
 
 Each seat can be human, Random, or MCTS. Before a match, the page configures player types, MCTS
 budget, seed, and minimum display interval. Boop also exposes both cutoff heuristics and asks humans
 to choose a graduation or recovery when a placement has several legal resolutions.
+Spirits of the Forest presents collection and gemstone decisions as separate phases, derives its
+face-up forest from the match seed, and exposes cutoff heuristic `0`.
 
 The server binds to `127.0.0.1:8765` by default. Use `--host`, `--port`, or `--no-browser` to change
 startup behavior, and `Ctrl+C` to stop it. Automated native matches release Python's GIL, keeping
@@ -193,6 +196,8 @@ For a terminal match:
 ```bash
 meeple-bots match --game connect-four --first human --second mcts --seed 42
 meeple-bots match --game boop --first random --second random --seed 9 --json
+meeple-bots match --game spotf --first human --second mcts \
+  --second-mcts-heuristic 0 --seed 42
 ```
 
 `match` defaults to tic-tac-toe with MCTS as player 0 and Random as player 1. Common options select

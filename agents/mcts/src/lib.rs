@@ -363,7 +363,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use meeple_bots_core::Game;
+    use meeple_bots_core::{Game, IllegalAction};
     use meeple_bots_random_agent::RandomAgent;
     use meeple_bots_simulation::{MatchConfig, SplitMix64, play_match};
     use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
@@ -402,6 +402,120 @@ mod tests {
         TicTacToeAction::from_index(index).unwrap()
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ChainedAction {
+        Risk,
+        Draw,
+        Win,
+        Lose,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ChainedState {
+        Root,
+        Continuation,
+        Win,
+        Loss,
+        Draw,
+    }
+
+    #[derive(Clone, Copy)]
+    struct ChainedDecisionGame {
+        continuation_player: PlayerId,
+    }
+
+    impl Game for ChainedDecisionGame {
+        type State = ChainedState;
+        type Action = ChainedAction;
+        type Observation<'a> = &'a ChainedState;
+        type LegalActions<'a> = std::vec::IntoIter<ChainedAction>;
+
+        fn player_count(&self) -> u8 {
+            2
+        }
+
+        fn initial_state(&self) -> Self::State {
+            ChainedState::Root
+        }
+
+        fn status(&self, state: &Self::State) -> PositionStatus {
+            match state {
+                ChainedState::Root => PositionStatus::PlayerTurn(PlayerId::FIRST),
+                ChainedState::Continuation => PositionStatus::PlayerTurn(self.continuation_player),
+                ChainedState::Win | ChainedState::Loss | ChainedState::Draw => {
+                    PositionStatus::Terminal
+                }
+            }
+        }
+
+        fn legal_actions<'a>(&'a self, state: &'a Self::State) -> Self::LegalActions<'a> {
+            match state {
+                ChainedState::Root => vec![ChainedAction::Risk, ChainedAction::Draw],
+                ChainedState::Continuation => vec![ChainedAction::Win, ChainedAction::Lose],
+                ChainedState::Win | ChainedState::Loss | ChainedState::Draw => Vec::new(),
+            }
+            .into_iter()
+        }
+
+        fn apply_action(
+            &self,
+            state: &mut Self::State,
+            action: &Self::Action,
+        ) -> Result<(), IllegalAction> {
+            *state = match (*state, *action) {
+                (ChainedState::Root, ChainedAction::Risk) => ChainedState::Continuation,
+                (ChainedState::Root, ChainedAction::Draw) => ChainedState::Draw,
+                (ChainedState::Continuation, ChainedAction::Win) => ChainedState::Win,
+                (ChainedState::Continuation, ChainedAction::Lose) => ChainedState::Loss,
+                _ => return Err(IllegalAction::new("action is not legal")),
+            };
+            Ok(())
+        }
+
+        fn observation<'a>(
+            &'a self,
+            state: &'a Self::State,
+            _player: PlayerId,
+        ) -> Self::Observation<'a> {
+            state
+        }
+
+        fn terminal_utility(&self, state: &Self::State, player: PlayerId) -> Option<f32> {
+            let first_utility = match state {
+                ChainedState::Win => 1.0,
+                ChainedState::Loss => -1.0,
+                ChainedState::Draw => 0.0,
+                ChainedState::Root | ChainedState::Continuation => return None,
+            };
+            Some(if player == PlayerId::FIRST {
+                first_utility
+            } else {
+                -first_utility
+            })
+        }
+    }
+
+    impl DeterministicGame for ChainedDecisionGame {}
+    impl PerfectInformationGame for ChainedDecisionGame {}
+    impl TwoPlayerZeroSumGame for ChainedDecisionGame {}
+
+    fn select_chained_action(continuation_player: PlayerId, seed: u64) -> ChainedAction {
+        let game = ChainedDecisionGame {
+            continuation_player,
+        };
+        let mut agent = MctsAgent::new(MctsConfig {
+            iterations: NonZeroU32::new(2_000).unwrap(),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 4,
+        });
+        agent
+            .select_action(
+                DecisionContext::new(&game, &game.initial_state(), PlayerId::FIRST),
+                &mut SplitMix64::new(seed),
+            )
+            .unwrap()
+    }
+
     #[test]
     fn chooses_immediate_win() {
         let game = TicTacToe;
@@ -438,6 +552,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(selected, action(2));
+    }
+
+    #[test]
+    fn uses_the_active_player_instead_of_alternating_max_and_min_by_depth() {
+        assert_eq!(
+            select_chained_action(PlayerId::FIRST, 23),
+            ChainedAction::Risk,
+            "the root player should maximize again on a consecutive decision"
+        );
+        assert_eq!(
+            select_chained_action(PlayerId::SECOND, 29),
+            ChainedAction::Draw,
+            "the opponent should minimize after control changes"
+        );
     }
 
     #[test]

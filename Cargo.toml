@@ -8,6 +8,7 @@ members = [
     "crates/python-bindings",
     "games/boop",
     "games/connect-four",
+    "games/spirits-of-the-forest",
     "games/tic-tac-toe",
     "agents/random",
     "agents/mcts",

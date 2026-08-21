@@ -24,13 +24,17 @@ from meeple_bots import (
     MatchMoveObservation,
     MctsAgent,
     RandomAgent,
+    SpiritTile,
+    SpiritsOfTheForest,
+    TakeSpiritTile,
     TicTacToe,
     TicTacToeAction,
     evaluate_game,
 )
-from meeple_bots.cli import main
+from meeple_bots.cli import build_parser, main
 from meeple_bots.games.boop.gui import BoopGui
 from meeple_bots.games.connect_four.gui import ConnectFourGui
+from meeple_bots.games.spirits_of_the_forest.gui import SpiritsOfTheForestGui
 from meeple_bots.games.tic_tac_toe.gui import GuiPlayer, TicTacToeGui
 from meeple_bots.gui.server import run_gui
 from meeple_bots.reporting import wilson_interval
@@ -461,6 +465,118 @@ class MatchApiTests(unittest.TestCase):
             )
         )
         self.assertIsNotNone(result.pools)
+
+    def test_random_agents_finish_spirits_with_reproducible_scores(self) -> None:
+        first = Match(
+            game=SpiritsOfTheForest(),
+            first=RandomAgent(),
+            second=RandomAgent(),
+            seed=42,
+            max_plies=256,
+        ).run()
+        repeated = Match(
+            game=SpiritsOfTheForest(),
+            first=RandomAgent(),
+            second=RandomAgent(),
+            seed=42,
+            max_plies=256,
+        ).run()
+
+        self.assertEqual(first.moves, repeated.moves)
+        self.assertEqual(first.scores, repeated.scores)
+        self.assertEqual(sum(item.tiles for item in first.spirit_collections), 48)
+        self.assertEqual(len(first.final_board), 4)
+        self.assertTrue(all(tile is None for row in first.final_board for tile in row))
+
+    def test_spirits_human_receives_the_seeded_forest_and_typed_actions(self) -> None:
+        turns = []
+
+        def inspect(turn):
+            turns.append(turn)
+            raise RuntimeError("inspection complete")
+
+        with self.assertRaisesRegex(RuntimeError, "inspection complete"):
+            Match(
+                game=SpiritsOfTheForest(),
+                first=HumanAgent(inspect),
+                second=RandomAgent(),
+                seed=5,
+            ).run()
+
+        turn = turns[0]
+        self.assertEqual(len(turn.board), 4)
+        self.assertEqual(len(turn.board[0]), 12)
+        self.assertTrue(all(isinstance(tile, SpiritTile) for row in turn.board for tile in row))
+        self.assertEqual(len(turn.legal_actions), 8)
+        self.assertTrue(all(isinstance(action, TakeSpiritTile) for action in turn.legal_actions))
+        self.assertEqual(turn.gemstone_pools[0].available, 3)
+
+    def test_spirits_mcts_heuristic_and_gui_are_available(self) -> None:
+        result = Match(
+            game=SpiritsOfTheForest(),
+            first=MctsAgent(iterations=2, rollout_depth=2, heuristic=0),
+            second=RandomAgent(),
+            seed=9,
+            max_plies=256,
+        ).run()
+        self.assertIsNotNone(result.scores)
+
+        gui = SpiritsOfTheForestGui()
+        gui.start(
+            GuiPlayer("human"),
+            GuiPlayer("random"),
+            seed=9,
+            minimum_move_seconds=0,
+        )
+        waiting = self.wait_for_gui(gui, lambda state: state["status"] == "waiting_human")
+        self.assertEqual(len(waiting["forest"]), 48)
+        self.assertEqual(len(waiting["legal_actions"]), 8)
+        gui.submit_move(waiting["legal_actions"][0]["index"])
+        waiting = self.wait_for_gui(
+            gui,
+            lambda state: state["status"] == "waiting_human"
+            and state["phase"] == "place_gemstone",
+        )
+        self.assertGreater(len(waiting["legal_actions"]), 1)
+        gui.cancel()
+
+    def test_cli_and_gui_dispatch_spotf(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(
+                [
+                    "match",
+                    "--game",
+                    "spotf",
+                    "--first",
+                    "random",
+                    "--second",
+                    "random",
+                    "--seed",
+                    "9",
+                    "--json",
+                ]
+            )
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(payload["scores"]), 2)
+        self.assertTrue(
+            all(
+                move["action"]["type"] == "spotf"
+                for move in payload["moves"]
+            )
+        )
+
+        with patch("meeple_bots.gui.server.serve_gui") as serve:
+            run_gui(game="spotf", open_browser=False)
+        application, page = serve.call_args.args
+        self.assertEqual(application.snapshot()["game"], "spotf")
+        self.assertIn("Spirits of the Forest", page)
+
+        parsed = build_parser().parse_args(
+            ["gui", "--game", "spirits-of-the-forest", "--no-browser"]
+        )
+        self.assertEqual(parsed.game, "spotf")
 
     def test_human_boop_selector_receives_pools_and_typed_actions(self) -> None:
         observed_turns = []

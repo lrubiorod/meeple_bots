@@ -39,6 +39,11 @@ class Boop:
 
 
 @dataclass(frozen=True, slots=True)
+class SpiritsOfTheForest:
+    """Two-player Spirits of the Forest without favor tokens."""
+
+
+@dataclass(frozen=True, slots=True)
 class RandomAgent:
     """An agent that chooses uniformly among legal actions."""
 
@@ -204,9 +209,166 @@ class BoopPool:
                 raise ValueError(f"{name} must be between 0 and 8")
 
 
-Game: TypeAlias = TicTacToe | ConnectFour | Boop
-GameAction: TypeAlias = TicTacToeAction | ConnectFourAction | BoopAction
-BoardCell: TypeAlias = int | BoopPiece | None
+class Spirit(str, Enum):
+    MOSS = "moss"
+    FLOWERS = "flowers"
+    FRUITS = "fruits"
+    MUSHROOMS = "mushrooms"
+    WATER = "water"
+    VINES = "vines"
+    BRANCHES = "branches"
+    LEAVES = "leaves"
+    WEBS = "webs"
+
+
+class PowerSource(str, Enum):
+    FIRE = "fire"
+    MOON = "moon"
+    SUN = "sun"
+
+
+class SpiritsTurnPhase(str, Enum):
+    COLLECT = "collect"
+    PLACE_GEMSTONE = "place_gemstone"
+
+
+@dataclass(frozen=True, slots=True)
+class ForestPosition:
+    row: int
+    column: int
+
+    def __post_init__(self) -> None:
+        for name, value, upper in (("row", self.row, 4), ("column", self.column, 12)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer")
+            if not 0 <= value < upper:
+                raise ValueError(f"{name} must be between 0 and {upper - 1}")
+
+
+@dataclass(frozen=True, slots=True)
+class SpiritGemstoneSacrifice:
+    """A sacrificed gem; a missing source means a gem from the available supply."""
+
+    source: ForestPosition | None = None
+
+    def __post_init__(self) -> None:
+        if self.source is not None and not isinstance(self.source, ForestPosition):
+            raise TypeError("source must be a ForestPosition or None")
+
+
+@dataclass(frozen=True, slots=True)
+class TakeSpiritTile:
+    position: ForestPosition
+    sacrifice: SpiritGemstoneSacrifice | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.position, ForestPosition):
+            raise TypeError("position must be a ForestPosition")
+        if self.sacrifice is not None and not isinstance(
+            self.sacrifice, SpiritGemstoneSacrifice
+        ):
+            raise TypeError("sacrifice must be a SpiritGemstoneSacrifice or None")
+
+
+@dataclass(frozen=True, slots=True)
+class EndSpiritCollection:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class PlaceSpiritGemstone:
+    target: ForestPosition
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.target, ForestPosition):
+            raise TypeError("target must be a ForestPosition")
+
+
+@dataclass(frozen=True, slots=True)
+class MoveSpiritGemstone:
+    source: ForestPosition
+    target: ForestPosition
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, ForestPosition) or not isinstance(
+            self.target, ForestPosition
+        ):
+            raise TypeError("source and target must be ForestPosition values")
+
+
+@dataclass(frozen=True, slots=True)
+class SkipSpiritGemstone:
+    pass
+
+
+SpiritsOfTheForestAction: TypeAlias = (
+    TakeSpiritTile
+    | EndSpiritCollection
+    | PlaceSpiritGemstone
+    | MoveSpiritGemstone
+    | SkipSpiritGemstone
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SpiritTile:
+    spirit: Spirit
+    spirit_symbols: int
+    power_source: PowerSource | None
+    gemstone: int | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.spirit, Spirit):
+            raise TypeError("spirit must be a Spirit")
+        if self.spirit_symbols not in (1, 2):
+            raise ValueError("spirit_symbols must be 1 or 2")
+        if self.power_source is not None and not isinstance(
+            self.power_source, PowerSource
+        ):
+            raise TypeError("power_source must be a PowerSource or None")
+        if self.gemstone not in (None, 0, 1):
+            raise ValueError("gemstone must be player 0, player 1, or None")
+
+
+@dataclass(frozen=True, slots=True)
+class SpiritCollection:
+    spirit_symbols: tuple[int, ...]
+    power_sources: tuple[int, ...]
+    tiles: int
+
+    def __post_init__(self) -> None:
+        if len(self.spirit_symbols) != 9 or len(self.power_sources) != 3:
+            raise ValueError("a collection needs 9 spirit and 3 power-source counts")
+        values = (*self.spirit_symbols, *self.power_sources, self.tiles)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in values
+        ):
+            raise ValueError("collection counts must be non-negative integers")
+
+
+@dataclass(frozen=True, slots=True)
+class SpiritGemstonePool:
+    available: int
+    placed: int
+    removed: int
+
+    def __post_init__(self) -> None:
+        values = (self.available, self.placed, self.removed)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in values
+        ):
+            raise ValueError("gemstone counts must be non-negative integers")
+        if sum(values) != 3:
+            raise ValueError("each player must account for exactly three gemstones")
+
+
+Game: TypeAlias = TicTacToe | ConnectFour | Boop | SpiritsOfTheForest
+GameAction: TypeAlias = (
+    TicTacToeAction | ConnectFourAction | BoopAction | SpiritsOfTheForestAction
+)
+BoardCell: TypeAlias = int | BoopPiece | SpiritTile | None
 GameBoard: TypeAlias = tuple[tuple[BoardCell, ...], ...]
 
 
@@ -219,6 +381,10 @@ class HumanTurn:
     board: GameBoard
     legal_actions: tuple[GameAction, ...]
     pools: tuple[BoopPool, BoopPool] | None = None
+    spirit_collections: tuple[SpiritCollection, SpiritCollection] | None = None
+    gemstone_pools: tuple[SpiritGemstonePool, SpiritGemstonePool] | None = None
+    scores: tuple[int, int] | None = None
+    phase: SpiritsTurnPhase | None = None
 
 
 MoveSelector: TypeAlias = Callable[[HumanTurn], GameAction]
@@ -233,6 +399,11 @@ class HumanMoveObservation:
     action: GameAction
     board: GameBoard
     pools: tuple[BoopPool, BoopPool] | None = None
+    spirit_collections: tuple[SpiritCollection, SpiritCollection] | None = None
+    gemstone_pools: tuple[SpiritGemstonePool, SpiritGemstonePool] | None = None
+    scores: tuple[int, int] | None = None
+    phase: SpiritsTurnPhase | None = None
+    active_player: int | None = None
 
 
 HumanMoveObserver: TypeAlias = Callable[[HumanMoveObservation], None]
@@ -248,6 +419,11 @@ class MatchMoveObservation:
     board: GameBoard
     decision_seconds: float
     pools: tuple[BoopPool, BoopPool] | None = None
+    spirit_collections: tuple[SpiritCollection, SpiritCollection] | None = None
+    gemstone_pools: tuple[SpiritGemstonePool, SpiritGemstonePool] | None = None
+    scores: tuple[int, int] | None = None
+    phase: SpiritsTurnPhase | None = None
+    active_player: int | None = None
 
 
 MatchMoveObserver: TypeAlias = Callable[[MatchMoveObservation], None]
@@ -289,6 +465,9 @@ class MatchResult:
     moves: tuple[Move, ...]
     final_board: GameBoard
     pools: tuple[BoopPool, BoopPool] | None
+    spirit_collections: tuple[SpiritCollection, SpiritCollection] | None = None
+    gemstone_pools: tuple[SpiritGemstonePool, SpiritGemstonePool] | None = None
+    scores: tuple[int, int] | None = None
 
 
 class BatchProgressStatus(str, Enum):
@@ -355,8 +534,10 @@ class Match:
     observe_move: MatchMoveObserver | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop)):
-            raise TypeError("game must be TicTacToe, ConnectFour, or Boop")
+        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest)):
+            raise TypeError(
+                "game must be TicTacToe, ConnectFour, Boop, or SpiritsOfTheForest"
+            )
         if not isinstance(self.first, (RandomAgent, MctsAgent, HumanAgent)):
             raise TypeError("first must be RandomAgent, MctsAgent, or HumanAgent")
         if not isinstance(self.second, (RandomAgent, MctsAgent, HumanAgent)):
@@ -396,8 +577,18 @@ class Match:
             utilities=tuple(raw["utilities"]),
             winner=raw["winner"],
             moves=moves,
-            final_board=_final_board_from_native(raw["final_board"], self.game),
+            final_board=_final_board_from_native(
+                raw["spirit_forest"]
+                if isinstance(self.game, SpiritsOfTheForest)
+                else raw["final_board"],
+                self.game,
+            ),
             pools=_pools_from_native(raw["pools"]),
+            spirit_collections=_spirit_collections_from_native(
+                raw["spirit_collections"]
+            ),
+            gemstone_pools=_gemstone_pools_from_native(raw["gemstone_pools"]),
+            scores=None if raw["scores"] is None else tuple(raw["scores"]),
         )
 
 
@@ -414,8 +605,10 @@ class Batch:
     alternate_sides: bool = True
 
     def __post_init__(self) -> None:
-        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop)):
-            raise TypeError("game must be TicTacToe, ConnectFour, or Boop")
+        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest)):
+            raise TypeError(
+                "game must be TicTacToe, ConnectFour, Boop, or SpiritsOfTheForest"
+            )
         for name, agent in (("agent_a", self.agent_a), ("agent_b", self.agent_b)):
             if not isinstance(agent, (RandomAgent, MctsAgent)):
                 raise TypeError(f"{name} must be RandomAgent or MctsAgent")
@@ -532,8 +725,10 @@ def evaluate_game(
 ) -> GameEvaluationReport:
     """Estimate game structure and the local cost of a reasonable MCTS."""
 
-    if not isinstance(game, (TicTacToe, ConnectFour, Boop)):
-        raise TypeError("game must be TicTacToe, ConnectFour, or Boop")
+    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest)):
+        raise TypeError(
+            "game must be TicTacToe, ConnectFour, Boop, or SpiritsOfTheForest"
+        )
     _positive_u32("samples", samples)
     _positive_u32("max_depth", max_depth)
     if isinstance(seed, bool) or not isinstance(seed, int):
@@ -570,6 +765,8 @@ def _native_game(game: Game) -> str:
         return "tic_tac_toe"
     if isinstance(game, ConnectFour):
         return "connect_four"
+    if isinstance(game, SpiritsOfTheForest):
+        return "spotf"
     return "boop"
 
 
@@ -578,6 +775,8 @@ def _action_from_native(raw: dict[str, object]) -> GameAction:
         return TicTacToeAction(row=raw["row"], column=raw["column"])
     if raw["type"] == "connect_four":
         return ConnectFourAction(column=raw["column"])
+    if raw["type"] in ("spotf", "spirits_of_the_forest"):
+        return _spirits_action_from_mapping(raw)
     return BoopAction(
         piece=BoopPieceKind(raw["piece"]),
         row=raw["row"],
@@ -653,6 +852,13 @@ def _validate_game_heuristic(game: Game, heuristic: int | None) -> None:
     if heuristic is None:
         return
     _non_negative_u32("heuristic", heuristic)
+    if isinstance(game, SpiritsOfTheForest):
+        if heuristic != 0:
+            raise ValueError(
+                "spotf does not provide MCTS heuristic "
+                f"{heuristic}; available indices: 0..0"
+            )
+        return
     if not isinstance(game, Boop):
         raise ValueError(f"{_game_display_name(game)} does not provide MCTS heuristics")
     if heuristic not in (0, 1):
@@ -666,10 +872,48 @@ def _game_display_name(game: Game) -> str:
         return "tic-tac-toe"
     if isinstance(game, ConnectFour):
         return "connect-four"
+    if isinstance(game, SpiritsOfTheForest):
+        return "spotf"
     return "boop"
 
 
 def _human_selector(agent: HumanAgent, game: Game):
+    if isinstance(game, SpiritsOfTheForest):
+        def select_spirits(player: int, native_state, native_actions) -> int:
+            board, collections, gems, phase, _active, scores = _spirits_state_from_native(
+                native_state
+            )
+            legal_actions = tuple(
+                _spirits_action_from_native(action) for action in native_actions
+            )
+            turn = HumanTurn(
+                game=game,
+                player=player,
+                board=board,
+                legal_actions=legal_actions,
+                spirit_collections=collections,
+                gemstone_pools=gems,
+                scores=scores,
+                phase=phase,
+            )
+            action = agent.select_action(turn)
+            if not isinstance(
+                action,
+                (
+                    TakeSpiritTile,
+                    EndSpiritCollection,
+                    PlaceSpiritGemstone,
+                    MoveSpiritGemstone,
+                    SkipSpiritGemstone,
+                ),
+            ):
+                raise TypeError("human select_action must return a SpiritsOfTheForestAction")
+            if action not in legal_actions:
+                raise ValueError("the selected action is not currently legal")
+            return legal_actions.index(action)
+
+        return select_spirits
+
     def select(
         player: int,
         flat_board,
@@ -736,6 +980,27 @@ def _human_selector(agent: HumanAgent, game: Game):
 def _human_move_observer(agent: HumanAgent, game: Game):
     if agent.observe_action is None:
         return None
+
+    if isinstance(game, SpiritsOfTheForest):
+        def observe_spirits(player: int, native_state, native_action) -> None:
+            board, collections, gems, phase, active, scores = _spirits_state_from_native(
+                native_state
+            )
+            agent.observe_action(
+                HumanMoveObservation(
+                    game=game,
+                    player=player,
+                    action=_spirits_action_from_native(native_action),
+                    board=board,
+                    spirit_collections=collections,
+                    gemstone_pools=gems,
+                    scores=scores,
+                    phase=phase,
+                    active_player=active,
+                )
+            )
+
+        return observe_spirits
 
     def observe(player: int, flat_board, native_pools, native_action) -> None:
         if isinstance(game, TicTacToe):
@@ -815,6 +1080,33 @@ def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
 
         return observe_boop
 
+    if isinstance(game, SpiritsOfTheForest):
+        def observe_spirits(
+            player: int,
+            native_state,
+            native_action,
+            decision_seconds: float,
+        ) -> None:
+            board, collections, gems, phase, active, scores = _spirits_state_from_native(
+                native_state
+            )
+            observer(
+                MatchMoveObservation(
+                    game=game,
+                    player=player,
+                    action=_spirits_action_from_native(native_action),
+                    board=board,
+                    decision_seconds=decision_seconds,
+                    spirit_collections=collections,
+                    gemstone_pools=gems,
+                    scores=scores,
+                    phase=phase,
+                    active_player=active,
+                )
+            )
+
+        return observe_spirits
+
     def observe(
         player: int,
         flat_board,
@@ -869,7 +1161,47 @@ def _prompt_human_action(turn: HumanTurn) -> GameAction:
         return _prompt_connect_four_action(turn)
     if isinstance(turn.game, Boop):
         return _prompt_boop_action(turn)
+    if isinstance(turn.game, SpiritsOfTheForest):
+        return _prompt_spirits_action(turn)
     return _prompt_tic_tac_toe_action(turn)
+
+
+def _prompt_spirits_action(turn: HumanTurn) -> SpiritsOfTheForestAction:
+    print(f"Phase: {turn.phase.value if turn.phase else 'unknown'}", file=sys.stderr)
+    if turn.scores is not None:
+        print(f"Provisional scores: {turn.scores[0]} / {turn.scores[1]}", file=sys.stderr)
+    for index, action in enumerate(turn.legal_actions):
+        print(f"  {index}: {_spirits_action_description(action)}", file=sys.stderr)
+    while True:
+        print("Choose a legal action number: ", end="", file=sys.stderr, flush=True)
+        try:
+            selected = int(input())
+            return turn.legal_actions[selected]
+        except (ValueError, IndexError):
+            print("Enter one of the listed action numbers.", file=sys.stderr)
+
+
+def _spirits_action_description(action: SpiritsOfTheForestAction) -> str:
+    if isinstance(action, TakeSpiritTile):
+        text = f"take ({action.position.row}, {action.position.column})"
+        if action.sacrifice is not None:
+            text += (
+                " sacrificing an available gem"
+                if action.sacrifice.source is None
+                else " sacrificing gem at "
+                f"({action.sacrifice.source.row}, {action.sacrifice.source.column})"
+            )
+        return text
+    if isinstance(action, EndSpiritCollection):
+        return "end collection"
+    if isinstance(action, PlaceSpiritGemstone):
+        return f"place gem at ({action.target.row}, {action.target.column})"
+    if isinstance(action, MoveSpiritGemstone):
+        return (
+            f"move gem ({action.source.row}, {action.source.column}) to "
+            f"({action.target.row}, {action.target.column})"
+        )
+    return "skip gemstone"
 
 
 def _prompt_boop_action(turn: HumanTurn) -> BoopAction:
@@ -952,7 +1284,115 @@ def _boop_resolution_from_native(raw) -> BoopResolution:
     return None
 
 
+def _spirits_action_from_native(raw) -> SpiritsOfTheForestAction:
+    kind, positions, sacrifice = raw
+    if kind == "take_tile":
+        row, column = positions[0]
+        parsed_sacrifice = None
+        if sacrifice is not None:
+            sacrifice_kind, source = sacrifice
+            parsed_sacrifice = SpiritGemstoneSacrifice(
+                None if sacrifice_kind == "available" else ForestPosition(*source)
+            )
+        return TakeSpiritTile(ForestPosition(row, column), parsed_sacrifice)
+    if kind == "end_collection":
+        return EndSpiritCollection()
+    if kind == "place_gemstone":
+        return PlaceSpiritGemstone(ForestPosition(*positions[0]))
+    if kind == "move_gemstone":
+        return MoveSpiritGemstone(
+            ForestPosition(*positions[0]), ForestPosition(*positions[1])
+        )
+    if kind == "skip_gemstone":
+        return SkipSpiritGemstone()
+    raise ValueError(f"unknown Spirits of the Forest action: {kind}")
+
+
+def _spirits_action_from_mapping(raw: dict[str, object]) -> SpiritsOfTheForestAction:
+    kind = raw["kind"]
+    if kind == "take_tile":
+        sacrifice = raw["sacrifice"]
+        parsed = None
+        if sacrifice is not None:
+            parsed = SpiritGemstoneSacrifice(
+                None
+                if sacrifice["kind"] == "available"
+                else ForestPosition(sacrifice["row"], sacrifice["column"])
+            )
+        return TakeSpiritTile(
+            ForestPosition(raw["row"], raw["column"]),
+            parsed,
+        )
+    if kind == "end_collection":
+        return EndSpiritCollection()
+    if kind == "place_gemstone":
+        return PlaceSpiritGemstone(ForestPosition(raw["row"], raw["column"]))
+    if kind == "move_gemstone":
+        return MoveSpiritGemstone(
+            ForestPosition(raw["source_row"], raw["source_column"]),
+            ForestPosition(raw["target_row"], raw["target_column"]),
+        )
+    return SkipSpiritGemstone()
+
+
+def _spirits_state_from_native(raw):
+    flat_forest, raw_collections, raw_gems, raw_phase, active, raw_scores = raw
+    board = _board_rows(
+        [
+            None
+            if tile is None
+            else SpiritTile(
+                spirit=Spirit(tile[0]),
+                spirit_symbols=tile[1],
+                power_source=None if tile[2] is None else PowerSource(tile[2]),
+                gemstone=tile[3],
+            )
+            for tile in flat_forest
+        ],
+        columns=12,
+    )
+    collections = tuple(
+        SpiritCollection(tuple(spirits), tuple(sources), tiles)
+        for spirits, sources, tiles in raw_collections
+    )
+    gems = tuple(
+        SpiritGemstonePool(available, placed, removed)
+        for available, placed, removed in raw_gems
+    )
+    return (
+        board,
+        collections,
+        gems,
+        SpiritsTurnPhase(raw_phase),
+        active,
+        tuple(raw_scores),
+    )
+
+
+def _initial_spirits_state(seed: int):
+    return _spirits_state_from_native(_native.spirits_initial_state(seed))
+
+
 def _final_board_from_native(flat_board, game: Game) -> GameBoard:
+    if isinstance(game, SpiritsOfTheForest):
+        return _board_rows(
+            [
+                None
+                if tile is None
+                else SpiritTile(
+                    spirit=Spirit(tile["spirit"]),
+                    spirit_symbols=tile["spirit_symbols"],
+                    power_source=(
+                        None
+                        if tile["power_source"] is None
+                        else PowerSource(tile["power_source"])
+                    ),
+                    gemstone=tile["gemstone"],
+                )
+                for tile in flat_board
+            ],
+            columns=12,
+        )
     cells: list[BoardCell] = []
     for piece in flat_board:
         if piece is None:
@@ -977,11 +1417,35 @@ def _pools_from_native(raw) -> tuple[BoopPool, BoopPool] | None:
     return pools
 
 
+def _spirit_collections_from_native(raw):
+    if raw is None:
+        return None
+    return tuple(
+        SpiritCollection(
+            tuple(collection["spirit_symbols"]),
+            tuple(collection["power_sources"]),
+            collection["tiles"],
+        )
+        for collection in raw
+    )
+
+
+def _gemstone_pools_from_native(raw):
+    if raw is None:
+        return None
+    return tuple(
+        SpiritGemstonePool(pool["available"], pool["placed"], pool["removed"])
+        for pool in raw
+    )
+
+
 def _board_symbol(cell: BoardCell) -> str:
     if cell is None:
         return "."
     if isinstance(cell, int):
         return "X" if cell == 0 else "O"
+    if isinstance(cell, SpiritTile):
+        return cell.spirit.value[0].upper() + str(cell.spirit_symbols)
     if cell.player == 0:
         return "x" if cell.kind is BoopPieceKind.KITTEN else "X"
     return "o" if cell.kind is BoopPieceKind.KITTEN else "O"

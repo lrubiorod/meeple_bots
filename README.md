@@ -9,7 +9,7 @@ workflow.
 
 | Area | Available features |
 | --- | --- |
-| Games | Tic-tac-toe, standard 6x7 Connect Four, and two-player boop. |
+| Games | Tic-tac-toe, Connect Four, boop., and two-player Spirits of the Forest. |
 | Agents | Interactive human input, uniform random play, and configurable MCTS. |
 | Interfaces | Typed Python API, command-line commands, and local browser playrooms. |
 | Experiments | Reproducible batches, round-robin tournaments, trace extraction, and Boop reports. |
@@ -36,6 +36,7 @@ Play in a local browser:
 python -m meeple_bots gui
 python -m meeple_bots gui --game connect-four
 python -m meeple_bots gui --game boop
+python -m meeple_bots gui --game spotf
 ```
 
 Run one terminal match:

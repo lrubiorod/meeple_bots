@@ -8,18 +8,26 @@ use meeple_bots_boop::{
 };
 use meeple_bots_catalog::{
     AgentConfig, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution, CatalogError,
-    CatalogMatchReport, CatalogPieceKind, CatalogTraceAnalysis, EvaluationConfig, GameId,
+    CatalogGemstoneSacrifice, CatalogMatchReport, CatalogPieceKind, CatalogPowerSource,
+    CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, EvaluationConfig, GameId,
     MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, analyze_trace, configured_boop_mcts,
-    configured_connect_four_mcts, configured_tic_tac_toe_mcts, evaluate_game,
-    run_boop_match_with_observer, run_boop_match_with_trace, run_connect_four_match_with_observer,
-    run_connect_four_match_with_trace, run_match_with_trace, run_tic_tac_toe_match_with_observer,
-    run_tic_tac_toe_match_with_trace,
+    configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
+    configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
+    run_boop_match_with_trace, run_connect_four_match_with_observer,
+    run_connect_four_match_with_trace, run_match_with_trace,
+    run_spirits_of_the_forest_match_with_observer, run_spirits_of_the_forest_match_with_trace,
+    run_tic_tac_toe_match_with_observer, run_tic_tac_toe_match_with_trace,
+    spirits_of_the_forest_game,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{Agent, AgentError, DecisionContext, Game, PlayerId, RandomSource};
 use meeple_bots_mcts_agent::MctsAgent;
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::MatchObserver;
+use meeple_bots_spirits_of_the_forest::{
+    ForestPosition, GemstoneSacrifice, PowerSource, Spirit, SpiritsOfTheForest,
+    SpiritsOfTheForestAction, SpiritsOfTheForestState, TurnPhase,
+};
 use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -123,6 +131,11 @@ struct PythonBoopMatchObserver<'a> {
     error: Option<String>,
 }
 
+struct PythonSpiritsMatchObserver<'a> {
+    callback: &'a Py<PyAny>,
+    error: Option<String>,
+}
+
 enum PythonObservedAgent<'a> {
     Human(PythonHumanAgent<'a>),
     Mcts(MctsAgent),
@@ -133,6 +146,26 @@ enum PythonObservedBoopAgent<'a> {
     Human(PythonHumanAgent<'a>),
     Mcts(meeple_bots_catalog::BoopMctsAgent),
     Random(RandomAgent),
+}
+
+enum PythonObservedSpiritsAgent<'a> {
+    Human(PythonHumanAgent<'a>),
+    Mcts(meeple_bots_catalog::SpiritsOfTheForestMctsAgent),
+    Random(RandomAgent),
+}
+
+impl Agent<SpiritsOfTheForest> for PythonObservedSpiritsAgent<'_> {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, SpiritsOfTheForest>,
+        rng: &mut R,
+    ) -> Result<SpiritsOfTheForestAction, AgentError> {
+        match self {
+            Self::Human(agent) => agent.select_action(decision, rng),
+            Self::Mcts(agent) => agent.select_action(decision, rng),
+            Self::Random(agent) => agent.select_action(decision, rng),
+        }
+    }
 }
 
 impl Agent<Boop> for PythonObservedBoopAgent<'_> {
@@ -286,6 +319,36 @@ impl MatchObserver<Boop> for PythonBoopMatchObserver<'_> {
                 board,
                 pools,
                 native_boop_action(action),
+                decision_time.as_secs_f64(),
+            ))?;
+            Ok(())
+        }) {
+            self.error = Some(error.to_string());
+        }
+    }
+}
+
+impl MatchObserver<SpiritsOfTheForest> for PythonSpiritsMatchObserver<'_> {
+    fn measures_decision_time(&self) -> bool {
+        true
+    }
+
+    fn on_action(
+        &mut self,
+        game: &SpiritsOfTheForest,
+        state: &SpiritsOfTheForestState,
+        player: PlayerId,
+        action: &SpiritsOfTheForestAction,
+        decision_time: Duration,
+    ) {
+        if self.error.is_some() {
+            return;
+        }
+        if let Err(error) = Python::attach(|py| -> PyResult<()> {
+            self.callback.bind(py).call1((
+                player.index(),
+                native_spirits_state(game, state),
+                native_spirits_action(*action),
                 decision_time.as_secs_f64(),
             ))?;
             Ok(())
@@ -540,6 +603,55 @@ impl Agent<Boop> for PythonHumanAgent<'_> {
     }
 }
 
+impl Agent<SpiritsOfTheForest> for PythonHumanAgent<'_> {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, SpiritsOfTheForest>,
+        _rng: &mut R,
+    ) -> Result<SpiritsOfTheForestAction, AgentError> {
+        let player = decision.player().index();
+        let legal_actions: Vec<_> = decision.legal_actions().collect();
+        let native_actions: Vec<_> = legal_actions
+            .iter()
+            .copied()
+            .map(native_spirits_action)
+            .collect();
+        let selected: usize = Python::attach(|py| {
+            self.selector
+                .bind(py)
+                .call1((
+                    player,
+                    native_spirits_state(decision.game(), decision.state()),
+                    native_actions,
+                ))?
+                .extract()
+        })
+        .map_err(|error| AgentError::message(format!("human selector failed: {error}")))?;
+        let action = legal_actions.get(selected).copied().ok_or_else(|| {
+            AgentError::message("human selected an action index that is not currently legal")
+        })?;
+        if let Some(observer) = self.observer {
+            let mut state = decision.state().clone();
+            decision
+                .game()
+                .apply_action(&mut state, &action)
+                .map_err(|error| {
+                    AgentError::message(format!("failed to preview human action: {error}"))
+                })?;
+            Python::attach(|py| -> PyResult<()> {
+                observer.bind(py).call1((
+                    player,
+                    native_spirits_state(decision.game(), &state),
+                    native_spirits_action(action),
+                ))?;
+                Ok(())
+            })
+            .map_err(|error| AgentError::message(format!("human observer failed: {error}")))?;
+        }
+        Ok(action)
+    }
+}
+
 #[pyfunction(name = "run_match")]
 #[pyo3(signature = (game, first, second, seed=0, max_plies=10_000, observer=None))]
 fn py_run_match(
@@ -605,6 +717,58 @@ fn py_run_match(
             result.set_item("pools", serialized)?;
         }
     }
+    match report.spirit_forest {
+        None => result.set_item("spirit_forest", py.None())?,
+        Some(forest) => {
+            let serialized = PyList::empty(py);
+            for tile in forest {
+                match tile {
+                    None => serialized.append(py.None())?,
+                    Some(tile) => {
+                        let item = PyDict::new(py);
+                        item.set_item("spirit", catalog_spirit_name(tile.spirit))?;
+                        item.set_item("spirit_symbols", tile.spirit_symbols)?;
+                        item.set_item(
+                            "power_source",
+                            tile.power_source.map(catalog_power_source_name),
+                        )?;
+                        item.set_item("gemstone", tile.gemstone)?;
+                        serialized.append(item)?;
+                    }
+                }
+            }
+            result.set_item("spirit_forest", serialized)?;
+        }
+    }
+    match report.spirit_collections {
+        None => result.set_item("spirit_collections", py.None())?,
+        Some(collections) => {
+            let serialized = PyList::empty(py);
+            for collection in collections {
+                let item = PyDict::new(py);
+                item.set_item("spirit_symbols", collection.spirit_symbols)?;
+                item.set_item("power_sources", collection.power_sources)?;
+                item.set_item("tiles", collection.tiles)?;
+                serialized.append(item)?;
+            }
+            result.set_item("spirit_collections", serialized)?;
+        }
+    }
+    match report.gemstone_pools {
+        None => result.set_item("gemstone_pools", py.None())?,
+        Some(pools) => {
+            let serialized = PyList::empty(py);
+            for pool in pools {
+                let item = PyDict::new(py);
+                item.set_item("available", pool.available)?;
+                item.set_item("placed", pool.placed)?;
+                item.set_item("removed", pool.removed)?;
+                serialized.append(item)?;
+            }
+            result.set_item("gemstone_pools", serialized)?;
+        }
+    }
+    result.set_item("scores", report.scores)?;
 
     let moves = PyList::empty(py);
     for recorded in report.moves {
@@ -640,6 +804,9 @@ fn py_run_match(
             CatalogAction::ConnectFour { column } => {
                 action.set_item("type", "connect_four")?;
                 action.set_item("column", column)?;
+            }
+            CatalogAction::SpiritsOfTheForest(spirits_action) => {
+                serialize_catalog_spirits_action(&action, spirits_action)?;
             }
             CatalogAction::TicTacToe { row, column } => {
                 action.set_item("type", "tic_tac_toe")?;
@@ -679,6 +846,9 @@ fn run_python_match(
         return match game {
             GameId::Boop => run_observed_boop_match(first, second, observer, config),
             GameId::ConnectFour => run_observed_connect_four_match(first, second, observer, config),
+            GameId::SpiritsOfTheForest => {
+                run_observed_spirits_match(first, second, observer, config)
+            }
             GameId::TicTacToe => run_observed_tic_tac_toe_match(first, second, observer, config),
         };
     }
@@ -728,7 +898,7 @@ fn py_analyze_trace(py: Python<'_>, game: &str, moves: &Bound<'_, PyAny>) -> PyR
                 })
             })
             .collect::<PyResult<Vec<_>>>()?,
-        GameId::ConnectFour | GameId::TicTacToe => {
+        GameId::ConnectFour | GameId::SpiritsOfTheForest | GameId::TicTacToe => {
             return Err(PyValueError::new_err(
                 analyze_trace(game, &[])
                     .expect_err("games without analysis return an error")
@@ -1004,6 +1174,33 @@ fn run_observed_connect_four_match(
     Ok(report)
 }
 
+fn run_observed_spirits_match(
+    first: &PythonAgentConfig,
+    second: &PythonAgentConfig,
+    callback: &Py<PyAny>,
+    config: MatchConfig,
+) -> PyResult<CatalogMatchReport> {
+    let mut first = python_spirits_agent(first)?;
+    let mut second = python_spirits_agent(second)?;
+    let mut observer = PythonSpiritsMatchObserver {
+        callback,
+        error: None,
+    };
+    let report = run_spirits_of_the_forest_match_with_observer(
+        &mut first,
+        &mut second,
+        config,
+        &mut observer,
+    )
+    .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+    if let Some(error) = observer.error {
+        return Err(PyRuntimeError::new_err(format!(
+            "match observer failed: {error}"
+        )));
+    }
+    Ok(report)
+}
+
 fn configured_tic_tac_toe_mcts_for_python(config: MctsAgentConfig) -> PyResult<MctsAgent> {
     configured_tic_tac_toe_mcts(config).map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
@@ -1063,6 +1260,28 @@ fn python_boop_agent(configured: &PythonAgentConfig) -> PyResult<PythonObservedB
     }
 }
 
+fn python_spirits_agent(
+    configured: &PythonAgentConfig,
+) -> PyResult<PythonObservedSpiritsAgent<'_>> {
+    match configured {
+        PythonAgentConfig::Automated(AgentConfig::Random) => {
+            Ok(PythonObservedSpiritsAgent::Random(RandomAgent))
+        }
+        PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => {
+            Ok(PythonObservedSpiritsAgent::Mcts(
+                configured_spirits_of_the_forest_mcts(*config)
+                    .map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
+            ))
+        }
+        PythonAgentConfig::Human { selector, observer } => {
+            Ok(PythonObservedSpiritsAgent::Human(PythonHumanAgent {
+                selector,
+                observer: observer.as_ref(),
+            }))
+        }
+    }
+}
+
 fn run_with_human_first(
     game: GameId,
     first: &Py<PyAny>,
@@ -1089,6 +1308,16 @@ fn run_with_human_first(
             &mut configured_connect_four_mcts(configured)?,
             config,
         ),
+        (GameId::SpiritsOfTheForest, AgentConfig::Random) => {
+            run_spirits_of_the_forest_match_with_trace(&mut first, &mut RandomAgent, config)
+        }
+        (GameId::SpiritsOfTheForest, AgentConfig::Mcts(configured)) => {
+            run_spirits_of_the_forest_match_with_trace(
+                &mut first,
+                &mut configured_spirits_of_the_forest_mcts(configured)?,
+                config,
+            )
+        }
         (GameId::TicTacToe, AgentConfig::Random) => {
             run_tic_tac_toe_match_with_trace(&mut first, &mut RandomAgent, config)
         }
@@ -1126,6 +1355,16 @@ fn run_with_human_second(
             &mut second,
             config,
         ),
+        (GameId::SpiritsOfTheForest, AgentConfig::Random) => {
+            run_spirits_of_the_forest_match_with_trace(&mut RandomAgent, &mut second, config)
+        }
+        (GameId::SpiritsOfTheForest, AgentConfig::Mcts(configured)) => {
+            run_spirits_of_the_forest_match_with_trace(
+                &mut configured_spirits_of_the_forest_mcts(configured)?,
+                &mut second,
+                config,
+            )
+        }
         (GameId::TicTacToe, AgentConfig::Random) => {
             run_tic_tac_toe_match_with_trace(&mut RandomAgent, &mut second, config)
         }
@@ -1168,6 +1407,17 @@ fn run_with_two_humans(
             },
             config,
         ),
+        GameId::SpiritsOfTheForest => run_spirits_of_the_forest_match_with_trace(
+            &mut PythonHumanAgent {
+                selector: first,
+                observer: first_observer,
+            },
+            &mut PythonHumanAgent {
+                selector: second,
+                observer: second_observer,
+            },
+            config,
+        ),
         GameId::TicTacToe => run_tic_tac_toe_match_with_trace(
             &mut PythonHumanAgent {
                 selector: first,
@@ -1183,6 +1433,206 @@ fn run_with_two_humans(
 }
 
 type NativeBoopAction = (String, u8, u8, (String, Vec<(u8, u8)>));
+
+type NativeSpiritsAction = (String, Vec<(u8, u8)>, Option<(String, Option<(u8, u8)>)>);
+type NativeSpiritTile = (String, u8, Option<String>, Option<usize>);
+type NativeSpiritCollection = (Vec<u8>, Vec<u8>, u8);
+type NativeGemstonePool = (u8, u8, u8);
+type NativeSpiritsState = (
+    Vec<Option<NativeSpiritTile>>,
+    Vec<NativeSpiritCollection>,
+    Vec<NativeGemstonePool>,
+    String,
+    usize,
+    Vec<i16>,
+);
+
+fn native_spirits_action(action: SpiritsOfTheForestAction) -> NativeSpiritsAction {
+    match action {
+        SpiritsOfTheForestAction::TakeTile {
+            position,
+            sacrifice,
+        } => (
+            "take_tile".to_owned(),
+            vec![(position.row(), position.column())],
+            sacrifice.map(|sacrifice| match sacrifice {
+                GemstoneSacrifice::Available => ("available".to_owned(), None),
+                GemstoneSacrifice::Forest(position) => (
+                    "forest".to_owned(),
+                    Some((position.row(), position.column())),
+                ),
+            }),
+        ),
+        SpiritsOfTheForestAction::EndCollection => ("end_collection".to_owned(), Vec::new(), None),
+        SpiritsOfTheForestAction::PlaceGemstone { target } => (
+            "place_gemstone".to_owned(),
+            vec![(target.row(), target.column())],
+            None,
+        ),
+        SpiritsOfTheForestAction::MoveGemstone { source, target } => (
+            "move_gemstone".to_owned(),
+            vec![
+                (source.row(), source.column()),
+                (target.row(), target.column()),
+            ],
+            None,
+        ),
+        SpiritsOfTheForestAction::SkipGemstone => ("skip_gemstone".to_owned(), Vec::new(), None),
+    }
+}
+
+fn serialize_catalog_spirits_action(
+    action: &Bound<'_, PyDict>,
+    spirits_action: CatalogSpiritsAction,
+) -> PyResult<()> {
+    action.set_item("type", "spotf")?;
+    match spirits_action {
+        CatalogSpiritsAction::TakeTile {
+            row,
+            column,
+            sacrifice,
+        } => {
+            action.set_item("kind", "take_tile")?;
+            action.set_item("row", row)?;
+            action.set_item("column", column)?;
+            match sacrifice {
+                None => action.set_item("sacrifice", action.py().None())?,
+                Some(CatalogGemstoneSacrifice::Available) => {
+                    let item = PyDict::new(action.py());
+                    item.set_item("kind", "available")?;
+                    action.set_item("sacrifice", item)?;
+                }
+                Some(CatalogGemstoneSacrifice::Forest { row, column }) => {
+                    let item = PyDict::new(action.py());
+                    item.set_item("kind", "forest")?;
+                    item.set_item("row", row)?;
+                    item.set_item("column", column)?;
+                    action.set_item("sacrifice", item)?;
+                }
+            }
+        }
+        CatalogSpiritsAction::EndCollection => action.set_item("kind", "end_collection")?,
+        CatalogSpiritsAction::PlaceGemstone { row, column } => {
+            action.set_item("kind", "place_gemstone")?;
+            action.set_item("row", row)?;
+            action.set_item("column", column)?;
+        }
+        CatalogSpiritsAction::MoveGemstone {
+            source_row,
+            source_column,
+            target_row,
+            target_column,
+        } => {
+            action.set_item("kind", "move_gemstone")?;
+            action.set_item("source_row", source_row)?;
+            action.set_item("source_column", source_column)?;
+            action.set_item("target_row", target_row)?;
+            action.set_item("target_column", target_column)?;
+        }
+        CatalogSpiritsAction::SkipGemstone => action.set_item("kind", "skip_gemstone")?,
+    }
+    Ok(())
+}
+
+fn native_spirits_state(
+    game: &SpiritsOfTheForest,
+    state: &SpiritsOfTheForestState,
+) -> NativeSpiritsState {
+    let forest = state
+        .remaining()
+        .iter()
+        .enumerate()
+        .map(|(index, remaining)| {
+            remaining.then(|| {
+                let position = ForestPosition::new(
+                    (index / meeple_bots_spirits_of_the_forest::COLUMNS) as u8,
+                    (index % meeple_bots_spirits_of_the_forest::COLUMNS) as u8,
+                )
+                .expect("forest index is valid");
+                let tile = game.tile(position);
+                (
+                    spirit_name(tile.spirit()).to_owned(),
+                    tile.spirit_symbols(),
+                    tile.power_source()
+                        .map(|source| power_source_name(source).to_owned()),
+                    state.gemstones()[index].map(PlayerId::index),
+                )
+            })
+        })
+        .collect();
+    let collections = state
+        .collections()
+        .iter()
+        .map(|collection| {
+            (
+                collection.spirit_symbols().to_vec(),
+                collection.power_sources().to_vec(),
+                collection.tiles(),
+            )
+        })
+        .collect();
+    let pools = state
+        .gemstone_pools()
+        .iter()
+        .map(|pool| (pool.available(), pool.placed(), pool.removed()))
+        .collect();
+    (
+        forest,
+        collections,
+        pools,
+        match state.phase() {
+            TurnPhase::Collect => "collect",
+            TurnPhase::PlaceGemstone => "place_gemstone",
+        }
+        .to_owned(),
+        state.next_player().index(),
+        game.scores(state).to_vec(),
+    )
+}
+
+const fn spirit_name(spirit: Spirit) -> &'static str {
+    match spirit {
+        Spirit::Moss => "moss",
+        Spirit::Flowers => "flowers",
+        Spirit::Fruits => "fruits",
+        Spirit::Mushrooms => "mushrooms",
+        Spirit::Water => "water",
+        Spirit::Vines => "vines",
+        Spirit::Branches => "branches",
+        Spirit::Leaves => "leaves",
+        Spirit::Webs => "webs",
+    }
+}
+
+const fn power_source_name(source: PowerSource) -> &'static str {
+    match source {
+        PowerSource::Fire => "fire",
+        PowerSource::Moon => "moon",
+        PowerSource::Sun => "sun",
+    }
+}
+
+const fn catalog_spirit_name(spirit: CatalogSpirit) -> &'static str {
+    match spirit {
+        CatalogSpirit::Moss => "moss",
+        CatalogSpirit::Flowers => "flowers",
+        CatalogSpirit::Fruits => "fruits",
+        CatalogSpirit::Mushrooms => "mushrooms",
+        CatalogSpirit::Water => "water",
+        CatalogSpirit::Vines => "vines",
+        CatalogSpirit::Branches => "branches",
+        CatalogSpirit::Leaves => "leaves",
+        CatalogSpirit::Webs => "webs",
+    }
+}
+
+const fn catalog_power_source_name(source: CatalogPowerSource) -> &'static str {
+    match source {
+        CatalogPowerSource::Fire => "fire",
+        CatalogPowerSource::Moon => "moon",
+        CatalogPowerSource::Sun => "sun",
+    }
+}
 
 fn native_boop_action(action: &BoopAction) -> NativeBoopAction {
     let resolution = match action.resolution() {
@@ -1225,9 +1675,17 @@ fn parse_game(game: &str) -> PyResult<GameId> {
     match game {
         "boop" => Ok(GameId::Boop),
         "connect_four" => Ok(GameId::ConnectFour),
+        "spotf" | "spirits_of_the_forest" => Ok(GameId::SpiritsOfTheForest),
         "tic_tac_toe" => Ok(GameId::TicTacToe),
         other => Err(PyValueError::new_err(format!("unknown game: {other}"))),
     }
+}
+
+#[pyfunction(name = "spirits_initial_state")]
+fn py_spirits_initial_state(seed: u64) -> NativeSpiritsState {
+    let game = spirits_of_the_forest_game(seed);
+    let state = game.initial_state();
+    native_spirits_state(&game, &state)
 }
 
 #[pymodule]
@@ -1236,5 +1694,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;
     module.add_function(wrap_pyfunction!(py_run_match, module)?)?;
     module.add_function(wrap_pyfunction!(py_analyze_trace, module)?)?;
+    module.add_function(wrap_pyfunction!(py_spirits_initial_state, module)?)?;
     Ok(())
 }

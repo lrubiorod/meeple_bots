@@ -11,4 +11,5 @@ meeple_bots_evaluation = { path = "../evaluation" }
 meeple_bots_mcts_agent = { path = "../../agents/mcts" }
 meeple_bots_random_agent = { path = "../../agents/random" }
 meeple_bots_simulation = { path = "../simulation" }
+meeple_bots_spirits_of_the_forest = { path = "../../games/spirits-of-the-forest" }
 meeple_bots_tic_tac_toe = { path = "../../games/tic-tac-toe" }

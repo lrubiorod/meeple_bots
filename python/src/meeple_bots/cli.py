@@ -24,13 +24,20 @@ from .api import (
     BoopRecoverPiece,
     ConnectFour,
     ConnectFourAction,
+    EndSpiritCollection,
     GameEvaluationReport,
     HumanAgent,
     HumanMoveObservation,
     Match,
     MatchResult,
     MctsAgent,
+    MoveSpiritGemstone,
+    PlaceSpiritGemstone,
     RandomAgent,
+    SkipSpiritGemstone,
+    SpiritTile,
+    SpiritsOfTheForest,
+    TakeSpiritTile,
     TicTacToe,
     TicTacToeAction,
     evaluate_game,
@@ -39,6 +46,12 @@ from .extraction import extract_tournament
 from .gui import run_gui
 from .reporting import generate_study_report
 
+_PLAYABLE_GAMES = ["boop", "connect-four", "spotf", "tic-tac-toe"]
+
+
+def _game_tag(value: str) -> str:
+    return "spotf" if value == "spirits-of-the-forest" else value
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="meeple-bots")
@@ -46,7 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     gui = commands.add_parser("gui", help="play or watch a game in a local browser")
     gui.add_argument(
         "--game",
-        choices=["boop", "connect-four", "tic-tac-toe"],
+        type=_game_tag,
+        choices=_PLAYABLE_GAMES,
         default="tic-tac-toe",
     )
     gui.add_argument("--host", default="127.0.0.1")
@@ -59,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     match = commands.add_parser("match", help="run and display one match")
     match.add_argument(
-        "--game", choices=["boop", "connect-four", "tic-tac-toe"], default="tic-tac-toe"
+        "--game", type=_game_tag, choices=_PLAYABLE_GAMES, default="tic-tac-toe"
     )
     match.add_argument("--first", choices=["human", "mcts", "random"], default="mcts")
     match.add_argument("--second", choices=["human", "mcts", "random"], default="random")
@@ -88,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     batch = commands.add_parser("batch", help="run and summarize automated matches")
     batch.add_argument(
-        "--game", choices=["boop", "connect-four", "tic-tac-toe"], required=True
+        "--game", type=_game_tag, choices=_PLAYABLE_GAMES, required=True
     )
     batch.add_argument("--matches", type=int, default=20)
     batch.add_argument("--agent-a", choices=["mcts", "random"], default="random")
@@ -158,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     analyze = commands.add_parser("analyze", help="measure game complexity and calibrate MCTS")
     analyze.add_argument(
-        "--game", choices=["boop", "connect-four", "tic-tac-toe"], required=True
+        "--game", type=_game_tag, choices=_PLAYABLE_GAMES, required=True
     )
     analyze.add_argument("--samples", type=int, default=128)
     analyze.add_argument("--max-depth", type=int, default=256)
@@ -884,11 +898,13 @@ def _print_batch_result(
     print(f"  Total time: {result.elapsed_seconds:.3f}s")
 
 
-def _game(name: str) -> TicTacToe | ConnectFour | Boop:
+def _game(name: str) -> TicTacToe | ConnectFour | Boop | SpiritsOfTheForest:
     if name == "boop":
         return Boop()
     if name == "connect-four":
         return ConnectFour()
+    if name == "spotf":
+        return SpiritsOfTheForest()
     return TicTacToe()
 
 
@@ -951,7 +967,7 @@ def _heuristic_name(heuristic: int | None) -> str:
 
 
 def _result_dict(result: MatchResult) -> dict[str, object]:
-    return {
+    payload = {
         "seed": result.seed,
         "plies": result.plies,
         "utilities": list(result.utilities),
@@ -965,11 +981,28 @@ def _result_dict(result: MatchResult) -> dict[str, object]:
             for ply, move in enumerate(result.moves, start=1)
         ],
     }
+    if result.scores is not None:
+        payload["scores"] = list(result.scores)
+        payload["collections"] = [
+            {
+                "spirit_symbols": list(collection.spirit_symbols),
+                "power_sources": list(collection.power_sources),
+                "tiles": collection.tiles,
+            }
+            for collection in result.spirit_collections or ()
+        ]
+        payload["gemstone_pools"] = [
+            {
+                "available": pool.available,
+                "placed": pool.placed,
+                "removed": pool.removed,
+            }
+            for pool in result.gemstone_pools or ()
+        ]
+    return payload
 
 
-def _action_dict(
-    action: TicTacToeAction | ConnectFourAction | BoopAction,
-) -> dict[str, object]:
+def _action_dict(action) -> dict[str, object]:
     if isinstance(action, TicTacToeAction):
         return {
             "type": "tic_tac_toe",
@@ -978,6 +1011,44 @@ def _action_dict(
         }
     if isinstance(action, ConnectFourAction):
         return {"type": "connect_four", "column": action.column}
+    if isinstance(action, TakeSpiritTile):
+        sacrifice = None
+        if action.sacrifice is not None:
+            sacrifice = {
+                "kind": "available" if action.sacrifice.source is None else "forest"
+            }
+            if action.sacrifice.source is not None:
+                sacrifice.update(
+                    row=action.sacrifice.source.row,
+                    column=action.sacrifice.source.column,
+                )
+        return {
+            "type": "spotf",
+            "kind": "take_tile",
+            "row": action.position.row,
+            "column": action.position.column,
+            "sacrifice": sacrifice,
+        }
+    if isinstance(action, EndSpiritCollection):
+        return {"type": "spotf", "kind": "end_collection"}
+    if isinstance(action, PlaceSpiritGemstone):
+        return {
+            "type": "spotf",
+            "kind": "place_gemstone",
+            "row": action.target.row,
+            "column": action.target.column,
+        }
+    if isinstance(action, MoveSpiritGemstone):
+        return {
+            "type": "spotf",
+            "kind": "move_gemstone",
+            "source_row": action.source.row,
+            "source_column": action.source.column,
+            "target_row": action.target.row,
+            "target_column": action.target.column,
+        }
+    if isinstance(action, SkipSpiritGemstone):
+        return {"type": "spotf", "kind": "skip_gemstone"}
     return {
         "type": "boop",
         "piece": action.piece.value,
@@ -1002,6 +1073,19 @@ def _print_result(
             selected = f"row {move.action.row}, column {move.action.column}"
         elif isinstance(move.action, ConnectFourAction):
             selected = f"column {move.action.column}"
+        elif isinstance(
+            move.action,
+            (
+                TakeSpiritTile,
+                EndSpiritCollection,
+                PlaceSpiritGemstone,
+                MoveSpiritGemstone,
+                SkipSpiritGemstone,
+            ),
+        ):
+            from .api import _spirits_action_description
+
+            selected = _spirits_action_description(move.action)
         else:
             selected = (
                 f"{move.action.piece.value} at row {move.action.row}, "
@@ -1017,6 +1101,8 @@ def _print_result(
     if result.pools is not None:
         for player, pool in enumerate(result.pools):
             print(f"Player {player} pool: {pool.kittens} kittens, {pool.cats} cats")
+    if result.scores is not None:
+        print(f"Scores: player 0 = {result.scores[0]}, player 1 = {result.scores[1]}")
     print()
     print("Result: draw" if result.winner is None else f"Winner: player {result.winner}")
     print(f"Utilities: {list(result.utilities)}")
@@ -1059,6 +1145,9 @@ def _piece_symbol(piece) -> str:
         return "."
     if isinstance(piece, int):
         return "X" if piece == 0 else "O"
+    if isinstance(piece, SpiritTile):
+        gemstone = "" if piece.gemstone is None else str(piece.gemstone)
+        return f"{piece.spirit.value[:2].upper()}{piece.spirit_symbols}{gemstone}"
     if not isinstance(piece, BoopPiece):
         raise TypeError("unknown board piece")
     if piece.player == 0:
@@ -1151,9 +1240,11 @@ def _print_evaluation(report: GameEvaluationReport) -> None:
     )
 
 
-def _game_name(game: TicTacToe | ConnectFour | Boop) -> str:
+def _game_name(game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest) -> str:
     if isinstance(game, TicTacToe):
         return "tic-tac-toe"
     if isinstance(game, ConnectFour):
         return "connect-four"
+    if isinstance(game, SpiritsOfTheForest):
+        return "spotf"
     return "boop"

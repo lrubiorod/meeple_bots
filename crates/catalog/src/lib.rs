@@ -16,16 +16,21 @@ pub use meeple_bots_mcts_agent::MctsConfig;
 use meeple_bots_mcts_agent::{GameHeuristic, MctsAgent};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{
-    BatchConfig, MatchError, MatchObserver, TracedMatchResult, play_batch, play_match,
+    BatchConfig, MatchError, MatchObserver, SplitMix64, TracedMatchResult, play_batch, play_match,
     play_match_with_trace as play_typed_match_with_trace, play_match_with_trace_and_observer,
 };
 pub use meeple_bots_simulation::{MatchConfig, MatchResult};
+use meeple_bots_spirits_of_the_forest::{
+    ForestPosition, GemstoneSacrifice, PowerSource, Spirit, SpiritsOfTheForest,
+    SpiritsOfTheForestAction,
+};
 use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GameId {
     Boop,
     ConnectFour,
+    SpiritsOfTheForest,
     TicTacToe,
 }
 
@@ -52,10 +57,86 @@ pub enum CatalogAction {
     ConnectFour {
         column: u8,
     },
+    SpiritsOfTheForest(CatalogSpiritsAction),
     TicTacToe {
         row: u8,
         column: u8,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatalogSpiritsAction {
+    TakeTile {
+        row: u8,
+        column: u8,
+        sacrifice: Option<CatalogGemstoneSacrifice>,
+    },
+    EndCollection,
+    PlaceGemstone {
+        row: u8,
+        column: u8,
+    },
+    MoveGemstone {
+        source_row: u8,
+        source_column: u8,
+        target_row: u8,
+        target_column: u8,
+    },
+    SkipGemstone,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatalogGemstoneSacrifice {
+    Available,
+    Forest { row: u8, column: u8 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatalogSpirit {
+    Moss,
+    Flowers,
+    Fruits,
+    Mushrooms,
+    Water,
+    Vines,
+    Branches,
+    Leaves,
+    Webs,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatalogPowerSource {
+    Fire,
+    Moon,
+    Sun,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CatalogSpiritTile {
+    pub spirit: CatalogSpirit,
+    pub spirit_symbols: u8,
+    pub power_source: Option<CatalogPowerSource>,
+    pub gemstone: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CatalogSpiritCollection {
+    pub spirit_symbols: [u8; 9],
+    pub power_sources: [u8; 3],
+    pub tiles: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CatalogGemstonePool {
+    pub available: u8,
+    pub placed: u8,
+    pub removed: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatalogTurnPhase {
+    Collect,
+    PlaceGemstone,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +186,10 @@ pub struct CatalogMatchReport {
     pub moves: Vec<RecordedMove>,
     pub final_board: Vec<Option<CatalogPiece>>,
     pub pools: Option<[CatalogPool; 2]>,
+    pub spirit_forest: Option<Vec<Option<CatalogSpiritTile>>>,
+    pub spirit_collections: Option<[CatalogSpiritCollection; 2]>,
+    pub gemstone_pools: Option<[CatalogGemstonePool; 2]>,
+    pub scores: Option<[i16; 2]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -188,6 +273,10 @@ pub fn evaluate_game(
     let report = match game {
         GameId::Boop => evaluate_typed_game(&Boop, config),
         GameId::ConnectFour => evaluate_typed_game(&ConnectFour, config),
+        GameId::SpiritsOfTheForest => {
+            let game = spirits_of_the_forest_game(config.seed);
+            evaluate_typed_game(&game, config)
+        }
         GameId::TicTacToe => evaluate_typed_game(&TicTacToe, config),
     }?;
     Ok(report)
@@ -220,7 +309,9 @@ pub fn analyze_trace(
                     message: error.to_string(),
                 })
         }
-        GameId::ConnectFour | GameId::TicTacToe => Err(CatalogError::AnalysisUnavailable(game)),
+        GameId::ConnectFour | GameId::SpiritsOfTheForest | GameId::TicTacToe => {
+            Err(CatalogError::AnalysisUnavailable(game))
+        }
     }
 }
 
@@ -271,6 +362,25 @@ pub enum BoopMctsAgent {
     Heuristic(MctsAgent<GameHeuristic>),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum SpiritsOfTheForestMctsAgent {
+    Neutral(MctsAgent),
+    Heuristic(MctsAgent<GameHeuristic>),
+}
+
+impl Agent<SpiritsOfTheForest> for SpiritsOfTheForestMctsAgent {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, SpiritsOfTheForest>,
+        rng: &mut R,
+    ) -> Result<SpiritsOfTheForestAction, AgentError> {
+        match self {
+            Self::Neutral(agent) => agent.select_action(decision, rng),
+            Self::Heuristic(agent) => agent.select_action(decision, rng),
+        }
+    }
+}
+
 impl Agent<Boop> for BoopMctsAgent {
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
@@ -293,6 +403,23 @@ pub fn configured_boop_mcts(config: MctsAgentConfig) -> Result<BoopMctsAgent, Ca
                 config.search,
                 GameHeuristic::new(index),
             )))
+        }
+    }
+}
+
+pub fn configured_spirits_of_the_forest_mcts(
+    config: MctsAgentConfig,
+) -> Result<SpiritsOfTheForestMctsAgent, CatalogError> {
+    match config.heuristic {
+        None => Ok(SpiritsOfTheForestMctsAgent::Neutral(MctsAgent::new(
+            config.search,
+        ))),
+        Some(index) => {
+            let game = spirits_of_the_forest_game(0);
+            validate_heuristic(GameId::SpiritsOfTheForest, &game, index)?;
+            Ok(SpiritsOfTheForestMctsAgent::Heuristic(
+                MctsAgent::with_evaluator(config.search, GameHeuristic::new(index)),
+            ))
         }
     }
 }
@@ -339,6 +466,7 @@ const fn game_name(game: GameId) -> &'static str {
     match game {
         GameId::Boop => "boop",
         GameId::ConnectFour => "connect-four",
+        GameId::SpiritsOfTheForest => "spotf",
         GameId::TicTacToe => "tic-tac-toe",
     }
 }
@@ -352,6 +480,7 @@ pub fn run_match(
     match game {
         GameId::Boop => run_boop(first, second, config),
         GameId::ConnectFour => run_connect_four(first, second, config),
+        GameId::SpiritsOfTheForest => run_spirits_of_the_forest(first, second, config),
         GameId::TicTacToe => run_tic_tac_toe(first, second, config),
     }
 }
@@ -365,6 +494,7 @@ pub fn run_match_with_trace(
     match game {
         GameId::Boop => run_boop_with_trace(first, second, config),
         GameId::ConnectFour => run_connect_four_with_trace(first, second, config),
+        GameId::SpiritsOfTheForest => run_spirits_of_the_forest_with_trace(first, second, config),
         GameId::TicTacToe => run_tic_tac_toe_with_trace(first, second, config),
     }
 }
@@ -395,6 +525,41 @@ where
 {
     let traced = play_match_with_trace_and_observer(&Boop, first, second, config, observer)?;
     Ok(boop_report(traced))
+}
+
+pub fn spirits_of_the_forest_game(seed: u64) -> SpiritsOfTheForest {
+    let mut setup_rng = SplitMix64::new(seed ^ 0x8EBC_6AF0_9C88_C6E3);
+    SpiritsOfTheForest::shuffled(&mut setup_rng)
+}
+
+pub fn run_spirits_of_the_forest_match_with_trace<A, B>(
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError>
+where
+    A: Agent<SpiritsOfTheForest>,
+    B: Agent<SpiritsOfTheForest>,
+{
+    let game = spirits_of_the_forest_game(config.seed);
+    let traced = play_typed_match_with_trace(&game, first, second, config)?;
+    Ok(spirits_of_the_forest_report(&game, traced))
+}
+
+pub fn run_spirits_of_the_forest_match_with_observer<A, B, O>(
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+    observer: &mut O,
+) -> Result<CatalogMatchReport, CatalogError>
+where
+    A: Agent<SpiritsOfTheForest>,
+    B: Agent<SpiritsOfTheForest>,
+    O: MatchObserver<SpiritsOfTheForest>,
+{
+    let game = spirits_of_the_forest_game(config.seed);
+    let traced = play_match_with_trace_and_observer(&game, first, second, config, observer)?;
+    Ok(spirits_of_the_forest_report(&game, traced))
 }
 
 pub fn run_connect_four_match_with_trace<A, B>(
@@ -517,6 +682,38 @@ fn run_boop(
     Ok(result)
 }
 
+fn run_spirits_of_the_forest(
+    first: AgentConfig,
+    second: AgentConfig,
+    config: MatchConfig,
+) -> Result<MatchResult, CatalogError> {
+    let game = spirits_of_the_forest_game(config.seed);
+    let result = match (first, second) {
+        (AgentConfig::Random, AgentConfig::Random) => {
+            play_match(&game, &mut RandomAgent, &mut RandomAgent, config)
+        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_match(
+            &game,
+            &mut RandomAgent,
+            &mut configured_spirits_of_the_forest_mcts(second)?,
+            config,
+        ),
+        (AgentConfig::Mcts(first), AgentConfig::Random) => play_match(
+            &game,
+            &mut configured_spirits_of_the_forest_mcts(first)?,
+            &mut RandomAgent,
+            config,
+        ),
+        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_match(
+            &game,
+            &mut configured_spirits_of_the_forest_mcts(first)?,
+            &mut configured_spirits_of_the_forest_mcts(second)?,
+            config,
+        ),
+    }?;
+    Ok(result)
+}
+
 fn run_boop_with_trace(
     first: AgentConfig,
     second: AgentConfig,
@@ -537,6 +734,39 @@ fn run_boop_with_trace(
             &mut configured_boop_mcts(second)?,
             config,
         ),
+    }
+}
+
+fn run_spirits_of_the_forest_with_trace(
+    first: AgentConfig,
+    second: AgentConfig,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError> {
+    match (first, second) {
+        (AgentConfig::Random, AgentConfig::Random) => {
+            run_spirits_of_the_forest_match_with_trace(&mut RandomAgent, &mut RandomAgent, config)
+        }
+        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
+            run_spirits_of_the_forest_match_with_trace(
+                &mut RandomAgent,
+                &mut configured_spirits_of_the_forest_mcts(second)?,
+                config,
+            )
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Random) => {
+            run_spirits_of_the_forest_match_with_trace(
+                &mut configured_spirits_of_the_forest_mcts(first)?,
+                &mut RandomAgent,
+                config,
+            )
+        }
+        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
+            run_spirits_of_the_forest_match_with_trace(
+                &mut configured_spirits_of_the_forest_mcts(first)?,
+                &mut configured_spirits_of_the_forest_mcts(second)?,
+                config,
+            )
+        }
     }
 }
 
@@ -662,6 +892,10 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
             })
             .collect(),
         pools: None,
+        spirit_forest: None,
+        spirit_collections: None,
+        gemstone_pools: None,
+        scores: None,
     }
 }
 
@@ -702,6 +936,10 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
             })
             .collect(),
         pools: None,
+        spirit_forest: None,
+        spirit_collections: None,
+        gemstone_pools: None,
+        scores: None,
     }
 }
 
@@ -762,6 +1000,129 @@ fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
             })
             .collect(),
         pools: Some(pools),
+        spirit_forest: None,
+        spirit_collections: None,
+        gemstone_pools: None,
+        scores: None,
+    }
+}
+
+fn spirits_of_the_forest_report(
+    game: &SpiritsOfTheForest,
+    traced: TracedMatchResult<SpiritsOfTheForestAction>,
+) -> CatalogMatchReport {
+    let mut state = game.initial_state();
+    for (_, action) in &traced.actions {
+        game.apply_action(&mut state, action)
+            .expect("trace contains actions accepted by the game");
+    }
+    let winner = winner_from_utilities(&traced.result.utilities);
+    let moves = traced
+        .actions
+        .into_iter()
+        .map(|(player, action)| RecordedMove {
+            player: player.index(),
+            action: CatalogAction::SpiritsOfTheForest(catalog_spirits_action(action)),
+        })
+        .collect();
+    let spirit_forest = (0..meeple_bots_spirits_of_the_forest::TILE_COUNT)
+        .map(|index| {
+            state.remaining()[index].then(|| {
+                let position = ForestPosition::new(
+                    (index / meeple_bots_spirits_of_the_forest::COLUMNS) as u8,
+                    (index % meeple_bots_spirits_of_the_forest::COLUMNS) as u8,
+                )
+                .expect("catalog index is inside the forest");
+                let tile = game.tile(position);
+                CatalogSpiritTile {
+                    spirit: catalog_spirit(tile.spirit()),
+                    spirit_symbols: tile.spirit_symbols(),
+                    power_source: tile.power_source().map(catalog_power_source),
+                    gemstone: state.gemstones()[index].map(PlayerId::index),
+                }
+            })
+        })
+        .collect();
+    let spirit_collections = state
+        .collections()
+        .map(|collection| CatalogSpiritCollection {
+            spirit_symbols: *collection.spirit_symbols(),
+            power_sources: *collection.power_sources(),
+            tiles: collection.tiles(),
+        });
+    let gemstone_pools = state.gemstone_pools().map(|pool| CatalogGemstonePool {
+        available: pool.available(),
+        placed: pool.placed(),
+        removed: pool.removed(),
+    });
+
+    CatalogMatchReport {
+        seed: traced.result.seed,
+        plies: traced.result.plies,
+        utilities: traced.result.utilities,
+        winner,
+        moves,
+        final_board: Vec::new(),
+        pools: None,
+        spirit_forest: Some(spirit_forest),
+        spirit_collections: Some(spirit_collections),
+        gemstone_pools: Some(gemstone_pools),
+        scores: Some(game.scores(&state)),
+    }
+}
+
+pub fn catalog_spirits_action(action: SpiritsOfTheForestAction) -> CatalogSpiritsAction {
+    match action {
+        SpiritsOfTheForestAction::TakeTile {
+            position,
+            sacrifice,
+        } => CatalogSpiritsAction::TakeTile {
+            row: position.row(),
+            column: position.column(),
+            sacrifice: sacrifice.map(|sacrifice| match sacrifice {
+                GemstoneSacrifice::Available => CatalogGemstoneSacrifice::Available,
+                GemstoneSacrifice::Forest(position) => CatalogGemstoneSacrifice::Forest {
+                    row: position.row(),
+                    column: position.column(),
+                },
+            }),
+        },
+        SpiritsOfTheForestAction::EndCollection => CatalogSpiritsAction::EndCollection,
+        SpiritsOfTheForestAction::PlaceGemstone { target } => CatalogSpiritsAction::PlaceGemstone {
+            row: target.row(),
+            column: target.column(),
+        },
+        SpiritsOfTheForestAction::MoveGemstone { source, target } => {
+            CatalogSpiritsAction::MoveGemstone {
+                source_row: source.row(),
+                source_column: source.column(),
+                target_row: target.row(),
+                target_column: target.column(),
+            }
+        }
+        SpiritsOfTheForestAction::SkipGemstone => CatalogSpiritsAction::SkipGemstone,
+    }
+}
+
+pub const fn catalog_spirit(spirit: Spirit) -> CatalogSpirit {
+    match spirit {
+        Spirit::Moss => CatalogSpirit::Moss,
+        Spirit::Flowers => CatalogSpirit::Flowers,
+        Spirit::Fruits => CatalogSpirit::Fruits,
+        Spirit::Mushrooms => CatalogSpirit::Mushrooms,
+        Spirit::Water => CatalogSpirit::Water,
+        Spirit::Vines => CatalogSpirit::Vines,
+        Spirit::Branches => CatalogSpirit::Branches,
+        Spirit::Leaves => CatalogSpirit::Leaves,
+        Spirit::Webs => CatalogSpirit::Webs,
+    }
+}
+
+pub const fn catalog_power_source(source: PowerSource) -> CatalogPowerSource {
+    match source {
+        PowerSource::Fire => CatalogPowerSource::Fire,
+        PowerSource::Moon => CatalogPowerSource::Moon,
+        PowerSource::Sun => CatalogPowerSource::Sun,
     }
 }
 
@@ -796,8 +1157,23 @@ pub fn run_batch(
     match game {
         GameId::Boop => run_boop_batch(first, second, config),
         GameId::ConnectFour => run_connect_four_batch(first, second, config),
+        GameId::SpiritsOfTheForest => run_spirits_of_the_forest_batch(first, second, config),
         GameId::TicTacToe => run_tic_tac_toe_batch(first, second, config),
     }
+}
+
+fn run_spirits_of_the_forest_batch(
+    first: AgentConfig,
+    second: AgentConfig,
+    config: BatchConfig,
+) -> Result<Vec<MatchResult>, CatalogError> {
+    let mut seed_stream = SplitMix64::new(config.seed);
+    let mut results = Vec::with_capacity(config.matches.get() as usize);
+    for _ in 0..config.matches.get() {
+        let match_config = MatchConfig::new(seed_stream.next_u64(), config.max_plies);
+        results.push(run_spirits_of_the_forest(first, second, match_config)?);
+    }
+    Ok(results)
 }
 
 fn run_boop_batch(
@@ -951,6 +1327,9 @@ mod tests {
                 }
                 CatalogAction::ConnectFour { .. } => panic!("unexpected Connect Four action"),
                 CatalogAction::Boop { .. } => panic!("unexpected boop action"),
+                CatalogAction::SpiritsOfTheForest(_) => {
+                    panic!("unexpected Spirits of the Forest action")
+                }
             }
         }
     }
@@ -972,8 +1351,50 @@ mod tests {
                 CatalogAction::ConnectFour { column } => assert!(column < 7),
                 CatalogAction::TicTacToe { .. } => panic!("unexpected tic-tac-toe action"),
                 CatalogAction::Boop { .. } => panic!("unexpected boop action"),
+                CatalogAction::SpiritsOfTheForest(_) => {
+                    panic!("unexpected Spirits of the Forest action")
+                }
             }
         }
+    }
+
+    #[test]
+    fn spirits_trace_finishes_with_scores_and_collections() {
+        let report = run_match_with_trace(
+            GameId::SpiritsOfTheForest,
+            AgentConfig::Random,
+            AgentConfig::Random,
+            MatchConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(report.moves.len(), report.plies as usize);
+        assert!(
+            report
+                .moves
+                .iter()
+                .all(|movement| matches!(movement.action, CatalogAction::SpiritsOfTheForest(_)))
+        );
+        assert_eq!(report.spirit_forest.as_ref().unwrap().len(), 48);
+        assert!(
+            report
+                .spirit_forest
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(Option::is_none)
+        );
+        assert_eq!(
+            report
+                .spirit_collections
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|collection| usize::from(collection.tiles))
+                .sum::<usize>(),
+            48
+        );
+        assert!(report.scores.is_some());
     }
 
     #[test]

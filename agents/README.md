@@ -39,6 +39,17 @@ decision it builds a new tree and repeats four steps:
 
 The real action is the root child with the most visits; mean utility breaks visit ties.
 
+Utilities stored in the tree always use the root player's perspective. During UCT selection, MCTS
+reads the active player from `PositionStatus`: it maximizes the stored utility while the root
+player keeps making decisions and minimizes it once control passes to the opponent. It does not
+alternate maximize and minimize by tree depth. A game may therefore represent one physical turn
+as several consecutive engine actions without changing the search semantics. Rollout actions are
+still selected uniformly rather than by minimax.
+
+The current agent builds a fresh tree for every real engine action. A later decision in the same
+physical turn is considered by earlier simulations, then searched again from its authoritative
+state when that decision is actually reached; tree reuse is not implemented yet.
+
 ```python
 from meeple_bots import Match, MctsAgent, RandomAgent
 
@@ -80,6 +91,10 @@ Boop currently exposes two evaluators:
 | `1` | Cat progression, immediate threats, graduations, and safer board presence. |
 
 See the [Boop guide](../games/boop/README.md#mcts-heuristics) for their exact interpretation.
+
+Spirits of the Forest exposes heuristic `0`, which combines provisional majority scoring with
+usable gemstones and active reservations. See its
+[game guide](../games/spirits-of-the-forest/README.md#mcts-heuristic).
 
 ### Reusable profiles
 

@@ -13,6 +13,7 @@ the rules.
 | Tic-tac-toe | `tic-tac-toe` | `TicTacToe` | `row column` |
 | Connect Four | `connect-four` | `ConnectFour` | `column` |
 | boop. | `boop` | `Boop` | `k/c row column` |
+| Spirits of the Forest | `spotf` | `SpiritsOfTheForest` | legal action index |
 
 Rows, columns, and player identifiers are zero-based. All current games are sequential,
 deterministic, perfect-information, two-player, and zero-sum.
@@ -59,6 +60,26 @@ meeple-bots match --game boop --first human --second mcts --seed 42
 ```
 
 Read the [Boop rules and interface guide](boop/README.md) before constructing its actions directly.
+
+## Spirits of the Forest
+
+The two-player base game uses a seeded 4x12 forest, set collection, public gemstone reservations,
+and majority scoring. Favor tokens are omitted, so the complete position is visible to both
+players. A physical turn is split into collection and gemstone decisions to keep search branching
+manageable.
+
+- Python actions: `TakeSpiritTile`, `EndSpiritCollection`, `PlaceSpiritGemstone`,
+  `MoveSpiritGemstone`, and `SkipSpiritGemstone`
+- Forest: 4 rows by 12 tiles
+- MCTS cutoff heuristic: index `0`
+
+```bash
+meeple-bots match --game spotf --first human --second mcts \
+  --second-mcts-heuristic 0 --seed 42
+```
+
+See the [rules and interface guide](spirits-of-the-forest/README.md) for the exact variant and
+public types.
 
 ## Adding a game
 

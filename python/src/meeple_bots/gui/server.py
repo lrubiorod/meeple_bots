@@ -109,6 +109,13 @@ def run_gui(
         from ..games.connect_four.gui import PAGE, ConnectFourApplication
 
         application = ConnectFourApplication()
+    elif game in ("spotf", "spirits-of-the-forest"):
+        from ..games.spirits_of_the_forest.gui import (
+            PAGE,
+            SpiritsOfTheForestApplication,
+        )
+
+        application = SpiritsOfTheForestApplication()
     elif game == "tic-tac-toe":
         from ..games.tic_tac_toe.gui import PAGE, TicTacToeApplication
 
@@ -116,7 +123,7 @@ def run_gui(
     else:
         raise ValueError(
             f"graphical interface is not available for {game}; "
-            "available games: boop, connect-four, tic-tac-toe"
+            "available games: boop, connect-four, spotf, tic-tac-toe"
         )
 
     serve_gui(
