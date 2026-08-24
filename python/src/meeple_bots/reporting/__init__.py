@@ -62,7 +62,7 @@ def generate_study_report(
     game = manifest.get("game")
     if not isinstance(game, str):
         raise TypeError("extraction manifest game must be a string")
-    if game != "boop":
+    if game not in {"boop", "spotf"}:
         raise ValueError(f"tournament report is not available for {game}")
 
     if output_dir is None:
@@ -82,7 +82,14 @@ def generate_study_report(
         )
 
     try:
-        from ..games.boop.reporting import generate_boop_report
+        if game == "boop":
+            from ..games.boop.reporting import generate_boop_report
+
+            generate_report = generate_boop_report
+        else:
+            from ..games.spirits_of_the_forest.reporting import generate_spotf_report
+
+            generate_report = generate_spotf_report
     except ModuleNotFoundError as error:
         if error.name in {"matplotlib", "numpy", "pandas", "seaborn"}:
             raise RuntimeError(
@@ -93,7 +100,7 @@ def generate_study_report(
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".report-", dir=output_dir.parent) as temporary:
         temporary_dir = Path(temporary)
-        summary = generate_boop_report(input_dir, temporary_dir, manifest)
+        summary = generate_report(input_dir, temporary_dir, manifest)
         output_dir.mkdir(parents=True, exist_ok=True)
         for target_name in _REPORT_TARGETS:
             source = temporary_dir / target_name

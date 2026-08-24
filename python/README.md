@@ -389,12 +389,15 @@ self-play pairings, and 20 matches per pairing: 460 matches in total.
 ```bash
 meeple-bots extract \
   --input results/tournaments/boop-study.jsonl
+
+meeple-bots extract \
+  --input results/tournaments/spotf-study.jsonl
 ```
 
 The default output is `results/tournaments/boop-study/data/`. Use `--output-dir PATH` to override
 it. Existing known outputs are protected unless `--overwrite` is supplied.
 
-Extraction is currently registered only for Boop. It starts with three generic tournament tables:
+Extraction is registered for Boop and SPOTF. It starts with three generic tournament tables:
 
 - `manifest.json`: schemas, completeness, table names, and row counts;
 - `agents.csv`: one row per configured agent;
@@ -408,14 +411,26 @@ Boop additionally produces:
 - `resolutions.csv`: one row per graduation or eight-piece recovery;
 - `winning_lines.csv`: final cat-line positions and orientations.
 
+SPOTF additionally produces:
+
+- `spotf_matches.csv`: final scores, tile counts, physical turns, and gemstone totals;
+- `actions.csv`: every internal ply with phase, branching, and state before and after;
+- `player_turns.csv`: actions and collected tiles grouped into actual player turns;
+- `tile_takes.csv`: spirit, power source, reservation, and sacrifice for every tile;
+- `gemstone_actions.csv`: every place, move, or skip decision;
+- `categories.csv`: final counts and scoring contribution for all 12 categories and both players.
+
+The SPOTF extractor rebuilds the shuffled forest from each match seed. A trace is rejected if any
+action is illegal or if its replayed winner or scores differ from the recorded result.
+
 Extraction streams the trace and accepts interrupted studies. It marks the manifest as partial when
 fewer matches than declared are available. A truncated final JSONL line is ignored and reported;
 malformed records elsewhere are rejected.
 
-Tournaments can still record SPOTF, Connect Four, and tic-tac-toe traces, but `extract` rejects
-them until their analyzers are implemented.
+Tournaments can still record Connect Four and tic-tac-toe traces, but `extract` rejects them until
+their analyzers are implemented.
 
-### 3. Generate a Boop report
+### 3. Generate a tournament report
 
 Install the optional plotting and statistics dependencies once:
 
@@ -428,13 +443,18 @@ Then generate the report:
 ```bash
 meeple-bots report \
   --input results/tournaments/boop-study/data
+
+meeple-bots report \
+  --input results/tournaments/spotf-study/data
 ```
 
 An input directory named `data` produces a sibling `report` directory. Other input names receive a
 nested `report/` by default. Use `--output-dir PATH` or `--overwrite` to change that behavior.
 
-Boop is currently the only registered report generator. It accepts a partial extraction but labels
-the result as preliminary.
+Boop and SPOTF have registered report generators. Both accept a partial extraction but label the
+result as preliminary. The SPOTF report compares competition, head-to-head results, first-player
+advantage, plies versus physical turns, scores, spirit and power-source categories, collection
+patterns, gemstone decisions, and sacrifices.
 
 ## Study artifacts
 
@@ -454,8 +474,8 @@ results/tournaments/
         └── tables/*.csv
 ```
 
-Competitive report results exclude self-play. Strategic summaries retain it, normalize board
-zones by cell count, and aggregate turn-level behavior by match so long games do not dominate.
+Competitive report results exclude self-play. Strategic summaries retain it. Boop normalizes
+board zones by cell count; SPOTF reports both internal plies and physical player turns.
 
 The JSONL trace is the durable source record. Extracted tables and reports can be regenerated from
 it without rerunning MCTS.

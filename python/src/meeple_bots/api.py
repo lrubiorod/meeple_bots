@@ -903,7 +903,7 @@ def _action_from_native(raw: dict[str, object]) -> GameAction:
     )
 
 
-def _analyze_trace(game: Game, moves: tuple[Move, ...]):
+def _analyze_trace(game: Game, moves: tuple[Move, ...], *, seed: int = 0):
     """Dispatch a completed trace to the selected game's native analyzer."""
 
     native_moves = []
@@ -935,7 +935,45 @@ def _analyze_trace(game: Game, moves: tuple[Move, ...]):
                     ),
                 )
             )
-    return _native.analyze_trace(_native_game(game), native_moves)
+    elif isinstance(game, SpiritsOfTheForest):
+        for move in moves:
+            action = move.action
+            if isinstance(action, TakeSpiritTile):
+                sacrifice = None
+                if action.sacrifice is not None:
+                    source = action.sacrifice.source
+                    sacrifice = (
+                        "available" if source is None else "forest",
+                        None if source is None else (source.row, source.column),
+                    )
+                native_action = (
+                    "take_tile",
+                    [(action.position.row, action.position.column)],
+                    sacrifice,
+                )
+            elif isinstance(action, EndSpiritCollection):
+                native_action = ("end_collection", [], None)
+            elif isinstance(action, PlaceSpiritGemstone):
+                native_action = (
+                    "place_gemstone",
+                    [(action.target.row, action.target.column)],
+                    None,
+                )
+            elif isinstance(action, MoveSpiritGemstone):
+                native_action = (
+                    "move_gemstone",
+                    [
+                        (action.source.row, action.source.column),
+                        (action.target.row, action.target.column),
+                    ],
+                    None,
+                )
+            elif isinstance(action, SkipSpiritGemstone):
+                native_action = ("skip_gemstone", [], None)
+            else:
+                raise TypeError("spotf trace contains a non-spotf action")
+            native_moves.append((move.player, native_action))
+    return _native.analyze_trace(_native_game(game), native_moves, seed)
 
 
 def _native_agent(agent: Agent, game: Game):

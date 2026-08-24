@@ -72,3 +72,18 @@ only currently legal instances of these types.
 Heuristic index `0` combines provisional score difference, remaining usable gemstones, and a small
 reservation bonus. Its result is normalized to `[-1, 1]`; terminal states always use exact match
 utility. Neutral terminal rollouts remain available by leaving `heuristic=None`.
+
+## Tournament analysis
+
+Completed SPOTF tournament traces can be replayed and converted into analysis tables and an HTML
+report:
+
+```bash
+meeple-bots extract --input results/tournaments/spotf-study.jsonl
+meeple-bots report --input results/tournaments/spotf-study/data
+```
+
+The native replay analyzer reconstructs the shuffled forest from the match seed and validates every
+recorded action. It separates engine plies from physical turns, records tile collection and gemstone
+behavior, and breaks the final score down across the nine spirits and three power sources. See the
+[Python guide](../../python/README.md#2-extract-analysis-tables) for the generated table list.

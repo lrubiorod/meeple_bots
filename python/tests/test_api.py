@@ -1422,6 +1422,58 @@ class MatchApiTests(unittest.TestCase):
                 )
             self.assertEqual(overwritten_exit, 0)
 
+    def test_cli_extracts_analysis_tables_from_a_spotf_tournament(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = self._create_small_spotf_tournament(root)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["extract", "--input", str(trace), "--json"])
+
+            summary = json.loads(output.getvalue())
+            output_dir = Path(summary["output_dir"])
+            manifest = json.loads((output_dir / "manifest.json").read_text())
+            matches = self._read_csv(output_dir / "matches.csv")
+            spotf_matches = self._read_csv(output_dir / "spotf_matches.csv")
+            actions = self._read_csv(output_dir / "actions.csv")
+            player_turns = self._read_csv(output_dir / "player_turns.csv")
+            tile_takes = self._read_csv(output_dir / "tile_takes.csv")
+            gemstone_actions = self._read_csv(output_dir / "gemstone_actions.csv")
+            categories = self._read_csv(output_dir / "categories.csv")
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(summary["complete"])
+            self.assertEqual(manifest["game"], "spotf")
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(len(spotf_matches), 1)
+            self.assertEqual(len(actions), int(matches[0]["plies"]))
+            self.assertEqual(len(tile_takes), 48)
+            self.assertEqual(len(categories), 24)
+            self.assertLess(len(player_turns), len(actions))
+            self.assertLessEqual(len(gemstone_actions), len(player_turns))
+            self.assertEqual(actions[-1]["terminal_after"], "True")
+            self.assertEqual(
+                int(actions[-1]["physical_turn"]),
+                int(spotf_matches[0]["physical_turns"]),
+            )
+            self.assertEqual(
+                {category["category_type"] for category in categories},
+                {"spirit", "power_source"},
+            )
+            for filename in (
+                "agents.csv",
+                "matches.csv",
+                "spotf_matches.csv",
+                "actions.csv",
+                "player_turns.csv",
+                "tile_takes.csv",
+                "gemstone_actions.csv",
+                "categories.csv",
+            ):
+                with Path(output_dir, filename).open(encoding="utf-8", newline="") as source:
+                    header = next(csv.reader(source))
+                self.assertEqual(len(header), len(set(header)), filename)
+
     def test_cli_extract_accepts_a_partial_trace_and_ignores_a_truncated_tail(
         self,
     ) -> None:
@@ -1554,6 +1606,36 @@ class MatchApiTests(unittest.TestCase):
         REPORT_DEPENDENCIES_AVAILABLE,
         "optional report dependencies are not installed",
     )
+    def test_cli_generates_a_spotf_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = self._create_small_spotf_tournament(root)
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["extract", "--input", str(trace)]), 0)
+            study = root / "spotf-study"
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    ["report", "--input", str(study / "data"), "--json"]
+                )
+
+            summary = json.loads(output.getvalue())
+            report = study / "report"
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(summary["game"], "spotf")
+            self.assertEqual(summary["figures"], 10)
+            self.assertEqual(summary["tables"], 10)
+            self.assertEqual(len(list((report / "figures").glob("*.png"))), 10)
+            self.assertEqual(len(list((report / "tables").glob("*.csv"))), 10)
+            self.assertIn(
+                "Spirits of the Forest tournament report",
+                (report / "index.html").read_text(),
+            )
+
+    @unittest.skipUnless(
+        REPORT_DEPENDENCIES_AVAILABLE,
+        "optional report dependencies are not installed",
+    )
     def test_zone_density_accounts_for_different_zone_sizes(self) -> None:
         import pandas as pd
 
@@ -1613,6 +1695,37 @@ class MatchApiTests(unittest.TestCase):
             exit_code = main(["tournament", "--config", str(config)])
         if exit_code != 0:
             raise AssertionError("failed to create the boop extraction fixture")
+        return trace
+
+    @staticmethod
+    def _create_small_spotf_tournament(root: Path) -> Path:
+        config = root / "spotf-tournament.toml"
+        trace = root / "spotf-study.jsonl"
+        config.write_text(
+            "\n".join(
+                [
+                    'game = "spotf"',
+                    'output = "spotf-study.jsonl"',
+                    "matches_per_pair = 1",
+                    "seed = 91",
+                    "max_plies = 1000",
+                    "workers = 1",
+                    "",
+                    "[[agents]]",
+                    'name = "alpha"',
+                    'kind = "random"',
+                    "",
+                    "[[agents]]",
+                    'name = "beta"',
+                    'kind = "random"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            exit_code = main(["tournament", "--config", str(config)])
+        if exit_code != 0:
+            raise AssertionError("failed to create the spotf extraction fixture")
         return trace
 
     @staticmethod
