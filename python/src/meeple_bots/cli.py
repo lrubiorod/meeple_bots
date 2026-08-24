@@ -32,6 +32,7 @@ from .api import (
     Match,
     MatchResult,
     MctsAgent,
+    MctsAgentBenchmark,
     MoveSpiritGemstone,
     PlaceSpiritGemstone,
     RandomAgent,
@@ -41,6 +42,7 @@ from .api import (
     TakeSpiritTile,
     TicTacToe,
     TicTacToeAction,
+    benchmark_mcts_agent,
     evaluate_game,
 )
 from ._concurrency import WorkerSetting, ordered_parallel_map, resolve_workers
@@ -236,6 +238,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="target seconds per decision for suggested experiments (default: 5)",
     )
+    analyze.add_argument(
+        "--agent-config",
+        type=Path,
+        action="append",
+        default=[],
+        help="benchmark an exact MCTS profile; repeat to compare any number of agents",
+    )
+    analyze.add_argument(
+        "--agent",
+        nargs="?",
+        const="",
+        action="append",
+        default=[],
+        metavar="SPEC",
+        help=(
+            "benchmark an inline MCTS agent; repeat as needed, for example "
+            "--agent 'i=5000,d=120,h=0'"
+        ),
+    )
     analyze.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
     return parser
@@ -282,6 +303,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         game = _game(args.game)
         if args.command == "analyze":
+            profiles = _analyze_profiles(args.agent_config, args.agent, game)
             report = evaluate_game(
                 game,
                 samples=args.samples,
@@ -289,10 +311,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seed=args.seed,
                 target_time=args.target_time,
             )
+            benchmarks = []
+            for profile in profiles:
+                print(
+                    f"Benchmarking {profile.name}: {profile.agent.iterations:,} iterations, "
+                    f"depth {profile.agent.rollout_depth}, "
+                    f"heuristic={_heuristic_name(profile.agent.heuristic)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                benchmarks.append(
+                    _ConfiguredMctsBenchmark(
+                        name=profile.name,
+                        benchmark=benchmark_mcts_agent(
+                            game,
+                            profile.agent,
+                            report.depth_p50,
+                            seed=args.seed,
+                        ),
+                    )
+                )
             if args.json:
-                print(json.dumps(_evaluation_dict(report), indent=2))
+                print(json.dumps(_evaluation_dict(report, benchmarks), indent=2))
             else:
-                _print_evaluation(report)
+                _print_evaluation(report, benchmarks)
             return 0
         if args.command == "batch":
             return _run_batch(args, game)
@@ -363,6 +405,12 @@ def _print_report_summary(summary: dict[str, object]) -> None:
 class _MctsProfile:
     name: str
     agent: MctsAgent
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfiguredMctsBenchmark:
+    name: str
+    benchmark: MctsAgentBenchmark
 
 
 @dataclass(frozen=True, slots=True)
@@ -1118,6 +1166,103 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
     )
 
 
+def _analyze_profiles(
+    paths: Sequence[Path],
+    inline_specs: Sequence[str],
+    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
+) -> tuple[_MctsProfile, ...]:
+    profiles = tuple(_load_mcts_profile(path) for path in paths) + tuple(
+        _parse_inline_mcts_profile(spec) for spec in inline_specs
+    )
+    names = [profile.name for profile in profiles]
+    duplicates = sorted(name for name in set(names) if names.count(name) > 1)
+    if duplicates:
+        raise ValueError(
+            "analyze agent profile names must be unique: " + ", ".join(duplicates)
+        )
+    for profile in profiles:
+        Match(game=game, first=profile.agent, second=RandomAgent())
+    return profiles
+
+
+def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
+    values: dict[str, str] = {}
+    aliases = {
+        "name": "name",
+        "i": "iterations",
+        "iterations": "iterations",
+        "d": "rollout_depth",
+        "depth": "rollout_depth",
+        "rollout_depth": "rollout_depth",
+        "exploration": "exploration",
+        "h": "heuristic",
+        "heuristic": "heuristic",
+    }
+    if spec.strip():
+        for raw_field in spec.split(","):
+            field = raw_field.strip()
+            key, separator, value = field.partition("=")
+            key = key.strip().lower()
+            value = value.strip()
+            if not separator or not key or not value:
+                raise ValueError(
+                    "inline analyze agents must use comma-separated key=value fields"
+                )
+            canonical = aliases.get(key)
+            if canonical is None:
+                raise ValueError(f"unknown inline analyze agent field: {key}")
+            if canonical in values:
+                raise ValueError(f"duplicate inline analyze agent field: {key}")
+            values[canonical] = value
+
+    iterations = _inline_agent_integer(values.get("iterations", "1000"), "iterations")
+    rollout_depth = _inline_agent_integer(
+        values.get("rollout_depth", "16"),
+        "depth",
+    )
+    exploration_text = values.get("exploration", str(sqrt_two()))
+    try:
+        exploration = float(exploration_text)
+    except ValueError as error:
+        raise ValueError("inline analyze agent exploration must be a number") from error
+    heuristic_text = values.get("heuristic", "none")
+    heuristic = (
+        None
+        if heuristic_text.lower() == "none"
+        else _inline_agent_integer(heuristic_text, "heuristic")
+    )
+    agent = MctsAgent(
+        iterations=iterations,
+        exploration=exploration,
+        rollout_depth=rollout_depth,
+        heuristic=heuristic,
+    )
+    name = values.get("name")
+    if name is not None and not name.strip():
+        raise ValueError("inline analyze agent name must be non-empty")
+    return _MctsProfile(
+        name=name.strip() if name is not None else _inline_agent_name(agent),
+        agent=agent,
+    )
+
+
+def _inline_agent_integer(value: str, field: str) -> int:
+    try:
+        return int(value)
+    except ValueError as error:
+        raise ValueError(f"inline analyze agent {field} must be an integer") from error
+
+
+def _inline_agent_name(agent: MctsAgent) -> str:
+    parts = ["mcts"]
+    if agent.heuristic is not None:
+        parts.append(f"h{agent.heuristic}")
+    parts.extend((f"i{agent.iterations}", f"d{agent.rollout_depth}"))
+    if agent.exploration != sqrt_two():
+        parts.append(f"c{agent.exploration}")
+    return "-".join(parts)
+
+
 def _print_batch_setup(
     batch: Batch,
     game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
@@ -1564,7 +1709,10 @@ def _resolution_text(action: BoopAction) -> str:
     return ""
 
 
-def _evaluation_dict(report: GameEvaluationReport) -> dict[str, object]:
+def _evaluation_dict(
+    report: GameEvaluationReport,
+    configured_benchmarks: Sequence[_ConfiguredMctsBenchmark] = (),
+) -> dict[str, object]:
     return {
         "game": _game_name(report.game),
         "samples": report.samples,
@@ -1612,6 +1760,10 @@ def _evaluation_dict(report: GameEvaluationReport) -> dict[str, object]:
             }
             for experiment in report.suggested_experiments
         ],
+        "configured_agent_benchmarks": _configured_benchmark_dicts(
+            report,
+            configured_benchmarks,
+        ),
         "recommended_rollout_depth": report.recommended_rollout_depth,
         "recommended_iterations": report.recommended_iterations,
         "iterations_capped": report.iterations_capped,
@@ -1620,7 +1772,54 @@ def _evaluation_dict(report: GameEvaluationReport) -> dict[str, object]:
     }
 
 
-def _print_evaluation(report: GameEvaluationReport) -> None:
+def _configured_benchmark_dicts(
+    report: GameEvaluationReport,
+    configured_benchmarks: Sequence[_ConfiguredMctsBenchmark],
+) -> list[dict[str, object]]:
+    ranked = sorted(
+        configured_benchmarks,
+        key=lambda configured: configured.benchmark.decision_time_mean_ms,
+    )
+    if not ranked:
+        return []
+    fastest_ms = ranked[0].benchmark.decision_time_mean_ms
+    target_ms = report.target_time_seconds * 1_000.0
+    rows = []
+    for rank, configured in enumerate(ranked, start=1):
+        benchmark = configured.benchmark
+        agent = benchmark.agent
+        rows.append(
+            {
+                "rank": rank,
+                "name": configured.name,
+                "iterations": agent.iterations,
+                "rollout_depth": agent.rollout_depth,
+                "exploration": agent.exploration,
+                "heuristic": agent.heuristic,
+                "sampled_positions": benchmark.sampled_positions,
+                "decision_time_mean_ms": benchmark.decision_time_mean_ms,
+                "decision_time_p50_ms": benchmark.decision_time_p50_ms,
+                "decision_time_p95_ms": benchmark.decision_time_p95_ms,
+                "decision_time_max_ms": benchmark.decision_time_max_ms,
+                "milliseconds_per_iteration": benchmark.milliseconds_per_iteration,
+                "relative_to_fastest": benchmark.decision_time_mean_ms / fastest_ms,
+                "target_time_ratio": benchmark.decision_time_mean_ms / target_ms,
+                "position_timings": [
+                    {
+                        "sampled_ply": timing.sampled_ply,
+                        "milliseconds": timing.milliseconds,
+                    }
+                    for timing in benchmark.position_timings
+                ],
+            }
+        )
+    return rows
+
+
+def _print_evaluation(
+    report: GameEvaluationReport,
+    configured_benchmarks: Sequence[_ConfiguredMctsBenchmark] = (),
+) -> None:
     depth_note = " (lower bound)" if report.depth_is_lower_bound else ""
     choices_log10 = report.player_turn_choice_product_log10
     choices_text = (
@@ -1679,6 +1878,44 @@ def _print_evaluation(report: GameEvaluationReport) -> None:
             f"depth {experiment.rollout_depth} ≈ "
             f"{experiment.approximate_player_turns:.1f} player turns, "
             f"~{experiment.estimated_decision_time_ms / 1_000:.2f} s"
+        )
+    if configured_benchmarks:
+        print()
+        print("Configured MCTS benchmarks (fastest to slowest):")
+        print(
+            "  Exact profiles measured sequentially on the same sampled positions; "
+            "timings are isolated latencies."
+        )
+        rows = _configured_benchmark_dicts(report, configured_benchmarks)
+        for row in rows:
+            heuristic = _heuristic_name(row["heuristic"])
+            timings = ", ".join(
+                f"ply {timing['sampled_ply']}={timing['milliseconds']:.2f} ms"
+                for timing in row["position_timings"]
+            )
+            print(
+                f"  {row['rank']}. {row['name']}: {row['iterations']:,} iterations, "
+                f"depth {row['rollout_depth']}, heuristic={heuristic}"
+            )
+            print(
+                f"     mean={row['decision_time_mean_ms']:.2f} ms, "
+                f"p50={row['decision_time_p50_ms']:.2f} ms, "
+                f"p95={row['decision_time_p95_ms']:.2f} ms, "
+                f"max={row['decision_time_max_ms']:.2f} ms, "
+                f"relative={row['relative_to_fastest']:.2f}x"
+            )
+            print(
+                f"     ~{row['milliseconds_per_iteration']:.6f} ms/iteration | "
+                f"{timings}"
+            )
+        target_ms = report.target_time_seconds * 1_000.0
+        closest = min(
+            rows,
+            key=lambda row: abs(row["decision_time_mean_ms"] - target_ms),
+        )
+        print(
+            f"  Closest to the {report.target_time_seconds:g}s target: "
+            f"{closest['name']} ({closest['decision_time_mean_ms'] / 1_000:.3f}s mean)."
         )
     print()
     balanced = next(

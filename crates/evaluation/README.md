@@ -17,12 +17,16 @@ From the CLI:
 ```bash
 meeple-bots analyze --game boop --samples 128 --max-depth 256 --seed 42
 meeple-bots analyze --game boop --target-time 5 --seed 42 --json
+meeple-bots analyze --game boop --target-time 1 \
+  --agent 'iterations=5000,depth=120' \
+  --agent 'iterations=20000,depth=32,heuristic=0' \
+  --agent-config configs/mcts/heuristic2.toml
 ```
 
 From Python:
 
 ```python
-from meeple_bots import Boop, evaluate_game
+from meeple_bots import Boop, MctsAgent, benchmark_mcts_agent, evaluate_game
 
 report = evaluate_game(
     Boop(), samples=128, max_depth=256, seed=42, target_time=5
@@ -34,6 +38,14 @@ for cost in report.rollout_costs:
     print(cost.rollout_depth, cost.iteration_budgets)
 for experiment in report.suggested_experiments:
     print(experiment)
+
+benchmark = benchmark_mcts_agent(
+    Boop(),
+    MctsAgent(iterations=10_000, rollout_depth=32, heuristic=0),
+    median_depth=report.depth_p50,
+    seed=42,
+)
+print(benchmark.decision_time_mean_ms, benchmark.decision_time_p95_ms)
 ```
 
 Structural fields are reproducible for the same game, configuration, and seed. Timing fields and
@@ -87,6 +99,10 @@ The standard 1, 2, 5, 10, and 20 second iteration budgets are computed from thos
 rounded down to two significant digits. They are approximations: tree reuse, allocator behavior,
 CPU scaling, position shape, and system load can change real decision time.
 
+This neutral calibration does not run a requested production profile. In particular, it does not
+include a configured heuristic and its adaptive probe may use a different iteration count. Use
+configured agent benchmarks when exact profile latency matters.
+
 `--target-time SECONDS` (or Python's `target_time`) controls the suggested benchmark points. It
 does not make calibration run for that many seconds.
 
@@ -111,6 +127,62 @@ experiment that distinguishes search-width gains from horizon gains:
 These are experiment interpretations, not automatic diagnoses. Playing strength must be measured
 in matches, preferably with alternating sides, fixed seed sets, and equal wall-clock budgets.
 
+## Configured agent benchmarks
+
+Repeat `--agent-config PATH` to measure any number of scalar MCTS profiles. Every profile is run
+with its exact iterations, rollout depth, exploration constant, and heuristic on the same seeded
+positions. Profile names must be unique. Measurements run sequentially so one compared agent does
+not compete with another benchmark for CPU time.
+
+Each path uses the [reusable scalar profile format](../../agents/README.md#reusable-profiles), not
+a tournament TOML or an agent grid containing arrays.
+
+For quick experiments, repeat `--agent [SPEC]` instead of creating files. `SPEC` contains
+comma-separated `key=value` fields:
+
+```bash
+meeple-bots analyze --game spotf \
+  --agent \
+  --agent 'i=5000,d=120' \
+  --agent 'name=horizon,i=20000,d=32,h=0' \
+  --agent 'iterations=10000,exploration=0.8'
+```
+
+Supported fields are `name`, `iterations`, `depth` (or `rollout_depth`), `exploration`, and
+`heuristic`. The short aliases `i`, `d`, and `h` are also accepted for iterations, depth, and
+heuristic. Missing values default to 1000 iterations, depth 16, square-root-of-two exploration, and
+no heuristic. A bare `--agent` uses every default. Automatic names encode the effective
+configuration, for example `mcts-i5000-d120` and `mcts-h0-i20000-d32`; a non-default exploration
+constant is appended as `-cVALUE`.
+
+Inline agents and `--agent-config` profiles can be mixed in one comparison. Explicit and generated
+names must remain unique. Profiles are preferable when a configuration must be preserved as a
+reproducible experimental artifact.
+
+The shared positions are the initial state and, when reachable, states near one third and two
+thirds of the sampled median game depth. This gives a small early/middle/late latency check without
+making `analyze` run a long match suite. The output ranks every supplied profile from fastest to
+slowest; comparison is not limited to two agents.
+
+Each configured benchmark reports:
+
+- exact agent configuration and sampled position count;
+- mean, p50, p95, and maximum isolated decision latency;
+- observed milliseconds per iteration at that exact iteration count;
+- latency at each sampled ply;
+- time relative to the fastest supplied profile;
+- ratio to `--target-time` and the profile whose mean is closest to that target.
+
+With only three positions, p95 is effectively the slowest sampled position; it is an orientation
+metric, not a production latency guarantee. MCTS cost is not perfectly linear in iteration count
+because larger searches build larger trees. Do not treat `milliseconds_per_iteration` as an exact
+extrapolation far away from the measured configuration.
+
+These are isolated single-decision measurements. A tournament with several workers can report
+higher per-decision latency because multiple single-threaded MCTS searches share the machine. Run
+benchmarks on an otherwise idle system for stable isolated comparisons, or under intentional load
+when that load represents deployment.
+
 ## Compatibility fields
 
 `recommended_rollout_depth`, `recommended_iterations`, `iterations_capped`,
@@ -123,6 +195,7 @@ the practical iteration suggestions.
 
 ## Rust API
 
-`evaluate_game<G>` accepts an `EvaluationConfig` and returns `GameEvaluationReport`. It supports
-deterministic, perfect-information, two-player, zero-sum games with cloneable states and actions.
-No game-specific phase API is required: player-turn blocks come from `Game::status`.
+`evaluate_game<G>` accepts an `EvaluationConfig` and returns `GameEvaluationReport`.
+`benchmark_mcts_agent<G, A>` measures an already configured agent on reproducibly sampled states.
+Both support deterministic, perfect-information, two-player, zero-sum games with cloneable states
+and actions. No game-specific phase API is required: player-turn blocks come from `Game::status`.

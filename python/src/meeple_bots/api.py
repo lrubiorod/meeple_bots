@@ -100,6 +100,29 @@ class SuggestedMctsExperiment:
 
 
 @dataclass(frozen=True, slots=True)
+class SampledDecisionTiming:
+    """Measured MCTS decision latency at one reproducibly sampled ply."""
+
+    sampled_ply: int
+    milliseconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class MctsAgentBenchmark:
+    """Isolated decision-latency measurements for one exact MCTS configuration."""
+
+    game: Game
+    agent: MctsAgent
+    sampled_positions: int
+    decision_time_mean_ms: float
+    decision_time_p50_ms: float
+    decision_time_p95_ms: float
+    decision_time_max_ms: float
+    milliseconds_per_iteration: float
+    position_timings: tuple[SampledDecisionTiming, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class GameEvaluationReport:
     """Structural metrics and practical, locally measured MCTS starting points."""
 
@@ -887,6 +910,55 @@ def evaluate_game(
         iterations_capped=raw["iterations_capped"],
         milliseconds_per_iteration=raw["milliseconds_per_iteration"],
         estimated_decision_time_ms=raw["estimated_decision_time_ms"],
+    )
+
+
+def benchmark_mcts_agent(
+    game: Game,
+    agent: MctsAgent,
+    median_depth: int,
+    seed: int = 0,
+) -> MctsAgentBenchmark:
+    """Measure one exact MCTS configuration on shared early, middle, and late states."""
+
+    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest)):
+        raise TypeError(
+            "game must be TicTacToe, ConnectFour, Boop, or SpiritsOfTheForest"
+        )
+    if not isinstance(agent, MctsAgent):
+        raise TypeError("agent must be an MctsAgent")
+    _non_negative_u32("median_depth", median_depth)
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError("seed must be an integer")
+    if not 0 <= seed <= _MAX_U64:
+        raise ValueError(f"seed must be between 0 and {_MAX_U64}")
+    _validate_agent_heuristic(game, agent)
+
+    raw = _native.benchmark_mcts_agent(
+        _native_game(game),
+        agent.iterations,
+        float(agent.exploration),
+        agent.rollout_depth,
+        agent.heuristic,
+        median_depth,
+        seed,
+    )
+    return MctsAgentBenchmark(
+        game=game,
+        agent=agent,
+        sampled_positions=raw["sampled_positions"],
+        decision_time_mean_ms=raw["decision_time_mean_ms"],
+        decision_time_p50_ms=raw["decision_time_p50_ms"],
+        decision_time_p95_ms=raw["decision_time_p95_ms"],
+        decision_time_max_ms=raw["decision_time_max_ms"],
+        milliseconds_per_iteration=raw["milliseconds_per_iteration"],
+        position_timings=tuple(
+            SampledDecisionTiming(
+                sampled_ply=timing["sampled_ply"],
+                milliseconds=timing["milliseconds"],
+            )
+            for timing in raw["position_timings"]
+        ),
     )
 
 

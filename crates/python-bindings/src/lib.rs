@@ -11,9 +11,9 @@ use meeple_bots_catalog::{
     CatalogGemstoneSacrifice, CatalogMatchReport, CatalogPieceKind, CatalogPowerSource,
     CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, EvaluationConfig, GameId,
     MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, analyze_seeded_trace, analyze_trace,
-    configured_boop_mcts, configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
-    configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
-    run_boop_match_with_trace, run_connect_four_match_with_observer,
+    benchmark_mcts_agent, configured_boop_mcts, configured_connect_four_mcts,
+    configured_spirits_of_the_forest_mcts, configured_tic_tac_toe_mcts, evaluate_game,
+    run_boop_match_with_observer, run_boop_match_with_trace, run_connect_four_match_with_observer,
     run_connect_four_match_with_trace, run_match_with_trace,
     run_spirits_of_the_forest_match_with_observer, run_spirits_of_the_forest_match_with_trace,
     run_tic_tac_toe_match_with_observer, run_tic_tac_toe_match_with_trace,
@@ -479,6 +479,75 @@ fn py_evaluate_game(
         "estimated_decision_time_ms",
         report.estimated_decision_time_ms,
     )?;
+    Ok(serialized.unbind())
+}
+
+#[pyfunction(name = "benchmark_mcts_agent")]
+#[pyo3(signature = (
+    game,
+    iterations,
+    exploration,
+    rollout_depth,
+    heuristic,
+    median_depth,
+    seed=0,
+))]
+fn py_benchmark_mcts_agent(
+    py: Python<'_>,
+    game: &str,
+    iterations: u32,
+    exploration: f64,
+    rollout_depth: u32,
+    heuristic: Option<u32>,
+    median_depth: u32,
+    seed: u64,
+) -> PyResult<Py<PyDict>> {
+    let game = parse_game(game)?;
+    let iterations = NonZeroU32::new(iterations)
+        .ok_or_else(|| PyValueError::new_err("iterations must be greater than zero"))?;
+    if !exploration.is_finite() || exploration < 0.0 {
+        return Err(PyValueError::new_err(
+            "exploration must be finite and non-negative",
+        ));
+    }
+    if rollout_depth == 0 {
+        return Err(PyValueError::new_err(
+            "rollout_depth must be greater than zero",
+        ));
+    }
+    let report = benchmark_mcts_agent(
+        game,
+        MctsAgentConfig {
+            search: MctsConfig {
+                iterations,
+                exploration,
+                rollout_depth,
+            },
+            heuristic,
+        },
+        median_depth,
+        seed,
+    )
+    .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+
+    let serialized = PyDict::new(py);
+    serialized.set_item("sampled_positions", report.sampled_positions)?;
+    serialized.set_item("decision_time_mean_ms", report.decision_time_mean_ms)?;
+    serialized.set_item("decision_time_p50_ms", report.decision_time_p50_ms)?;
+    serialized.set_item("decision_time_p95_ms", report.decision_time_p95_ms)?;
+    serialized.set_item("decision_time_max_ms", report.decision_time_max_ms)?;
+    serialized.set_item(
+        "milliseconds_per_iteration",
+        report.milliseconds_per_iteration,
+    )?;
+    let position_timings = PyList::empty(py);
+    for timing in report.position_timings {
+        let item = PyDict::new(py);
+        item.set_item("sampled_ply", timing.sampled_ply)?;
+        item.set_item("milliseconds", timing.milliseconds)?;
+        position_timings.append(item)?;
+    }
+    serialized.set_item("position_timings", position_timings)?;
     Ok(serialized.unbind())
 }
 
@@ -1949,6 +2018,7 @@ fn py_spirits_initial_state(seed: u64) -> NativeSpiritsState {
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAgentConfig>()?;
     module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;
+    module.add_function(wrap_pyfunction!(py_benchmark_mcts_agent, module)?)?;
     module.add_function(wrap_pyfunction!(py_run_match, module)?)?;
     module.add_function(wrap_pyfunction!(py_analyze_trace, module)?)?;
     module.add_function(wrap_pyfunction!(py_spirits_initial_state, module)?)?;

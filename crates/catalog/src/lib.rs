@@ -10,10 +10,12 @@ use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{
     Agent, AgentError, DecisionContext, Game, HeuristicGame, PlayerId, RandomSource,
 };
-use meeple_bots_evaluation::evaluate_game as evaluate_typed_game;
 pub use meeple_bots_evaluation::{
     EvaluationConfig, EvaluationError, GameEvaluationReport, IterationBudgetEstimate,
-    RolloutCostEstimate, SuggestedMctsExperiment,
+    MctsAgentBenchmark, RolloutCostEstimate, SampledDecisionTiming, SuggestedMctsExperiment,
+};
+use meeple_bots_evaluation::{
+    benchmark_mcts_agent as benchmark_typed_mcts_agent, evaluate_game as evaluate_typed_game,
 };
 pub use meeple_bots_mcts_agent::MctsConfig;
 use meeple_bots_mcts_agent::{GameHeuristic, MctsAgent};
@@ -284,6 +286,35 @@ pub fn evaluate_game(
         GameId::TicTacToe => evaluate_typed_game(&TicTacToe, config),
     }?;
     Ok(report)
+}
+
+pub fn benchmark_mcts_agent(
+    game: GameId,
+    config: MctsAgentConfig,
+    median_depth: u32,
+    seed: u64,
+) -> Result<MctsAgentBenchmark, CatalogError> {
+    let iterations = config.search.iterations;
+    let benchmark = match game {
+        GameId::Boop => {
+            let mut agent = configured_boop_mcts(config)?;
+            benchmark_typed_mcts_agent(&Boop, &mut agent, iterations, median_depth, seed)
+        }
+        GameId::ConnectFour => {
+            let mut agent = configured_connect_four_mcts(config)?;
+            benchmark_typed_mcts_agent(&ConnectFour, &mut agent, iterations, median_depth, seed)
+        }
+        GameId::SpiritsOfTheForest => {
+            let game = spirits_of_the_forest_game(seed);
+            let mut agent = configured_spirits_of_the_forest_mcts(config)?;
+            benchmark_typed_mcts_agent(&game, &mut agent, iterations, median_depth, seed)
+        }
+        GameId::TicTacToe => {
+            let mut agent = configured_tic_tac_toe_mcts(config)?;
+            benchmark_typed_mcts_agent(&TicTacToe, &mut agent, iterations, median_depth, seed)
+        }
+    }?;
+    Ok(benchmark)
 }
 
 pub fn analyze_trace(
@@ -1360,6 +1391,19 @@ mod tests {
 
         assert_eq!(result.utilities.len(), 2);
         assert!((5..=9).contains(&result.plies));
+    }
+
+    #[test]
+    fn runtime_catalog_benchmarks_a_concrete_mcts_configuration() {
+        let AgentConfig::Mcts(config) = mcts(None) else {
+            unreachable!();
+        };
+
+        let benchmark = benchmark_mcts_agent(GameId::TicTacToe, config, 6, 42).unwrap();
+
+        assert_eq!(benchmark.sampled_positions, 3);
+        assert!(benchmark.decision_time_mean_ms > 0.0);
+        assert!(benchmark.milliseconds_per_iteration > 0.0);
     }
 
     #[test]

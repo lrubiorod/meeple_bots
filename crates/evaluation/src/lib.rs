@@ -63,6 +63,23 @@ pub struct SuggestedMctsExperiment {
     pub estimated_decision_time_ms: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SampledDecisionTiming {
+    pub sampled_ply: u32,
+    pub milliseconds: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MctsAgentBenchmark {
+    pub sampled_positions: u32,
+    pub decision_time_mean_ms: f64,
+    pub decision_time_p50_ms: f64,
+    pub decision_time_p95_ms: f64,
+    pub decision_time_max_ms: f64,
+    pub milliseconds_per_iteration: f64,
+    pub position_timings: Vec<SampledDecisionTiming>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameEvaluationReport {
     pub samples: u32,
@@ -220,6 +237,67 @@ where
         iterations_capped,
         milliseconds_per_iteration,
         estimated_decision_time_ms,
+    })
+}
+
+pub fn benchmark_mcts_agent<G, A>(
+    game: &G,
+    agent: &mut A,
+    iterations: NonZeroU32,
+    median_depth: u32,
+    seed: u64,
+) -> Result<MctsAgentBenchmark, EvaluationError>
+where
+    G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
+    G::State: Clone,
+    G::Action: Clone,
+    A: Agent<G>,
+{
+    let states = sample_calibration_states(game, median_depth, seed ^ 0xD1B5_4A32_D192_ED03)?;
+    let mut position_timings = Vec::with_capacity(states.len());
+    for (position_index, (sampled_ply, state)) in states.iter().enumerate() {
+        let player = match game.status(state) {
+            PositionStatus::PlayerTurn(player) => player,
+            PositionStatus::Chance => return Err(EvaluationError::UnexpectedChance),
+            PositionStatus::Terminal => continue,
+            _ => return Err(EvaluationError::UnexpectedChance),
+        };
+        let mut rng =
+            SplitMix64::new(seed.wrapping_add(position_index as u64) ^ 0x94D0_49BB_1331_11EB);
+        let started = Instant::now();
+        agent
+            .select_action(DecisionContext::new(game, state, player), &mut rng)
+            .map_err(EvaluationError::Agent)?;
+        position_timings.push(SampledDecisionTiming {
+            sampled_ply: *sampled_ply,
+            milliseconds: (started.elapsed().as_secs_f64() * 1_000.0).max(f64::EPSILON),
+        });
+    }
+    if position_timings.is_empty() {
+        return Err(EvaluationError::NoLegalActions);
+    }
+
+    let decision_time_mean_ms = position_timings
+        .iter()
+        .map(|timing| timing.milliseconds)
+        .sum::<f64>()
+        / position_timings.len() as f64;
+    let mut sorted_timings: Vec<_> = position_timings
+        .iter()
+        .map(|timing| timing.milliseconds)
+        .collect();
+    sorted_timings.sort_by(f64::total_cmp);
+
+    Ok(MctsAgentBenchmark {
+        sampled_positions: position_timings.len() as u32,
+        decision_time_mean_ms,
+        decision_time_p50_ms: percentile_f64(&sorted_timings, 50),
+        decision_time_p95_ms: percentile_f64(&sorted_timings, 95),
+        decision_time_max_ms: *sorted_timings
+            .last()
+            .expect("non-empty timings have a maximum"),
+        milliseconds_per_iteration: decision_time_mean_ms / f64::from(iterations.get()),
+        position_timings,
     })
 }
 
@@ -392,13 +470,13 @@ fn sample_calibration_states<G>(
     game: &G,
     median_depth: u32,
     seed: u64,
-) -> Result<Vec<G::State>, EvaluationError>
+) -> Result<Vec<(u32, G::State)>, EvaluationError>
 where
     G: DeterministicGame,
     G::State: Clone,
     G::Action: Clone,
 {
-    let mut states = vec![game.initial_state()];
+    let mut states = vec![(0, game.initial_state())];
     let mut target_depths = [median_depth / 3, median_depth.saturating_mul(2) / 3];
     target_depths.sort_unstable();
 
@@ -428,7 +506,7 @@ where
             }
         }
         if reached && matches!(game.status(&state), PositionStatus::PlayerTurn(_)) {
-            states.push(state);
+            states.push((target_depth, state));
         }
     }
 
@@ -467,7 +545,7 @@ fn nearest_power_of_two(value: u32) -> u32 {
 
 fn calibrate_iteration_cost<G>(
     game: &G,
-    states: &[G::State],
+    states: &[(u32, G::State)],
     rollout_depth: u32,
     seed: u64,
 ) -> Result<f64, EvaluationError>
@@ -477,7 +555,7 @@ where
     G::Action: Clone,
 {
     let mut timings = Vec::with_capacity(states.len());
-    for (position_index, state) in states.iter().enumerate() {
+    for (position_index, (_, state)) in states.iter().enumerate() {
         let player = match game.status(state) {
             PositionStatus::PlayerTurn(player) => player,
             PositionStatus::Chance => return Err(EvaluationError::UnexpectedChance),
@@ -599,6 +677,11 @@ fn percentile(sorted: &[u32], percentage: usize) -> u32 {
     sorted[rank - 1]
 }
 
+fn percentile_f64(sorted: &[f64], percentage: usize) -> f64 {
+    let rank = (percentage * sorted.len()).div_ceil(100).max(1);
+    sorted[rank - 1]
+}
+
 #[cfg(test)]
 mod tests {
     use meeple_bots_connect_four::ConnectFour;
@@ -651,6 +734,38 @@ mod tests {
 
         assert_eq!(report.initial_legal_actions, 7);
         assert!(report.estimated_depth <= 42);
+    }
+
+    #[test]
+    fn configured_agent_benchmark_times_exact_search_on_shared_positions() {
+        let iterations = NonZeroU32::new(4).unwrap();
+        let mut agent = MctsAgent::new(MctsConfig {
+            iterations,
+            rollout_depth: 4,
+            ..MctsConfig::default()
+        });
+
+        let benchmark = benchmark_mcts_agent(&TicTacToe, &mut agent, iterations, 6, 42).unwrap();
+
+        assert_eq!(benchmark.sampled_positions, 3);
+        assert_eq!(
+            benchmark
+                .position_timings
+                .iter()
+                .map(|timing| timing.sampled_ply)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 4]
+        );
+        assert!(benchmark.decision_time_mean_ms > 0.0);
+        assert!(benchmark.decision_time_p50_ms <= benchmark.decision_time_p95_ms);
+        assert_eq!(
+            benchmark.decision_time_p95_ms,
+            benchmark.decision_time_max_ms
+        );
+        assert_eq!(
+            benchmark.milliseconds_per_iteration,
+            benchmark.decision_time_mean_ms / f64::from(iterations.get())
+        );
     }
 
     #[test]

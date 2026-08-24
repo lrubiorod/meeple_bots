@@ -293,10 +293,28 @@ meeple-bots analyze --game boop --samples 128 --max-depth 256 --seed 42
 meeple-bots analyze --game boop --target-time 5 --seed 42 --json
 ```
 
+Benchmark and rank any number of exact MCTS profiles on the same sampled positions:
+
+```bash
+meeple-bots analyze --game boop --target-time 1 --seed 42 \
+  --agent \
+  --agent 'i=5000,d=120' \
+  --agent 'name=h0,i=20000,d=32,h=0' \
+  --agent-config configs/mcts/heuristic2.toml
+```
+
+Each `--agent-config` uses the [reusable scalar profile](../agents/README.md#reusable-profiles)
+format. For quick tests, repeat `--agent [SPEC]` with comma-separated fields `name`, `iterations`,
+`depth`, `exploration`, and `heuristic`; `i`, `d`, and `h` are accepted as short aliases for
+iterations, depth, and heuristic. A bare `--agent` defaults to 1000 iterations, depth 16,
+square-root-of-two exploration, and no heuristic. Inline agents and profiles can be mixed;
+tournament grids are not accepted here.
+
 This command is the CLI equivalent of `evaluate_game`. `--target-time` chooses the approximate
 seconds per decision used for the suggested benchmark points; it does not lengthen calibration to
-that duration. Its measurements, fields, and interpretation are kept in the
-[evaluation guide](../crates/evaluation/README.md).
+that duration. Repeated `--agent-config` values add sequential, exact-profile latency measurements
+and a fastest-to-slowest comparison; they do not measure playing strength. Its measurements,
+fields, and interpretation are kept in the [evaluation guide](../crates/evaluation/README.md).
 
 ## Run a study
 

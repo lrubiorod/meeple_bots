@@ -30,6 +30,7 @@ from meeple_bots import (
     TakeSpiritTile,
     TicTacToe,
     TicTacToeAction,
+    benchmark_mcts_agent,
     evaluate_game,
 )
 from meeple_bots.cli import _load_tournament_config, build_parser, main
@@ -497,6 +498,43 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(report.terminal_rate, 0.0)
         self.assertEqual(report.estimated_depth, 1)
         self.assertTrue(report.depth_is_lower_bound)
+
+    def test_configured_mcts_benchmark_uses_exact_agent_and_shared_positions(self) -> None:
+        agent = MctsAgent(iterations=4, rollout_depth=4)
+
+        benchmark = benchmark_mcts_agent(
+            TicTacToe(),
+            agent,
+            median_depth=6,
+            seed=42,
+        )
+
+        self.assertEqual(benchmark.agent, agent)
+        self.assertEqual(benchmark.sampled_positions, 3)
+        self.assertEqual(
+            [timing.sampled_ply for timing in benchmark.position_timings],
+            [0, 2, 4],
+        )
+        self.assertGreater(benchmark.decision_time_mean_ms, 0.0)
+        self.assertLessEqual(
+            benchmark.decision_time_p50_ms,
+            benchmark.decision_time_p95_ms,
+        )
+        self.assertAlmostEqual(
+            benchmark.milliseconds_per_iteration,
+            benchmark.decision_time_mean_ms / agent.iterations,
+        )
+
+    def test_configured_mcts_benchmark_supports_a_game_heuristic(self) -> None:
+        benchmark = benchmark_mcts_agent(
+            Boop(),
+            MctsAgent(iterations=1, rollout_depth=1, heuristic=0),
+            median_depth=3,
+            seed=7,
+        )
+
+        self.assertEqual(benchmark.agent.heuristic, 0)
+        self.assertEqual(benchmark.sampled_positions, 3)
 
     def test_scripted_humans_receive_positions_and_finish_a_match(self) -> None:
         first_moves = iter([(0, 0), (0, 1), (0, 2)])
@@ -1049,6 +1087,170 @@ class MatchApiTests(unittest.TestCase):
         self.assertIn("recommended_iterations", payload)
         self.assertIn("milliseconds_per_iteration", payload)
         self.assertIn("estimated_decision_time_ms", payload)
+        self.assertEqual(payload["configured_agent_benchmarks"], [])
+
+    def test_cli_analyze_compares_more_than_two_exact_agent_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profiles = []
+            for name, iterations, depth in (
+                ("short", 1, 2),
+                ("balanced", 2, 4),
+                ("deep", 3, 8),
+            ):
+                profile = root / f"{name}.toml"
+                profile.write_text(
+                    "\n".join(
+                        [
+                            f'name = "{name}"',
+                            f"iterations = {iterations}",
+                            f"rollout_depth = {depth}",
+                            "use_heuristic = false",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                profiles.append(profile)
+
+            arguments = [
+                "analyze",
+                "--game",
+                "tic-tac-toe",
+                "--samples",
+                "8",
+                "--target-time",
+                "0.1",
+                "--json",
+            ]
+            for profile in profiles:
+                arguments.extend(("--agent-config", str(profile)))
+            arguments.extend(("--agent", "name=inline,iterations=1,depth=3"))
+            output = io.StringIO()
+            progress = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(progress):
+                exit_code = main(arguments)
+
+        payload = json.loads(output.getvalue())
+        benchmarks = payload["configured_agent_benchmarks"]
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(benchmarks), 4)
+        self.assertEqual([row["rank"] for row in benchmarks], [1, 2, 3, 4])
+        self.assertEqual(
+            {row["name"] for row in benchmarks},
+            {"short", "balanced", "deep", "inline"},
+        )
+        self.assertEqual(benchmarks[0]["relative_to_fastest"], 1.0)
+        self.assertEqual(
+            [row["decision_time_mean_ms"] for row in benchmarks],
+            sorted(row["decision_time_mean_ms"] for row in benchmarks),
+        )
+        self.assertTrue(all(row["sampled_positions"] == 3 for row in benchmarks))
+        self.assertTrue(all(row["target_time_ratio"] > 0.0 for row in benchmarks))
+        self.assertIn("Benchmarking short", progress.getvalue())
+        self.assertIn("Benchmarking balanced", progress.getvalue())
+        self.assertIn("Benchmarking deep", progress.getvalue())
+        self.assertIn("Benchmarking inline", progress.getvalue())
+
+    def test_cli_analyze_accepts_repeated_inline_agents_with_defaults(self) -> None:
+        output = io.StringIO()
+        progress = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(progress):
+            exit_code = main(
+                [
+                    "analyze",
+                    "--game",
+                    "tic-tac-toe",
+                    "--samples",
+                    "8",
+                    "--target-time",
+                    "0.1",
+                    "--agent",
+                    "--agent",
+                    "i=5,d=8",
+                    "--agent",
+                    "name=custom,iterations=2,exploration=0.5",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        benchmarks = {
+            benchmark["name"]: benchmark
+            for benchmark in payload["configured_agent_benchmarks"]
+        }
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            set(benchmarks),
+            {"mcts-i1000-d16", "mcts-i5-d8", "custom"},
+        )
+        self.assertEqual(benchmarks["mcts-i1000-d16"]["iterations"], 1000)
+        self.assertEqual(benchmarks["mcts-i1000-d16"]["rollout_depth"], 16)
+        self.assertIsNone(benchmarks["mcts-i1000-d16"]["heuristic"])
+        self.assertEqual(benchmarks["mcts-i5-d8"]["iterations"], 5)
+        self.assertEqual(benchmarks["mcts-i5-d8"]["rollout_depth"], 8)
+        self.assertEqual(benchmarks["custom"]["exploration"], 0.5)
+        self.assertIn("Benchmarking mcts-i1000-d16", progress.getvalue())
+
+    def test_cli_analyze_inline_agent_supports_a_heuristic(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(io.StringIO()):
+            exit_code = main(
+                [
+                    "analyze",
+                    "--game",
+                    "boop",
+                    "--samples",
+                    "1",
+                    "--max-depth",
+                    "1",
+                    "--target-time",
+                    "0.1",
+                    "--agent",
+                    "i=1,d=1,h=0",
+                    "--json",
+                ]
+            )
+
+        payload = json.loads(output.getvalue())
+        benchmark = payload["configured_agent_benchmarks"][0]
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(benchmark["name"], "mcts-h0-i1-d1")
+        self.assertEqual(benchmark["heuristic"], 0)
+
+    def test_cli_analyze_rejects_duplicate_inline_agent_aliases(self) -> None:
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            exit_code = main(
+                [
+                    "analyze",
+                    "--game",
+                    "boop",
+                    "--agent",
+                    "i=1,iterations=2",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn(
+            "duplicate inline analyze agent field: iterations",
+            errors.getvalue(),
+        )
+
+    def test_cli_analyze_rejects_invalid_inline_agent_fields_before_sampling(self) -> None:
+        errors = io.StringIO()
+        with redirect_stderr(errors):
+            exit_code = main(
+                [
+                    "analyze",
+                    "--game",
+                    "boop",
+                    "--agent",
+                    "iterations=oops,unknown=1",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("unknown inline analyze agent field: unknown", errors.getvalue())
 
     def test_cli_batch_loads_an_mcts_profile_and_reports_progress(self) -> None:
         output = io.StringIO()
