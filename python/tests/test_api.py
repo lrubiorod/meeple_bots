@@ -3,6 +3,7 @@ import io
 import importlib.util
 import json
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -32,6 +33,7 @@ from meeple_bots import (
     evaluate_game,
 )
 from meeple_bots.cli import _load_tournament_config, build_parser, main
+from meeple_bots._concurrency import ordered_parallel_map, resolve_workers
 from meeple_bots.games.boop.gui import BoopGui
 from meeple_bots.games.connect_four.gui import ConnectFourGui
 from meeple_bots.games.spirits_of_the_forest.gui import SpiritsOfTheForestGui
@@ -68,15 +70,23 @@ class MatchApiTests(unittest.TestCase):
 
     def test_batch_alternates_sides_and_aggregates_results(self) -> None:
         events = []
+        callback_threads = []
+
+        def record_progress(event) -> None:
+            events.append(event)
+            callback_threads.append(threading.get_ident())
+
         result = Batch(
             game=TicTacToe(),
             agent_a=RandomAgent(),
             agent_b=RandomAgent(),
             matches=4,
             seed=42,
-        ).run(events.append)
+            workers=2,
+        ).run(record_progress)
 
         self.assertEqual(result.matches, 4)
+        self.assertEqual(result.workers, 2)
         self.assertEqual(
             result.agent_a_wins + result.agent_b_wins + result.draws,
             result.matches,
@@ -87,18 +97,87 @@ class MatchApiTests(unittest.TestCase):
             [0, 1, 0, 1],
         )
         self.assertEqual(len(events), 8)
-        self.assertEqual(events[0].status, BatchProgressStatus.STARTED)
-        self.assertEqual(events[1].status, BatchProgressStatus.COMPLETED)
-        self.assertIsNone(events[0].result)
-        self.assertEqual(events[1].result, result.games[0])
+        started = [event for event in events if event.status is BatchProgressStatus.STARTED]
+        completed = [
+            event for event in events if event.status is BatchProgressStatus.COMPLETED
+        ]
+        self.assertEqual([event.match_number for event in started], [1, 2, 3, 4])
+        self.assertEqual([event.match_number for event in completed], [1, 2, 3, 4])
+        self.assertTrue(all(event.result is None for event in started))
+        self.assertEqual(
+            [event.result for event in completed],
+            list(result.games),
+        )
+        self.assertEqual(set(callback_threads), {threading.get_ident()})
 
     def test_batch_results_are_reproducible_except_for_timing(self) -> None:
+        common = {
+            "game": TicTacToe(),
+            "agent_a": RandomAgent(),
+            "agent_b": MctsAgent(iterations=4, rollout_depth=9),
+            "matches": 4,
+            "seed": 7,
+        }
+        serial = Batch(
+            **common,
+            workers=1,
+        ).run()
+        parallel = Batch(
+            **common,
+            workers=3,
+        ).run()
+        serial_games = [
+            (game.seed, game.agent_a_player, game.winner, game.plies, game.utilities)
+            for game in serial.games
+        ]
+        parallel_games = [
+            (game.seed, game.agent_a_player, game.winner, game.plies, game.utilities)
+            for game in parallel.games
+        ]
+
+        self.assertEqual(serial.workers, 1)
+        self.assertEqual(parallel.workers, 3)
+        self.assertEqual(serial_games, parallel_games)
+
+    def test_auto_workers_leave_one_physical_core_free(self) -> None:
+        with patch(
+            "meeple_bots._concurrency._physical_core_count",
+            return_value=8,
+        ):
+            self.assertEqual(resolve_workers("auto"), 7)
+
+    def test_worker_pool_runs_jobs_on_distinct_threads_and_preserves_order(self) -> None:
+        barrier = threading.Barrier(2)
+        worker_threads = set()
+        lock = threading.Lock()
+
+        def run_job(value: int) -> int:
+            with lock:
+                worker_threads.add(threading.get_ident())
+            barrier.wait(timeout=2)
+            return value * 2
+
+        results = list(ordered_parallel_map(run_job, [1, 2], workers=2))
+
+        self.assertEqual(results, [(1, 2), (2, 4)])
+        self.assertEqual(len(worker_threads), 2)
+
+    def test_batch_rejects_invalid_workers(self) -> None:
+        with self.assertRaisesRegex(ValueError, "workers"):
+            Batch(workers=0)
+        with self.assertRaisesRegex(TypeError, "workers"):
+            Batch(workers=True)
+        with self.assertRaisesRegex(TypeError, "workers"):
+            Batch(workers="all")
+
+    def test_batch_results_are_reproducible_with_the_same_parallelism(self) -> None:
         batch = Batch(
             game=TicTacToe(),
             agent_a=RandomAgent(),
             agent_b=MctsAgent(iterations=4, rollout_depth=9),
             matches=4,
             seed=7,
+            workers=2,
         )
 
         first = batch.run()
@@ -986,9 +1065,11 @@ class MatchApiTests(unittest.TestCase):
                         "batch",
                         "--game",
                         "tic-tac-toe",
-                        "--matches",
-                        "4",
-                        "--agent-b-config",
+                    "--matches",
+                    "4",
+                    "--workers",
+                    "2",
+                    "--agent-b-config",
                         str(profile),
                         "--seed",
                         "42",
@@ -999,6 +1080,7 @@ class MatchApiTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["matches"], 4)
+        self.assertEqual(payload["workers"], 2)
         self.assertEqual(payload["agents"]["a"]["type"], "random")
         self.assertEqual(payload["agents"]["b"]["name"], "test-mcts")
         self.assertEqual(payload["agents"]["b"]["iterations"], 4)
@@ -1081,6 +1163,7 @@ class MatchApiTests(unittest.TestCase):
                         "matches_per_pair = 2",
                         "seed = 17",
                         "max_plies = 9",
+                        "workers = 2",
                         "",
                         "[[agents]]",
                         'name = "alpha"',
@@ -1094,6 +1177,7 @@ class MatchApiTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            self.assertEqual(_load_tournament_config(config).workers, 2)
 
             with redirect_stdout(output), redirect_stderr(progress):
                 exit_code = main(
@@ -1101,6 +1185,8 @@ class MatchApiTests(unittest.TestCase):
                         "tournament",
                         "--config",
                         str(config),
+                        "--workers",
+                        "1",
                         "--json",
                     ]
                 )
@@ -1111,11 +1197,13 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(summary["pairings"], 2)
         self.assertEqual(summary["matches"], 4)
+        self.assertEqual(summary["workers"], 1)
         self.assertEqual(summary["output"], str(trace))
         self.assertEqual(summary["standings"]["alpha"]["games"], 2)
         self.assertEqual(summary["standings"]["alpha"]["self_play_games"], 2)
         self.assertEqual(records[0]["record_type"], "tournament")
         self.assertEqual(records[0]["schema_version"], 1)
+        self.assertEqual(records[0]["workers"], 1)
         self.assertEqual(len(records), 5)
         self.assertEqual(
             [record["result"]["seed"] for record in records[1:]],

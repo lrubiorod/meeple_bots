@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -43,6 +43,7 @@ from .api import (
     TicTacToeAction,
     evaluate_game,
 )
+from ._concurrency import WorkerSetting, ordered_parallel_map, resolve_workers
 from .extraction import extract_tournament
 from .gui import run_gui
 from .reporting import generate_study_report
@@ -59,6 +60,22 @@ _MAX_AGENTS_PER_TOURNAMENT_GRID = 256
 
 def _game_tag(value: str) -> str:
     return "spotf" if value == "spirits-of-the-forest" else value
+
+
+def _worker_setting(value: str) -> WorkerSetting:
+    if value == "auto":
+        return "auto"
+    try:
+        workers = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "workers must be 'auto' or a positive integer"
+        ) from error
+    if workers < 1:
+        raise argparse.ArgumentTypeError(
+            "workers must be 'auto' or a positive integer"
+        )
+    return workers
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -120,6 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--seed", type=int, default=0)
     batch.add_argument("--max-plies", type=int, default=10_000)
     batch.add_argument(
+        "--workers",
+        type=_worker_setting,
+        default="auto",
+        help="parallel matches: 'auto' uses physical cores minus one (default: auto)",
+    )
+    batch.add_argument(
         "--no-alternate-sides",
         action="store_false",
         dest="alternate_sides",
@@ -132,6 +155,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="run a configured round-robin tournament and save full match traces",
     )
     tournament.add_argument("--config", type=Path, required=True)
+    tournament.add_argument(
+        "--workers",
+        type=_worker_setting,
+        help="override tournament workers with 'auto' or a positive integer",
+    )
     tournament.add_argument(
         "--output",
         type=Path,
@@ -331,7 +359,44 @@ class _TournamentConfig:
     matches_per_pair: int
     seed: int
     max_plies: int
+    workers: int
     agents: tuple[_TournamentAgent, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TournamentMatchJob:
+    match_number: int
+    pairing_number: int
+    pairing_match_number: int
+    agent_a: _TournamentAgent
+    agent_b: _TournamentAgent
+    self_play: bool
+    agent_a_player: int
+    seed: int
+
+
+@dataclass(frozen=True, slots=True)
+class _TournamentMatchOutcome:
+    result: MatchResult
+    started_at: float
+    finished_at: float
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.finished_at - self.started_at
+
+
+@dataclass(slots=True)
+class _TournamentPairingStats:
+    agent_a: _TournamentAgent
+    agent_b: _TournamentAgent
+    self_play: bool
+    agent_a_wins: int = 0
+    agent_b_wins: int = 0
+    draws: int = 0
+    total_plies: int = 0
+    started_at: float | None = None
+    finished_at: float | None = None
 
 
 def _run_tournament(args: argparse.Namespace) -> int:
@@ -341,6 +406,10 @@ def _run_tournament(args: argparse.Namespace) -> int:
         raise ValueError("tournament output is required in the config or with --output")
     pairings = _tournament_pairings(config.agents)
     total_matches = len(pairings) * config.matches_per_pair
+    worker_count = min(
+        resolve_workers(config.workers if args.workers is None else args.workers),
+        total_matches,
+    )
     output_mode = "w" if args.overwrite else "x"
     standings = {
         agent.name: {
@@ -352,13 +421,20 @@ def _run_tournament(args: argparse.Namespace) -> int:
         }
         for agent in config.agents
     }
-    pairing_results = []
+    pairing_stats = [
+        _TournamentPairingStats(
+            agent_a=agent_a,
+            agent_b=agent_b,
+            self_play=agent_a is agent_b,
+        )
+        for agent_a, agent_b in pairings
+    ]
+    jobs = _tournament_match_jobs(pairings, config)
     tournament_started = perf_counter()
-    match_number = 0
 
     print(
         f"Starting tournament: {_game_name(config.game)}, {len(config.agents)} agents, "
-        f"{len(pairings)} pairings, {total_matches} matches",
+        f"{len(pairings)} pairings, {total_matches} matches, {worker_count} workers",
         file=sys.stderr,
         flush=True,
     )
@@ -374,6 +450,7 @@ def _run_tournament(args: argparse.Namespace) -> int:
                 "matches_per_pair": config.matches_per_pair,
                 "seed": config.seed,
                 "max_plies": config.max_plies,
+                "workers": worker_count,
                 "total_pairings": len(pairings),
                 "total_matches": total_matches,
                 "agents": [
@@ -382,103 +459,82 @@ def _run_tournament(args: argparse.Namespace) -> int:
             },
         )
 
-        for pairing_number, (agent_a, agent_b) in enumerate(pairings, start=1):
-            self_play = agent_a is agent_b
-            agent_a_wins = 0
-            agent_b_wins = 0
-            draws = 0
-            total_plies = 0
-            pairing_started = perf_counter()
+        def run_job(job: _TournamentMatchJob) -> _TournamentMatchOutcome:
+            return _run_tournament_match(job, config.game, config.max_plies)
 
-            for pairing_match_number in range(1, config.matches_per_pair + 1):
-                match_number += 1
-                agent_a_player = (pairing_match_number - 1) % 2
-                first, second = (
-                    (agent_a.agent, agent_b.agent)
-                    if agent_a_player == 0
-                    else (agent_b.agent, agent_a.agent)
-                )
-                match_seed = (config.seed + match_number - 1) & (2**64 - 1)
-                match_started = perf_counter()
-                result = Match(
-                    game=config.game,
-                    first=first,
-                    second=second,
-                    seed=match_seed,
-                    max_plies=config.max_plies,
-                ).run()
-                duration_seconds = perf_counter() - match_started
-                total_plies += result.plies
-
-                if result.winner is None:
-                    winner = None
-                    draws += 1
-                elif result.winner == agent_a_player:
-                    winner = "agent_a"
-                    agent_a_wins += 1
-                else:
-                    winner = "agent_b"
-                    agent_b_wins += 1
-
-                if self_play:
-                    standings[agent_a.name]["self_play_games"] += 1
-                else:
-                    _update_tournament_standings(
-                        standings,
-                        agent_a.name,
-                        agent_b.name,
-                        winner,
-                    )
-
-                players = (
-                    [agent_a.name, agent_b.name]
-                    if agent_a_player == 0
-                    else [agent_b.name, agent_a.name]
-                )
-                _write_jsonl(
-                    output,
-                    {
-                        "record_type": "match",
-                        "match_number": match_number,
-                        "pairing_number": pairing_number,
-                        "pairing_match_number": pairing_match_number,
-                        "agent_a": agent_a.name,
-                        "agent_b": agent_b.name,
-                        "self_play": self_play,
-                        "agent_a_player": agent_a_player,
-                        "players": players,
-                        "winner": winner,
-                        "duration_seconds": duration_seconds,
-                        "result": _result_dict(result),
-                    },
-                )
-                print(
-                    f"[{match_number}/{total_matches}] {agent_a.name} vs {agent_b.name}: "
-                    f"winner={winner or 'draw'}, plies={result.plies}, "
-                    f"time={duration_seconds:.3f}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
-
-            pairing_results.append(
-                {
-                    "agent_a": agent_a.name,
-                    "agent_b": agent_b.name,
-                    "self_play": self_play,
-                    "matches": config.matches_per_pair,
-                    "agent_a_wins": agent_a_wins,
-                    "agent_b_wins": agent_b_wins,
-                    "draws": draws,
-                    "average_plies": total_plies / config.matches_per_pair,
-                    "elapsed_seconds": perf_counter() - pairing_started,
-                }
+        for job, outcome in ordered_parallel_map(run_job, jobs, worker_count):
+            result = outcome.result
+            stats = pairing_stats[job.pairing_number - 1]
+            stats.total_plies += result.plies
+            stats.started_at = (
+                outcome.started_at
+                if stats.started_at is None
+                else min(stats.started_at, outcome.started_at)
+            )
+            stats.finished_at = (
+                outcome.finished_at
+                if stats.finished_at is None
+                else max(stats.finished_at, outcome.finished_at)
             )
 
+            if result.winner is None:
+                winner = None
+                stats.draws += 1
+            elif result.winner == job.agent_a_player:
+                winner = "agent_a"
+                stats.agent_a_wins += 1
+            else:
+                winner = "agent_b"
+                stats.agent_b_wins += 1
+
+            if job.self_play:
+                standings[job.agent_a.name]["self_play_games"] += 1
+            else:
+                _update_tournament_standings(
+                    standings,
+                    job.agent_a.name,
+                    job.agent_b.name,
+                    winner,
+                )
+
+            players = (
+                [job.agent_a.name, job.agent_b.name]
+                if job.agent_a_player == 0
+                else [job.agent_b.name, job.agent_a.name]
+            )
+            _write_jsonl(
+                output,
+                {
+                    "record_type": "match",
+                    "match_number": job.match_number,
+                    "pairing_number": job.pairing_number,
+                    "pairing_match_number": job.pairing_match_number,
+                    "agent_a": job.agent_a.name,
+                    "agent_b": job.agent_b.name,
+                    "self_play": job.self_play,
+                    "agent_a_player": job.agent_a_player,
+                    "players": players,
+                    "winner": winner,
+                    "duration_seconds": outcome.duration_seconds,
+                    "result": _result_dict(result),
+                },
+            )
+            print(
+                f"[{job.match_number}/{total_matches}] "
+                f"{job.agent_a.name} vs {job.agent_b.name}: "
+                f"winner={winner or 'draw'}, plies={result.plies}, "
+                f"time={outcome.duration_seconds:.3f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    pairing_results = [_tournament_pairing_result(stats, config) for stats in pairing_stats]
     summary = {
         "game": _game_name(config.game),
         "agents": len(config.agents),
         "pairings": len(pairings),
         "matches": total_matches,
+        "workers": worker_count,
         "matches_per_pair": config.matches_per_pair,
         "seed": config.seed,
         "output": str(output_path),
@@ -493,10 +549,82 @@ def _run_tournament(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_tournament_match(
+    job: _TournamentMatchJob,
+    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
+    max_plies: int,
+) -> _TournamentMatchOutcome:
+    first, second = (
+        (job.agent_a.agent, job.agent_b.agent)
+        if job.agent_a_player == 0
+        else (job.agent_b.agent, job.agent_a.agent)
+    )
+    started_at = perf_counter()
+    result = Match(
+        game=game,
+        first=first,
+        second=second,
+        seed=job.seed,
+        max_plies=max_plies,
+    ).run()
+    return _TournamentMatchOutcome(
+        result=result,
+        started_at=started_at,
+        finished_at=perf_counter(),
+    )
+
+
+def _tournament_match_jobs(
+    pairings: list[tuple[_TournamentAgent, _TournamentAgent]],
+    config: _TournamentConfig,
+) -> Iterator[_TournamentMatchJob]:
+    match_number = 0
+    for pairing_number, (agent_a, agent_b) in enumerate(pairings, start=1):
+        for pairing_match_number in range(1, config.matches_per_pair + 1):
+            match_number += 1
+            yield _TournamentMatchJob(
+                match_number=match_number,
+                pairing_number=pairing_number,
+                pairing_match_number=pairing_match_number,
+                agent_a=agent_a,
+                agent_b=agent_b,
+                self_play=agent_a is agent_b,
+                agent_a_player=(pairing_match_number - 1) % 2,
+                seed=(config.seed + match_number - 1) & (2**64 - 1),
+            )
+
+
+def _tournament_pairing_result(
+    stats: _TournamentPairingStats,
+    config: _TournamentConfig,
+) -> dict[str, object]:
+    if stats.started_at is None or stats.finished_at is None:
+        raise RuntimeError("tournament pairing did not run any matches")
+    return {
+        "agent_a": stats.agent_a.name,
+        "agent_b": stats.agent_b.name,
+        "self_play": stats.self_play,
+        "matches": config.matches_per_pair,
+        "agent_a_wins": stats.agent_a_wins,
+        "agent_b_wins": stats.agent_b_wins,
+        "draws": stats.draws,
+        "average_plies": stats.total_plies / config.matches_per_pair,
+        "elapsed_seconds": stats.finished_at - stats.started_at,
+    }
+
+
 def _load_tournament_config(path: Path) -> _TournamentConfig:
     with path.open("rb") as config_file:
         values = tomllib.load(config_file)
-    allowed = {"game", "output", "matches_per_pair", "seed", "max_plies", "agents"}
+    allowed = {
+        "game",
+        "output",
+        "matches_per_pair",
+        "seed",
+        "max_plies",
+        "workers",
+        "agents",
+    }
     unknown = sorted(values.keys() - allowed)
     if unknown:
         raise ValueError(f"unknown tournament fields: {', '.join(unknown)}")
@@ -521,6 +649,7 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
     max_plies = _positive_tournament_integer(
         "max_plies", values.get("max_plies", 10_000)
     )
+    workers = resolve_workers(values.get("workers", "auto"))
     seed = values.get("seed", 0)
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise TypeError("tournament seed must be an integer")
@@ -548,6 +677,7 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
         matches_per_pair=matches_per_pair,
         seed=seed,
         max_plies=max_plies,
+        workers=workers,
         agents=agents,
     )
 
@@ -743,6 +873,7 @@ def _print_tournament_summary(summary: dict[str, object]) -> None:
     print(f"Agents: {summary['agents']}")
     print(f"Pairings: {summary['pairings']}")
     print(f"Matches: {summary['matches']}")
+    print(f"Workers: {summary['workers']}")
     print(f"Total time: {summary['elapsed_seconds']:.3f}s")
     print(f"Trace output: {summary['output']}")
     print()
@@ -759,7 +890,7 @@ def _print_tournament_summary(summary: dict[str, object]) -> None:
 
 def _run_batch(
     args: argparse.Namespace,
-    game: TicTacToe | ConnectFour | Boop,
+    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
 ) -> int:
     agent_a, name_a = _batch_agent(args.agent_a, args.agent_a_config, "--agent-a-config")
     agent_b, name_b = _batch_agent(args.agent_b, args.agent_b_config, "--agent-b-config")
@@ -771,6 +902,7 @@ def _run_batch(
         seed=args.seed,
         max_plies=args.max_plies,
         alternate_sides=args.alternate_sides,
+        workers=args.workers,
     )
     _print_batch_setup(batch, game, name_a, agent_a, name_b, agent_b)
     result = batch.run(
@@ -844,7 +976,7 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
 
 def _print_batch_setup(
     batch: Batch,
-    game: TicTacToe | ConnectFour | Boop,
+    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
     name_a: str,
     agent_a: RandomAgent | MctsAgent,
     name_b: str,
@@ -852,7 +984,8 @@ def _print_batch_setup(
 ) -> None:
     print(
         f"Starting batch: {_game_name(game)}, {batch.matches} matches, "
-        f"alternate sides: {'yes' if batch.alternate_sides else 'no'}",
+        f"alternate sides: {'yes' if batch.alternate_sides else 'no'}, "
+        f"workers: {min(resolve_workers(batch.workers), batch.matches)}",
         file=sys.stderr,
     )
     print(f"Agent A: {_batch_agent_description(name_a, agent_a)}", file=sys.stderr)
@@ -916,7 +1049,7 @@ def _batch_agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, ob
 
 def _batch_dict(
     result: BatchResult,
-    game: TicTacToe | ConnectFour | Boop,
+    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
     name_a: str,
     agent_a: RandomAgent | MctsAgent,
     name_b: str,
@@ -926,6 +1059,7 @@ def _batch_dict(
         "game": _game_name(game),
         "seed": result.seed,
         "matches": result.matches,
+        "workers": result.workers,
         "alternate_sides": result.alternate_sides,
         "agents": {
             "a": _batch_agent_dict(name_a, agent_a),
@@ -962,7 +1096,7 @@ def _batch_dict(
 
 def _print_batch_result(
     result: BatchResult,
-    game: TicTacToe | ConnectFour | Boop,
+    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
     name_a: str,
     agent_a: RandomAgent | MctsAgent,
     name_b: str,
@@ -970,6 +1104,7 @@ def _print_batch_result(
 ) -> None:
     print(f"Game: {_game_name(game)}")
     print(f"Matches: {result.matches}")
+    print(f"Workers: {result.workers}")
     print(f"Alternate sides: {'yes' if result.alternate_sides else 'no'}")
     print(f"Agent A: {_batch_agent_description(name_a, agent_a)}")
     print(f"Agent B: {_batch_agent_description(name_b, agent_b)}")

@@ -11,6 +11,7 @@ from time import perf_counter
 from typing import TypeAlias
 
 from . import _native
+from ._concurrency import WorkerSetting, ordered_parallel_map, resolve_workers
 
 _MAX_U32 = 2**32 - 1
 _MAX_U64 = 2**64 - 1
@@ -536,7 +537,7 @@ class BatchMatchResult:
 
 @dataclass(frozen=True, slots=True)
 class BatchProgress:
-    """Progress emitted immediately before and after each batch match."""
+    """Progress emitted when a match is submitted and when its ordered result is delivered."""
 
     status: BatchProgressStatus
     match_number: int
@@ -556,6 +557,7 @@ class BatchResult:
 
     seed: int
     matches: int
+    workers: int
     alternate_sides: bool
     agent_a_wins: int
     agent_b_wins: int
@@ -564,6 +566,13 @@ class BatchResult:
     average_plies: float
     elapsed_seconds: float
     games: tuple[BatchMatchResult, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchJob:
+    match_number: int
+    seed: int
+    agent_a_player: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -647,6 +656,7 @@ class Batch:
     seed: int = 0
     max_plies: int = 10_000
     alternate_sides: bool = True
+    workers: WorkerSetting = "auto"
 
     def __post_init__(self) -> None:
         if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest)):
@@ -665,12 +675,13 @@ class Batch:
             raise ValueError(f"seed must be between 0 and {_MAX_U64}")
         if not isinstance(self.alternate_sides, bool):
             raise TypeError("alternate_sides must be a boolean")
+        resolve_workers(self.workers)
 
     def run(
         self,
         progress: BatchProgressCallback | None = None,
     ) -> BatchResult:
-        """Run the batch and optionally report each match boundary."""
+        """Run matches concurrently and optionally report submission and completion."""
 
         if progress is not None and not callable(progress):
             raise TypeError("progress must be callable")
@@ -680,66 +691,50 @@ class Batch:
         agent_a_wins = 0
         agent_b_wins = 0
         draws = 0
+        worker_count = min(resolve_workers(self.workers), self.matches)
+        jobs = (
+            _BatchJob(
+                match_number=offset + 1,
+                seed=(self.seed + offset) & _MAX_U64,
+                agent_a_player=offset % 2 if self.alternate_sides else 0,
+            )
+            for offset in range(self.matches)
+        )
 
-        for offset in range(self.matches):
-            match_number = offset + 1
-            match_seed = (self.seed + offset) & _MAX_U64
-            agent_a_player = offset % 2 if self.alternate_sides else 0
+        def notify_started(job: _BatchJob) -> None:
             if progress is not None:
                 progress(
                     BatchProgress(
                         status=BatchProgressStatus.STARTED,
-                        match_number=match_number,
+                        match_number=job.match_number,
                         total_matches=self.matches,
-                        seed=match_seed,
-                        agent_a_player=agent_a_player,
+                        seed=job.seed,
+                        agent_a_player=job.agent_a_player,
                         elapsed_seconds=perf_counter() - batch_started,
                     )
                 )
 
-            match_started = perf_counter()
-            first, second = (
-                (self.agent_a, self.agent_b)
-                if agent_a_player == 0
-                else (self.agent_b, self.agent_a)
-            )
-            match = Match(
-                game=self.game,
-                first=first,
-                second=second,
-                seed=match_seed,
-                max_plies=self.max_plies,
-            ).run()
-            if match.winner is None:
-                winner = None
+        for job, game_result in ordered_parallel_map(
+            self._run_job,
+            jobs,
+            worker_count,
+            notify_started,
+        ):
+            if game_result.winner is None:
                 draws += 1
-            elif match.winner == agent_a_player:
-                winner = 0
+            elif game_result.winner == 0:
                 agent_a_wins += 1
             else:
-                winner = 1
                 agent_b_wins += 1
-            game_result = BatchMatchResult(
-                match_number=match_number,
-                seed=match_seed,
-                agent_a_player=agent_a_player,
-                winner=winner,
-                plies=match.plies,
-                utilities=(
-                    match.utilities[agent_a_player],
-                    match.utilities[1 - agent_a_player],
-                ),
-                duration_seconds=perf_counter() - match_started,
-            )
             games.append(game_result)
             if progress is not None:
                 progress(
                     BatchProgress(
                         status=BatchProgressStatus.COMPLETED,
-                        match_number=match_number,
+                        match_number=job.match_number,
                         total_matches=self.matches,
-                        seed=match_seed,
-                        agent_a_player=agent_a_player,
+                        seed=job.seed,
+                        agent_a_player=job.agent_a_player,
                         elapsed_seconds=perf_counter() - batch_started,
                         result=game_result,
                     )
@@ -750,6 +745,7 @@ class Batch:
         return BatchResult(
             seed=self.seed,
             matches=self.matches,
+            workers=worker_count,
             alternate_sides=self.alternate_sides,
             agent_a_wins=agent_a_wins,
             agent_b_wins=agent_b_wins,
@@ -758,6 +754,39 @@ class Batch:
             average_plies=total_plies / self.matches,
             elapsed_seconds=elapsed_seconds,
             games=tuple(games),
+        )
+
+    def _run_job(self, job: _BatchJob) -> BatchMatchResult:
+        match_started = perf_counter()
+        first, second = (
+            (self.agent_a, self.agent_b)
+            if job.agent_a_player == 0
+            else (self.agent_b, self.agent_a)
+        )
+        match = Match(
+            game=self.game,
+            first=first,
+            second=second,
+            seed=job.seed,
+            max_plies=self.max_plies,
+        ).run()
+        if match.winner is None:
+            winner = None
+        elif match.winner == job.agent_a_player:
+            winner = 0
+        else:
+            winner = 1
+        return BatchMatchResult(
+            match_number=job.match_number,
+            seed=job.seed,
+            agent_a_player=job.agent_a_player,
+            winner=winner,
+            plies=match.plies,
+            utilities=(
+                match.utilities[job.agent_a_player],
+                match.utilities[1 - job.agent_a_player],
+            ),
+            duration_seconds=perf_counter() - match_started,
         )
 
 

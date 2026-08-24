@@ -5,6 +5,7 @@ output = "../../results/tournaments/boop-study.jsonl"
 matches_per_pair = 20
 seed = 42
 max_plies = 10000
+workers = "auto"
 
 [[agents]]
 name = "random"

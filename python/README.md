@@ -128,6 +128,7 @@ result = Batch(
     agent_b=MctsAgent(iterations=100, rollout_depth=9),
     matches=20,
     seed=42,
+    workers="auto",
 ).run(lambda event: print(event.status, event.match_number))
 
 print(result.agent_a_wins, result.agent_b_wins, result.draws)
@@ -136,6 +137,23 @@ print(result.agent_a_wins, result.agent_b_wins, result.draws)
 Batch winners are participant-oriented: `0` means agent A, `1` means agent B, and `None` means a
 draw. Match seeds increase sequentially from the batch seed. Durations are observational; results
 remain reproducible for a fixed configuration and seed.
+
+`Batch` runs independent matches with a `ThreadPoolExecutor`; each MCTS remains single-threaded.
+On Linux, `workers="auto"` counts the physical CPU cores visible to the process and leaves one
+free, with a minimum of one worker. For example, an 8-core/16-thread CPU uses 7 workers. Other
+platforms fall back to the available CPU count when physical topology is unavailable. An explicit
+positive integer selects a fixed limit, and the effective count never exceeds the number of
+matches:
+
+```python
+Batch(..., workers=6).run()
+```
+
+Seeds, seats, returned games, and progress completions retain their logical match order. Several
+`STARTED` events may arrive before the first `COMPLETED` event because they represent submission to
+the pool. User callbacks and aggregation still run on the calling thread. Concurrent
+`duration_seconds` values include CPU contention and should not be compared with an idle-machine
+MCTS calibration.
 
 ### Estimate game and search scale
 
@@ -237,7 +255,7 @@ seats by default. Every MCTS participant requires a profile:
 ```bash
 meeple-bots batch --game boop --matches 20 \
   --agent-a random --agent-b mcts \
-  --agent-b-config configs/mcts/template.toml --seed 42
+  --agent-b-config configs/mcts/template.toml --workers auto --seed 42
 ```
 
 Compare two MCTS profiles:
@@ -298,6 +316,7 @@ output = "../../results/tournaments/boop-study.jsonl"
 matches_per_pair = 20
 seed = 42
 max_plies = 10000
+workers = "auto"
 
 [[agents]]
 name = "random"
@@ -317,6 +336,17 @@ self_play = true
 The tournament schedules every distinct pair of agents and alternates their seats. `self_play =
 true` adds one same-configuration pairing without including those games in competitive standings.
 Different names may intentionally use identical parameters.
+
+Tournament matches use the same thread pool as `Batch`. Set `workers = "auto"` or a positive TOML
+integer. The CLI can override the file for one run:
+
+```bash
+meeple-bots tournament --config configs/tournaments/boop-study.toml --workers 6
+```
+
+Only the main thread updates standings, reports progress, and writes JSONL. Match numbers, seeds,
+seats, and trace order therefore remain deterministic even when later matches finish computation
+first. The JSONL header records the effective worker count.
 
 An MCTS entry can use arrays for `iterations`, `rollout_depth`, `exploration`, and
 `heuristic_index`. The loader creates the Cartesian product, so this compact entry produces nine
