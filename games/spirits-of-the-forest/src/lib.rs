@@ -5,6 +5,13 @@ use meeple_bots_core::{
     PositionStatus, RandomSource, TwoPlayerZeroSumGame,
 };
 
+mod analysis;
+
+pub use analysis::{
+    CategoryScoreAnalysis, ScoringCategory, SpiritsPlayerStateMetrics, SpiritsReplayAnalysis,
+    SpiritsReplayError, SpiritsStateMetrics, SpiritsTurnAnalysis, TileTakeAnalysis, analyze_replay,
+};
+
 pub const ROWS: usize = 4;
 pub const COLUMNS: usize = 12;
 pub const TILE_COUNT: usize = ROWS * COLUMNS;

@@ -25,7 +25,7 @@ use meeple_bots_simulation::{
 pub use meeple_bots_simulation::{MatchConfig, MatchResult};
 use meeple_bots_spirits_of_the_forest::{
     ForestPosition, GemstoneSacrifice, PowerSource, Spirit, SpiritsOfTheForest,
-    SpiritsOfTheForestAction,
+    SpiritsOfTheForestAction, SpiritsReplayAnalysis, analyze_replay as analyze_spirits_replay,
 };
 use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
@@ -198,6 +198,7 @@ pub struct CatalogMatchReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogTraceAnalysis {
     Boop(BoopReplayAnalysis),
+    SpiritsOfTheForest(SpiritsReplayAnalysis),
 }
 
 #[derive(Debug)]
@@ -289,6 +290,14 @@ pub fn analyze_trace(
     game: GameId,
     moves: &[RecordedMove],
 ) -> Result<CatalogTraceAnalysis, CatalogError> {
+    analyze_seeded_trace(game, moves, 0)
+}
+
+pub fn analyze_seeded_trace(
+    game: GameId,
+    moves: &[RecordedMove],
+    seed: u64,
+) -> Result<CatalogTraceAnalysis, CatalogError> {
     match game {
         GameId::Boop => {
             let actions = moves
@@ -312,10 +321,75 @@ pub fn analyze_trace(
                     message: error.to_string(),
                 })
         }
-        GameId::ConnectFour | GameId::SpiritsOfTheForest | GameId::TicTacToe => {
-            Err(CatalogError::AnalysisUnavailable(game))
+        GameId::SpiritsOfTheForest => {
+            let actions = moves
+                .iter()
+                .enumerate()
+                .map(|(index, movement)| {
+                    let player = u8::try_from(movement.player)
+                        .ok()
+                        .filter(|player| *player < 2)
+                        .map(PlayerId::new)
+                        .ok_or_else(|| invalid_trace(game, index, "player must be 0 or 1"))?;
+                    let action = catalog_spirits_replay_action(&movement.action)
+                        .map_err(|message| invalid_trace(game, index, message))?;
+                    Ok((player, action))
+                })
+                .collect::<Result<Vec<_>, CatalogError>>()?;
+            let configured_game = spirits_of_the_forest_game(seed);
+            analyze_spirits_replay(&configured_game, &actions)
+                .map(CatalogTraceAnalysis::SpiritsOfTheForest)
+                .map_err(|error| CatalogError::InvalidTrace {
+                    game,
+                    message: error.to_string(),
+                })
         }
+        GameId::ConnectFour | GameId::TicTacToe => Err(CatalogError::AnalysisUnavailable(game)),
     }
+}
+
+fn catalog_spirits_replay_action(
+    action: &CatalogAction,
+) -> Result<SpiritsOfTheForestAction, &'static str> {
+    let CatalogAction::SpiritsOfTheForest(action) = action else {
+        return Err("action belongs to a different game");
+    };
+    Ok(match *action {
+        CatalogSpiritsAction::TakeTile {
+            row,
+            column,
+            sacrifice,
+        } => SpiritsOfTheForestAction::TakeTile {
+            position: replay_forest_position(row, column)?,
+            sacrifice: match sacrifice {
+                None => None,
+                Some(CatalogGemstoneSacrifice::Available) => Some(GemstoneSacrifice::Available),
+                Some(CatalogGemstoneSacrifice::Forest { row, column }) => Some(
+                    GemstoneSacrifice::Forest(replay_forest_position(row, column)?),
+                ),
+            },
+        },
+        CatalogSpiritsAction::EndCollection => SpiritsOfTheForestAction::EndCollection,
+        CatalogSpiritsAction::PlaceGemstone { row, column } => {
+            SpiritsOfTheForestAction::PlaceGemstone {
+                target: replay_forest_position(row, column)?,
+            }
+        }
+        CatalogSpiritsAction::MoveGemstone {
+            source_row,
+            source_column,
+            target_row,
+            target_column,
+        } => SpiritsOfTheForestAction::MoveGemstone {
+            source: replay_forest_position(source_row, source_column)?,
+            target: replay_forest_position(target_row, target_column)?,
+        },
+        CatalogSpiritsAction::SkipGemstone => SpiritsOfTheForestAction::SkipGemstone,
+    })
+}
+
+fn replay_forest_position(row: u8, column: u8) -> Result<ForestPosition, &'static str> {
+    ForestPosition::new(row, column).ok_or("forest position is outside the 4x12 board")
 }
 
 fn invalid_trace(game: GameId, index: usize, message: impl fmt::Display) -> CatalogError {
@@ -1420,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn trace_analysis_dispatches_to_boop_and_rejects_unimplemented_games() {
+    fn trace_analysis_dispatches_to_supported_games_and_rejects_unimplemented_games() {
         let report = run_match_with_trace(
             GameId::Boop,
             AgentConfig::Random,
@@ -1430,8 +1504,35 @@ mod tests {
         .unwrap();
         let expected_winner = report.winner.unwrap();
         let CatalogTraceAnalysis::Boop(analysis) =
-            analyze_trace(GameId::Boop, &report.moves).unwrap();
+            analyze_trace(GameId::Boop, &report.moves).unwrap()
+        else {
+            panic!("boop trace returned the wrong analysis type");
+        };
         assert_eq!(analysis.winner.index(), expected_winner);
+
+        let spirits_report = run_match_with_trace(
+            GameId::SpiritsOfTheForest,
+            AgentConfig::Random,
+            AgentConfig::Random,
+            MatchConfig::default(),
+        )
+        .unwrap();
+        let CatalogTraceAnalysis::SpiritsOfTheForest(spirits_analysis) = analyze_seeded_trace(
+            GameId::SpiritsOfTheForest,
+            &spirits_report.moves,
+            spirits_report.seed,
+        )
+        .unwrap() else {
+            panic!("spotf trace returned the wrong analysis type");
+        };
+        assert_eq!(
+            spirits_analysis.winner.map(PlayerId::index),
+            spirits_report.winner
+        );
+        assert_eq!(
+            spirits_analysis.final_scores,
+            spirits_report.scores.unwrap()
+        );
 
         let unavailable = analyze_trace(GameId::ConnectFour, &[]).unwrap_err();
         assert_eq!(

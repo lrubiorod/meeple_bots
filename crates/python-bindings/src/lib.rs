@@ -3,15 +3,15 @@
 use std::{num::NonZeroU32, time::Duration};
 
 use meeple_bots_boop::{
-    BoardZone, Boop, BoopAction, BoopInteractionOutcome, BoopStateMetrics, GraduateLine,
-    LineOrientation, PieceKind as BoopPieceKind, Resolution, StrategicPhase,
+    BoardZone, Boop, BoopAction, BoopInteractionOutcome, BoopReplayAnalysis, BoopStateMetrics,
+    GraduateLine, LineOrientation, PieceKind as BoopPieceKind, Resolution, StrategicPhase,
 };
 use meeple_bots_catalog::{
     AgentConfig, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution, CatalogError,
     CatalogGemstoneSacrifice, CatalogMatchReport, CatalogPieceKind, CatalogPowerSource,
     CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, EvaluationConfig, GameId,
-    MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, analyze_trace, configured_boop_mcts,
-    configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
+    MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, analyze_seeded_trace, analyze_trace,
+    configured_boop_mcts, configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
     configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
     run_boop_match_with_trace, run_connect_four_match_with_observer,
     run_connect_four_match_with_trace, run_match_with_trace,
@@ -25,8 +25,9 @@ use meeple_bots_mcts_agent::MctsAgent;
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::MatchObserver;
 use meeple_bots_spirits_of_the_forest::{
-    ForestPosition, GemstoneSacrifice, PowerSource, Spirit, SpiritsOfTheForest,
-    SpiritsOfTheForestAction, SpiritsOfTheForestState, TurnPhase,
+    ForestPosition, GemstoneSacrifice, PowerSource, ScoringCategory, Spirit, SpiritsOfTheForest,
+    SpiritsOfTheForestAction, SpiritsOfTheForestState, SpiritsReplayAnalysis, SpiritsStateMetrics,
+    TurnPhase,
 };
 use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -954,8 +955,13 @@ fn run_python_match(
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
 
-#[pyfunction(name = "analyze_trace")]
-fn py_analyze_trace(py: Python<'_>, game: &str, moves: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+#[pyfunction(name = "analyze_trace", signature = (game, moves, seed=0))]
+fn py_analyze_trace(
+    py: Python<'_>,
+    game: &str,
+    moves: &Bound<'_, PyAny>,
+    seed: u64,
+) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     let recorded = match game {
         GameId::Boop => moves
@@ -968,7 +974,17 @@ fn py_analyze_trace(py: Python<'_>, game: &str, moves: &Bound<'_, PyAny>) -> PyR
                 })
             })
             .collect::<PyResult<Vec<_>>>()?,
-        GameId::ConnectFour | GameId::SpiritsOfTheForest | GameId::TicTacToe => {
+        GameId::SpiritsOfTheForest => moves
+            .extract::<Vec<(u8, NativeSpiritsAction)>>()?
+            .into_iter()
+            .map(|(player, action)| {
+                Ok(RecordedMove {
+                    player: usize::from(player),
+                    action: parse_native_catalog_spirits_action(action)?,
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?,
+        GameId::ConnectFour | GameId::TicTacToe => {
             return Err(PyValueError::new_err(
                 analyze_trace(game, &[])
                     .expect_err("games without analysis return an error")
@@ -976,10 +992,17 @@ fn py_analyze_trace(py: Python<'_>, game: &str, moves: &Bound<'_, PyAny>) -> PyR
             ));
         }
     };
-    let analysis =
-        analyze_trace(game, &recorded).map_err(|error| PyValueError::new_err(error.to_string()))?;
-    let CatalogTraceAnalysis::Boop(analysis) = analysis;
+    let analysis = analyze_seeded_trace(game, &recorded, seed)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    match analysis {
+        CatalogTraceAnalysis::Boop(analysis) => serialize_boop_analysis(py, analysis),
+        CatalogTraceAnalysis::SpiritsOfTheForest(analysis) => {
+            serialize_spirits_analysis(py, analysis)
+        }
+    }
+}
 
+fn serialize_boop_analysis(py: Python<'_>, analysis: BoopReplayAnalysis) -> PyResult<Py<PyDict>> {
     let result = PyDict::new(py);
     result.set_item("winner", analysis.winner.index())?;
     result.set_item("winner_has_cat_line", analysis.winner_has_cat_line)?;
@@ -1059,6 +1082,163 @@ fn py_analyze_trace(py: Python<'_>, game: &str, moves: &Bound<'_, PyAny>) -> PyR
     result.set_item("winning_lines", winning_lines)?;
 
     Ok(result.unbind())
+}
+
+fn serialize_spirits_analysis(
+    py: Python<'_>,
+    analysis: SpiritsReplayAnalysis,
+) -> PyResult<Py<PyDict>> {
+    let result = PyDict::new(py);
+    result.set_item("winner", analysis.winner.map(PlayerId::index))?;
+    result.set_item("final_scores", analysis.final_scores)?;
+
+    let turns = PyList::empty(py);
+    for turn in analysis.turns {
+        let item = PyDict::new(py);
+        item.set_item("ply", turn.ply)?;
+        item.set_item("physical_turn", turn.physical_turn)?;
+        item.set_item("action_in_turn", turn.action_in_turn)?;
+        item.set_item("player", turn.player.index())?;
+        item.set_item("phase_before", spirits_phase_name(turn.phase_before))?;
+        item.set_item("phase_after", spirits_phase_name(turn.phase_after))?;
+        item.set_item("legal_actions_before", turn.legal_actions_before)?;
+        item.set_item("before", serialize_spirits_state_metrics(py, turn.before)?)?;
+        item.set_item("after", serialize_spirits_state_metrics(py, turn.after)?)?;
+        item.set_item("turn_completed_after", turn.turn_completed_after)?;
+        item.set_item("terminal_after", turn.terminal_after)?;
+        match turn.tile_take {
+            None => item.set_item("tile_take", py.None())?,
+            Some(take) => {
+                let serialized = PyDict::new(py);
+                serialized.set_item("row", take.position.row())?;
+                serialized.set_item("column", take.position.column())?;
+                serialized.set_item("spirit", spirit_name(take.tile.spirit()))?;
+                serialized.set_item("spirit_symbols", take.tile.spirit_symbols())?;
+                serialized.set_item(
+                    "power_source",
+                    take.tile.power_source().map(power_source_name),
+                )?;
+                serialized.set_item(
+                    "reservation_owner",
+                    take.reservation_owner.map(PlayerId::index),
+                )?;
+                match take.sacrifice {
+                    None => serialized.set_item("sacrifice", py.None())?,
+                    Some(GemstoneSacrifice::Available) => {
+                        let sacrifice = PyDict::new(py);
+                        sacrifice.set_item("kind", "available")?;
+                        serialized.set_item("sacrifice", sacrifice)?;
+                    }
+                    Some(GemstoneSacrifice::Forest(position)) => {
+                        let sacrifice = PyDict::new(py);
+                        sacrifice.set_item("kind", "forest")?;
+                        sacrifice.set_item("row", position.row())?;
+                        sacrifice.set_item("column", position.column())?;
+                        serialized.set_item("sacrifice", sacrifice)?;
+                    }
+                }
+                item.set_item("tile_take", serialized)?;
+            }
+        }
+        turns.append(item)?;
+    }
+    result.set_item("turns", turns)?;
+
+    let categories = PyList::empty(py);
+    for (index, category) in analysis.categories.into_iter().enumerate() {
+        let item = PyDict::new(py);
+        item.set_item("category_number", index + 1)?;
+        match category.category {
+            ScoringCategory::Spirit(spirit) => {
+                item.set_item("category_type", "spirit")?;
+                item.set_item("category", spirit_name(spirit))?;
+            }
+            ScoringCategory::PowerSource(source) => {
+                item.set_item("category_type", "power_source")?;
+                item.set_item("category", power_source_name(source))?;
+            }
+        }
+        item.set_item("counts", category.counts)?;
+        item.set_item("points", category.points)?;
+        categories.append(item)?;
+    }
+    result.set_item("categories", categories)?;
+    Ok(result.unbind())
+}
+
+fn serialize_spirits_state_metrics(
+    py: Python<'_>,
+    metrics: SpiritsStateMetrics,
+) -> PyResult<Py<PyDict>> {
+    let result = PyDict::new(py);
+    result.set_item("remaining_tiles", metrics.remaining_tiles)?;
+    result.set_item("completed_turns", metrics.completed_turns)?;
+    let players = PyList::empty(py);
+    for player in metrics.players {
+        let item = PyDict::new(py);
+        item.set_item("spirit_symbols", player.spirit_symbols)?;
+        item.set_item("power_sources", player.power_sources)?;
+        item.set_item("tiles", player.tiles)?;
+        item.set_item("score", player.score)?;
+        item.set_item("gemstones_available", player.gemstones_available)?;
+        item.set_item("gemstones_placed", player.gemstones_placed)?;
+        item.set_item("gemstones_removed", player.gemstones_removed)?;
+        players.append(item)?;
+    }
+    result.set_item("players", players)?;
+    Ok(result.unbind())
+}
+
+fn parse_native_catalog_spirits_action(action: NativeSpiritsAction) -> PyResult<CatalogAction> {
+    let (kind, positions, sacrifice) = action;
+    let action = match kind.as_str() {
+        "take_tile" if positions.len() == 1 => {
+            let (row, column) = positions[0];
+            let sacrifice = match sacrifice {
+                None => None,
+                Some((kind, None)) if kind == "available" => {
+                    Some(CatalogGemstoneSacrifice::Available)
+                }
+                Some((kind, Some((row, column)))) if kind == "forest" => {
+                    Some(CatalogGemstoneSacrifice::Forest { row, column })
+                }
+                _ => {
+                    return Err(PyValueError::new_err("invalid Spirits gemstone sacrifice"));
+                }
+            };
+            CatalogSpiritsAction::TakeTile {
+                row,
+                column,
+                sacrifice,
+            }
+        }
+        "end_collection" if positions.is_empty() && sacrifice.is_none() => {
+            CatalogSpiritsAction::EndCollection
+        }
+        "place_gemstone" if positions.len() == 1 && sacrifice.is_none() => {
+            let (row, column) = positions[0];
+            CatalogSpiritsAction::PlaceGemstone { row, column }
+        }
+        "move_gemstone" if positions.len() == 2 && sacrifice.is_none() => {
+            let (source_row, source_column) = positions[0];
+            let (target_row, target_column) = positions[1];
+            CatalogSpiritsAction::MoveGemstone {
+                source_row,
+                source_column,
+                target_row,
+                target_column,
+            }
+        }
+        "skip_gemstone" if positions.is_empty() && sacrifice.is_none() => {
+            CatalogSpiritsAction::SkipGemstone
+        }
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "invalid Spirits action representation: {kind}"
+            )));
+        }
+    };
+    Ok(CatalogAction::SpiritsOfTheForest(action))
 }
 
 fn parse_native_catalog_boop_action(action: NativeBoopAction) -> PyResult<CatalogAction> {
@@ -1152,6 +1332,13 @@ const fn strategic_phase_name(phase: StrategicPhase) -> &'static str {
         StrategicPhase::AllKittens => "all_kittens",
         StrategicPhase::OnePlayerHasCats => "one_player_has_cats",
         StrategicPhase::BothPlayersHaveCats => "both_players_have_cats",
+    }
+}
+
+const fn spirits_phase_name(phase: TurnPhase) -> &'static str {
+    match phase {
+        TurnPhase::Collect => "collect",
+        TurnPhase::PlaceGemstone => "place_gemstone",
     }
 }
 
