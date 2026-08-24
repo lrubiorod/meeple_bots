@@ -537,7 +537,7 @@ class BatchMatchResult:
 
 @dataclass(frozen=True, slots=True)
 class BatchProgress:
-    """Progress emitted when a match is submitted and when its ordered result is delivered."""
+    """Ordered batch progress, including the full trace for a completed match."""
 
     status: BatchProgressStatus
     match_number: int
@@ -546,6 +546,7 @@ class BatchProgress:
     agent_a_player: int
     elapsed_seconds: float
     result: BatchMatchResult | None = None
+    match_result: MatchResult | None = None
 
 
 BatchProgressCallback: TypeAlias = Callable[[BatchProgress], None]
@@ -573,6 +574,12 @@ class _BatchJob:
     match_number: int
     seed: int
     agent_a_player: int
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchMatchOutcome:
+    summary: BatchMatchResult
+    match_result: MatchResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -714,12 +721,13 @@ class Batch:
                     )
                 )
 
-        for job, game_result in ordered_parallel_map(
+        for job, outcome in ordered_parallel_map(
             self._run_job,
             jobs,
             worker_count,
             notify_started,
         ):
+            game_result = outcome.summary
             if game_result.winner is None:
                 draws += 1
             elif game_result.winner == 0:
@@ -737,6 +745,7 @@ class Batch:
                         agent_a_player=job.agent_a_player,
                         elapsed_seconds=perf_counter() - batch_started,
                         result=game_result,
+                        match_result=outcome.match_result,
                     )
                 )
 
@@ -756,7 +765,7 @@ class Batch:
             games=tuple(games),
         )
 
-    def _run_job(self, job: _BatchJob) -> BatchMatchResult:
+    def _run_job(self, job: _BatchJob) -> _BatchMatchOutcome:
         match_started = perf_counter()
         first, second = (
             (self.agent_a, self.agent_b)
@@ -776,17 +785,20 @@ class Batch:
             winner = 0
         else:
             winner = 1
-        return BatchMatchResult(
-            match_number=job.match_number,
-            seed=job.seed,
-            agent_a_player=job.agent_a_player,
-            winner=winner,
-            plies=match.plies,
-            utilities=(
-                match.utilities[job.agent_a_player],
-                match.utilities[1 - job.agent_a_player],
+        return _BatchMatchOutcome(
+            summary=BatchMatchResult(
+                match_number=job.match_number,
+                seed=job.seed,
+                agent_a_player=job.agent_a_player,
+                winner=winner,
+                plies=match.plies,
+                utilities=(
+                    match.utilities[job.agent_a_player],
+                    match.utilities[1 - job.agent_a_player],
+                ),
+                duration_seconds=perf_counter() - match_started,
             ),
-            duration_seconds=perf_counter() - match_started,
+            match_result=match,
         )
 
 

@@ -1,10 +1,11 @@
-"""Streaming extraction of analysis-ready tables from tournament traces."""
+"""Streaming extraction of analysis-ready tables from tournament and batch traces."""
 
 from __future__ import annotations
 
 import csv
 import json
 import tempfile
+from collections.abc import Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,7 @@ from .api import (
 
 _COMMON_OUTPUT_FILES = {
     "agents": "agents.csv",
+    "studies": "studies.csv",
     "matches": "matches.csv",
     "manifest": "manifest.json",
 }
@@ -63,9 +65,30 @@ _AGENT_FIELDS = (
     "self_play",
 )
 
+_STUDY_FIELDS = (
+    "study_id",
+    "study_type",
+    "source",
+    "tournament_schema_version",
+    "declared_matches",
+    "processed_matches",
+    "complete",
+    "truncated_last_line",
+    "agents",
+    "base_seed",
+    "matches_per_pair",
+)
+
+_PROVENANCE_FIELDS = (
+    "study_id",
+    "source_match_number",
+)
+
 _MATCH_FIELDS = (
     "match_number",
+    *_PROVENANCE_FIELDS,
     "pairing_number",
+    "source_pairing_number",
     "pairing_match_number",
     "seed",
     "duration_seconds",
@@ -342,182 +365,408 @@ class _MatchContext:
     raw_result: dict[str, object]
 
 
+@dataclass(frozen=True, slots=True)
+class _StudySource:
+    study_id: str
+    study_type: str
+    path: Path
+    header: dict[str, object]
+    game_name: str
+    declared_matches: int
+    raw_agents: list[object]
+    agent_names: set[str]
+
+
+class _CsvWriter:
+    def __init__(self, writer: csv.DictWriter, *, with_provenance: bool = False) -> None:
+        self._writer = writer
+        self._with_provenance = with_provenance
+        self._study_id: str | None = None
+        self._source_match_number: int | None = None
+
+    def select_match(self, study_id: str, source_match_number: int) -> None:
+        self._study_id = study_id
+        self._source_match_number = source_match_number
+
+    def writerow(self, row: dict[str, object]) -> None:
+        if not self._with_provenance:
+            self._writer.writerow(row)
+            return
+        if self._study_id is None or self._source_match_number is None:
+            raise RuntimeError("match provenance must be selected before writing rows")
+        self._writer.writerow(
+            {
+                "study_id": self._study_id,
+                "source_match_number": self._source_match_number,
+                **row,
+            }
+        )
+
+
+def _normalize_input_paths(input_paths: Path | Sequence[Path]) -> tuple[Path, ...]:
+    if isinstance(input_paths, Path):
+        normalized = (input_paths.resolve(),)
+    else:
+        normalized = tuple(path.resolve() for path in input_paths)
+    if not normalized:
+        raise ValueError("at least one tournament trace input is required")
+    duplicates = sorted(
+        str(path) for path in set(normalized) if normalized.count(path) > 1
+    )
+    if duplicates:
+        raise ValueError("duplicate tournament trace inputs: " + ", ".join(duplicates))
+    return normalized
+
+
+def _load_study_sources(paths: tuple[Path, ...]) -> tuple[_StudySource, ...]:
+    studies = []
+    study_id_counts: dict[str, int] = {}
+    expected_game: str | None = None
+    for path in paths:
+        with path.open(encoding="utf-8") as source:
+            header_line = source.readline()
+        if not header_line:
+            raise ValueError(f"tournament trace is empty: {path}")
+        raw_header = _parse_json_record(header_line, 1)
+        game_name = _validate_header(raw_header)
+        if not isinstance(raw_header, dict):
+            raise AssertionError("validated tournament header must be an object")
+        study_type = raw_header.get("study_type", "tournament")
+        if not isinstance(study_type, str) or study_type not in {
+            "batch",
+            "tournament",
+        }:
+            raise ValueError(
+                f"study_type must be batch or tournament in trace: {path}"
+            )
+        if expected_game is None:
+            expected_game = game_name
+        elif game_name != expected_game:
+            raise ValueError(
+                "all tournament traces must use the same game; "
+                f"expected {expected_game}, found {game_name} in {path}"
+            )
+
+        raw_agents = raw_header.get("agents")
+        if not isinstance(raw_agents, list):
+            raise TypeError(f"tournament header agents must be a list: {path}")
+        agent_names = [
+            _string_field(agent, "name", f"tournament agent in {path}")
+            for agent in raw_agents
+        ]
+        duplicate_agents = sorted(
+            name for name in set(agent_names) if agent_names.count(name) > 1
+        )
+        if duplicate_agents:
+            raise ValueError(
+                f"tournament trace {path} contains duplicate agent names: "
+                + ", ".join(duplicate_agents)
+            )
+
+        base_id = path.stem or "study"
+        occurrence = study_id_counts.get(base_id, 0) + 1
+        study_id_counts[base_id] = occurrence
+        study_id = base_id if occurrence == 1 else f"{base_id}-{occurrence}"
+        studies.append(
+            _StudySource(
+                study_id=study_id,
+                study_type=study_type,
+                path=path,
+                header=raw_header,
+                game_name=game_name,
+                declared_matches=_integer_field(
+                    raw_header, "total_matches", f"tournament header in {path}"
+                ),
+                raw_agents=raw_agents,
+                agent_names=set(agent_names),
+            )
+        )
+    return tuple(studies)
+
+
+def _combined_agent_rows(studies: tuple[_StudySource, ...]) -> list[dict[str, object]]:
+    combined: dict[str, dict[str, object]] = {}
+    first_source: dict[str, Path] = {}
+    for study in studies:
+        for raw_agent in study.raw_agents:
+            row = _agent_row(raw_agent)
+            name = str(row["agent_name"])
+            existing = combined.get(name)
+            if existing is None:
+                combined[name] = row
+                first_source[name] = study.path
+                continue
+            signature = _agent_signature(row)
+            existing_signature = _agent_signature(existing)
+            if signature != existing_signature:
+                raise ValueError(
+                    f'agent "{name}" has conflicting configurations: '
+                    f"{first_source[name]} defines {existing_signature}, "
+                    f"but {study.path} defines {signature}; use distinct agent names"
+                )
+            existing["self_play"] = bool(existing["self_play"] or row["self_play"])
+    return list(combined.values())
+
+
+def _agent_signature(row: dict[str, object]) -> dict[str, object]:
+    return {
+        field: row[field]
+        for field in (
+            "kind",
+            "iterations",
+            "rollout_depth",
+            "exploration",
+            "heuristic",
+        )
+    }
+
+
+def _fields_with_provenance(fields: tuple[str, ...]) -> tuple[str, ...]:
+    if not fields or fields[0] != "match_number":
+        raise ValueError("match analysis tables must begin with match_number")
+    return (fields[0], *_PROVENANCE_FIELDS, *fields[1:])
+
+
 def extract_tournament(
-    input_path: Path,
+    input_paths: Path | Sequence[Path],
     output_dir: Path | None = None,
     *,
     overwrite: bool = False,
 ) -> dict[str, object]:
-    """Dispatch a version-1 tournament trace to its game-specific extractor."""
+    """Combine compatible version-1 tournament or batch traces into analysis-ready tables."""
 
-    input_path = input_path.resolve()
+    paths = _normalize_input_paths(input_paths)
+    studies = _load_study_sources(paths)
+    agent_rows = _combined_agent_rows(studies)
     if output_dir is None:
-        output_dir = input_path.parent / input_path.stem / "data"
+        if len(paths) > 1:
+            raise ValueError("--output-dir is required when extracting multiple studies")
+        output_dir = paths[0].parent / paths[0].stem / "data"
     else:
         output_dir = output_dir.resolve()
-    with input_path.open(encoding="utf-8") as source:
-        header_line = source.readline()
-        if not header_line:
-            raise ValueError("tournament trace is empty")
-        header = _parse_json_record(header_line, 1)
-        game_name = _validate_header(header)
-        game = _trace_game(game_name)
-        if isinstance(game, Boop):
-            extract_match = _extract_boop_match
-            game_output_files = _BOOP_OUTPUT_FILES
-            game_writer_fields = {
-                "boop_matches": _BOOP_MATCH_FIELDS,
-                "turns": _TURN_FIELDS,
-                "boops": _BOOP_FIELDS,
-                "resolutions": _RESOLUTION_FIELDS,
-                "winning_lines": _WINNING_LINE_FIELDS,
-            }
-            game_metadata = {
-                "zones": {
-                    "center": "rows 2-3 and columns 2-3 (4 cells)",
-                    "middle": "remaining cells inside rows 1-4 and columns 1-4 (12 cells)",
-                    "outer": "board perimeter (20 cells)",
-                },
-                "strategic_phases": {
-                    "all_kittens": "neither player has acquired a cat",
-                    "one_player_has_cats": "exactly one player has acquired at least one cat",
-                    "both_players_have_cats": "both players have acquired at least one cat",
-                },
-            }
-        elif isinstance(game, SpiritsOfTheForest):
-            extract_match = _extract_spotf_match
-            game_output_files = _SPOTF_OUTPUT_FILES
-            game_writer_fields = {
-                "spotf_matches": _SPOTF_MATCH_FIELDS,
-                "actions": _SPOTF_ACTION_FIELDS,
-                "player_turns": _PLAYER_TURN_FIELDS,
-                "tile_takes": _TILE_TAKE_FIELDS,
-                "gemstone_actions": _GEMSTONE_ACTION_FIELDS,
-                "categories": _CATEGORY_FIELDS,
-            }
-            game_metadata = {
-                "turn_semantics": {
-                    "ply": "one internal game-tree action",
-                    "physical_turn": "consecutive actions by one player before control changes",
-                },
-                "scoring_categories": {
-                    "spirit": "nine spirit majorities",
-                    "power_source": "fire, moon, and sun majorities",
-                },
-            }
-        else:
-            _analyze_trace(game, ())
-            raise AssertionError("unavailable analysis must return an error")
-        output_files = _COMMON_OUTPUT_FILES | game_output_files
-        targets = {name: output_dir / filename for name, filename in output_files.items()}
-        existing = sorted(str(path) for path in targets.values() if path.exists())
-        if existing and not overwrite:
-            raise FileExistsError(
-                "extraction output already exists; use --overwrite to replace: "
-                + ", ".join(existing)
-            )
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        row_counts = {name: 0 for name in output_files if name != "manifest"}
-        processed_matches = 0
-        truncated_last_line = False
-        seen_matches: set[int] = set()
-        declared_matches = _integer_field(header, "total_matches", "tournament header")
-        raw_agents = header.get("agents")
-        if not isinstance(raw_agents, list):
-            raise TypeError("tournament header agents must be a list")
-        agent_names = {
-            _string_field(agent, "name", "tournament agent") for agent in raw_agents
+    game_name = studies[0].game_name
+    game = _trace_game(game_name)
+    if isinstance(game, Boop):
+        extract_match = _extract_boop_match
+        game_output_files = _BOOP_OUTPUT_FILES
+        game_writer_fields = {
+            "boop_matches": _BOOP_MATCH_FIELDS,
+            "turns": _TURN_FIELDS,
+            "boops": _BOOP_FIELDS,
+            "resolutions": _RESOLUTION_FIELDS,
+            "winning_lines": _WINNING_LINE_FIELDS,
         }
+        game_metadata = {
+            "zones": {
+                "center": "rows 2-3 and columns 2-3 (4 cells)",
+                "middle": "remaining cells inside rows 1-4 and columns 1-4 (12 cells)",
+                "outer": "board perimeter (20 cells)",
+            },
+            "strategic_phases": {
+                "all_kittens": "neither player has acquired a cat",
+                "one_player_has_cats": "exactly one player has acquired at least one cat",
+                "both_players_have_cats": "both players have acquired at least one cat",
+            },
+        }
+    elif isinstance(game, SpiritsOfTheForest):
+        extract_match = _extract_spotf_match
+        game_output_files = _SPOTF_OUTPUT_FILES
+        game_writer_fields = {
+            "spotf_matches": _SPOTF_MATCH_FIELDS,
+            "actions": _SPOTF_ACTION_FIELDS,
+            "player_turns": _PLAYER_TURN_FIELDS,
+            "tile_takes": _TILE_TAKE_FIELDS,
+            "gemstone_actions": _GEMSTONE_ACTION_FIELDS,
+            "categories": _CATEGORY_FIELDS,
+        }
+        game_metadata = {
+            "turn_semantics": {
+                "ply": "one internal game-tree action",
+                "physical_turn": "consecutive actions by one player before control changes",
+            },
+            "scoring_categories": {
+                "spirit": "nine spirit majorities",
+                "power_source": "fire, moon, and sun majorities",
+            },
+        }
+    else:
+        _analyze_trace(game, ())
+        raise AssertionError("unavailable analysis must return an error")
 
-        with tempfile.TemporaryDirectory(prefix=".extract-", dir=output_dir) as temporary:
-            temporary_dir = Path(temporary)
-            with ExitStack() as stack:
-                writers = {
-                    "agents": _csv_writer(stack, temporary_dir / "agents.csv", _AGENT_FIELDS),
-                    "matches": _csv_writer(stack, temporary_dir / "matches.csv", _MATCH_FIELDS),
-                    **{
-                        name: _csv_writer(
-                            stack,
-                            temporary_dir / game_output_files[name],
-                            fields,
-                        )
-                        for name, fields in game_writer_fields.items()
-                    },
-                }
-                for agent in raw_agents:
-                    writers["agents"].writerow(_agent_row(agent))
-                    row_counts["agents"] += 1
+    output_files = _COMMON_OUTPUT_FILES | game_output_files
+    targets = {name: output_dir / filename for name, filename in output_files.items()}
+    existing = sorted(str(path) for path in targets.values() if path.exists())
+    if existing and not overwrite:
+        raise FileExistsError(
+            "extraction output already exists; use --overwrite to replace: "
+            + ", ".join(existing)
+        )
 
-                for line_number, line in enumerate(source, start=2):
-                    if not line.strip():
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError as error:
-                        if not line.endswith("\n"):
-                            truncated_last_line = True
-                            break
-                        raise ValueError(
-                            f"invalid JSON on tournament trace line {line_number}: {error.msg}"
-                        ) from error
-                    context = _extract_common_match(
-                        record,
-                        writers,
-                        row_counts,
-                        agent_names,
-                        seen_matches,
+    output_dir.mkdir(parents=True, exist_ok=True)
+    row_counts = {name: 0 for name in output_files if name != "manifest"}
+    processed_matches = 0
+    declared_matches = sum(study.declared_matches for study in studies)
+    pairing_offset = 0
+    source_summaries = []
+
+    with tempfile.TemporaryDirectory(prefix=".extract-", dir=output_dir) as temporary:
+        temporary_dir = Path(temporary)
+        with ExitStack() as stack:
+            writers = {
+                "agents": _csv_writer(stack, temporary_dir / "agents.csv", _AGENT_FIELDS),
+                "studies": _csv_writer(stack, temporary_dir / "studies.csv", _STUDY_FIELDS),
+                "matches": _csv_writer(
+                    stack,
+                    temporary_dir / "matches.csv",
+                    _MATCH_FIELDS,
+                    with_provenance=True,
+                ),
+                **{
+                    name: _csv_writer(
+                        stack,
+                        temporary_dir / game_output_files[name],
+                        _fields_with_provenance(fields),
+                        with_provenance=True,
                     )
-                    extract_match(context, writers, row_counts, game)
-                    processed_matches += 1
-
-            complete = processed_matches == declared_matches and not truncated_last_line
-            manifest = {
-                "schema_version": 1,
-                "source": str(input_path),
-                "output_dir": str(output_dir),
-                "game": game_name,
-                "tournament_schema_version": header["schema_version"],
-                "analysis_schema_version": 1,
-                "declared_matches": declared_matches,
-                "processed_matches": processed_matches,
-                "complete": complete,
-                "truncated_last_line": truncated_last_line,
-                "row_counts": row_counts,
-                **game_metadata,
-                "tables": output_files,
+                    for name, fields in game_writer_fields.items()
+                },
             }
-            (temporary_dir / "manifest.json").write_text(
-                json.dumps(manifest, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            for name, target in targets.items():
-                (temporary_dir / output_files[name]).replace(target)
+            match_writers = [writers["matches"]] + [
+                writers[name] for name in game_writer_fields
+            ]
+            for agent in agent_rows:
+                writers["agents"].writerow(agent)
+                row_counts["agents"] += 1
+
+            for study in studies:
+                study_processed = 0
+                study_truncated = False
+                study_pairing_max = 0
+                seen_source_matches: set[int] = set()
+                with study.path.open(encoding="utf-8") as source:
+                    source.readline()
+                    for line_number, line in enumerate(source, start=2):
+                        if not line.strip():
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError as error:
+                            if not line.endswith("\n"):
+                                study_truncated = True
+                                break
+                            raise ValueError(
+                                f"invalid JSON in {study.path} on line {line_number}: "
+                                f"{error.msg}"
+                            ) from error
+                        source_match_number = _integer_field(
+                            record, "match_number", f"match record in {study.path}"
+                        )
+                        for writer in match_writers:
+                            writer.select_match(study.study_id, source_match_number)
+                        processed_matches += 1
+                        study_processed += 1
+                        context = _extract_common_match(
+                            record,
+                            writers,
+                            row_counts,
+                            study.agent_names,
+                            seen_source_matches,
+                            global_match_number=processed_matches,
+                            pairing_offset=pairing_offset,
+                        )
+                        source_pairing = _integer_field(
+                            record,
+                            "pairing_number",
+                            f"match {source_match_number} in {study.path}",
+                        )
+                        study_pairing_max = max(study_pairing_max, source_pairing)
+                        extract_match(context, writers, row_counts, game)
+
+                study_complete = (
+                    study_processed == study.declared_matches and not study_truncated
+                )
+                source_summary = {
+                    "study_id": study.study_id,
+                    "study_type": study.study_type,
+                    "source": str(study.path),
+                    "tournament_schema_version": study.header["schema_version"],
+                    "declared_matches": study.declared_matches,
+                    "processed_matches": study_processed,
+                    "complete": study_complete,
+                    "truncated_last_line": study_truncated,
+                    "agents": len(study.raw_agents),
+                    "base_seed": study.header.get("seed", ""),
+                    "matches_per_pair": study.header.get("matches_per_pair", ""),
+                }
+                writers["studies"].writerow(source_summary)
+                row_counts["studies"] += 1
+                source_summaries.append(source_summary)
+                declared_pairings = study.header.get("total_pairings", 0)
+                if isinstance(declared_pairings, bool) or not isinstance(
+                    declared_pairings, int
+                ):
+                    raise TypeError(
+                        f"tournament header total_pairings must be an integer: {study.path}"
+                    )
+                pairing_offset += max(study_pairing_max, declared_pairings)
+
+        complete = all(bool(source["complete"]) for source in source_summaries)
+        truncated_last_line = any(
+            bool(source["truncated_last_line"]) for source in source_summaries
+        )
+        manifest = {
+            "schema_version": 1,
+            "source": str(paths[0]) if len(paths) == 1 else None,
+            "sources": source_summaries,
+            "output_dir": str(output_dir),
+            "game": game_name,
+            "tournament_schema_version": 1,
+            "analysis_schema_version": 2,
+            "declared_matches": declared_matches,
+            "processed_matches": processed_matches,
+            "complete": complete,
+            "truncated_last_line": truncated_last_line,
+            "row_counts": row_counts,
+            **game_metadata,
+            "tables": output_files,
+        }
+        (temporary_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        for name, target in targets.items():
+            (temporary_dir / output_files[name]).replace(target)
 
     return {
-        "input": str(input_path),
+        "input": str(paths[0]),
+        "inputs": [str(path) for path in paths],
         "output_dir": str(output_dir),
         "declared_matches": declared_matches,
         "processed_matches": processed_matches,
         "complete": complete,
         "truncated_last_line": truncated_last_line,
         "row_counts": row_counts,
+        "studies": source_summaries,
     }
 
 
 def _extract_common_match(
     record: object,
-    writers: dict[str, csv.DictWriter],
+    writers: dict[str, _CsvWriter],
     row_counts: dict[str, int],
     agent_names: set[str],
     seen_matches: set[int],
+    *,
+    global_match_number: int,
+    pairing_offset: int,
 ) -> _MatchContext:
     if not isinstance(record, dict) or record.get("record_type") != "match":
         raise ValueError("every tournament record after the header must be a match")
-    match_number = _integer_field(record, "match_number", "match record")
-    if match_number in seen_matches:
-        raise ValueError(f"duplicate tournament match_number {match_number}")
-    seen_matches.add(match_number)
+    source_match_number = _integer_field(record, "match_number", "match record")
+    if source_match_number in seen_matches:
+        raise ValueError(f"duplicate tournament match_number {source_match_number}")
+    seen_matches.add(source_match_number)
+    match_number = global_match_number
 
     agent_a = _string_field(record, "agent_a", f"match {match_number}")
     agent_b = _string_field(record, "agent_b", f"match {match_number}")
@@ -572,7 +821,11 @@ def _extract_common_match(
     writers["matches"].writerow(
         {
             "match_number": match_number,
-            "pairing_number": _integer_field(record, "pairing_number", f"match {match_number}"),
+            "pairing_number": pairing_offset
+            + _integer_field(record, "pairing_number", f"match {source_match_number}"),
+            "source_pairing_number": _integer_field(
+                record, "pairing_number", f"match {source_match_number}"
+            ),
             "pairing_match_number": _integer_field(
                 record, "pairing_match_number", f"match {match_number}"
             ),
@@ -606,7 +859,7 @@ def _extract_common_match(
 
 def _extract_boop_match(
     context: _MatchContext,
-    writers: dict[str, csv.DictWriter],
+    writers: dict[str, _CsvWriter],
     row_counts: dict[str, int],
     game: Boop,
 ) -> None:
@@ -677,7 +930,7 @@ def _extract_boop_match(
 
 def _extract_spotf_match(
     context: _MatchContext,
-    writers: dict[str, csv.DictWriter],
+    writers: dict[str, _CsvWriter],
     row_counts: dict[str, int],
     game: SpiritsOfTheForest,
 ) -> None:
@@ -771,7 +1024,7 @@ def _extract_spotf_match(
 
 def _write_spotf_action(
     context: _MatchContext,
-    writers: dict[str, csv.DictWriter],
+    writers: dict[str, _CsvWriter],
     row_counts: dict[str, int],
     move: Move,
     turn: dict[str, object],
@@ -858,7 +1111,7 @@ def _write_spotf_action(
 
 def _write_gemstone_action(
     context: _MatchContext,
-    writers: dict[str, csv.DictWriter],
+    writers: dict[str, _CsvWriter],
     row_counts: dict[str, int],
     move: Move,
     turn: dict[str, object],
@@ -897,7 +1150,7 @@ def _write_gemstone_action(
 
 def _write_spotf_player_turn(
     context: _MatchContext,
-    writers: dict[str, csv.DictWriter],
+    writers: dict[str, _CsvWriter],
     row_counts: dict[str, int],
     actions: list[tuple[Move, dict[str, object]]],
 ) -> None:
@@ -971,7 +1224,7 @@ def _spotf_action_kind(action: object) -> str:
 
 
 def _write_turn(
-    writers: dict[str, csv.DictWriter],
+    writers: dict[str, _CsvWriter],
     row_counts: dict[str, int],
     match_number: int,
     total_plies: int,
@@ -1209,6 +1462,9 @@ def _trace_position(raw: object) -> BoopPosition:
 def _agent_row(raw: object) -> dict[str, object]:
     if not isinstance(raw, dict):
         raise TypeError("tournament agent must be an object")
+    self_play = raw.get("self_play", False)
+    if not isinstance(self_play, bool):
+        raise TypeError("tournament agent self_play must be a boolean")
     return {
         "agent_name": _string_field(raw, "name", "tournament agent"),
         "kind": _string_field(raw, "type", "tournament agent"),
@@ -1216,7 +1472,7 @@ def _agent_row(raw: object) -> dict[str, object]:
         "rollout_depth": raw.get("rollout_depth", ""),
         "exploration": raw.get("exploration", ""),
         "heuristic": "" if raw.get("heuristic") is None else raw["heuristic"],
-        "self_play": raw.get("self_play", False),
+        "self_play": self_play,
     }
 
 
@@ -1240,11 +1496,13 @@ def _csv_writer(
     stack: ExitStack,
     path: Path,
     fields: tuple[str, ...],
-) -> csv.DictWriter:
+    *,
+    with_provenance: bool = False,
+) -> _CsvWriter:
     output = stack.enter_context(path.open("w", encoding="utf-8", newline=""))
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
-    return writer
+    return _CsvWriter(writer, with_provenance=with_provenance)
 
 
 def _validate_header(header: object) -> str:

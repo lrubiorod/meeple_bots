@@ -104,6 +104,15 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual([event.match_number for event in started], [1, 2, 3, 4])
         self.assertEqual([event.match_number for event in completed], [1, 2, 3, 4])
         self.assertTrue(all(event.result is None for event in started))
+        self.assertTrue(all(event.match_result is None for event in started))
+        self.assertTrue(all(event.match_result is not None for event in completed))
+        self.assertTrue(
+            all(
+                event.match_result is not None
+                and len(event.match_result.moves) == event.match_result.plies
+                for event in completed
+            )
+        )
         self.assertEqual(
             [event.result for event in completed],
             list(result.games),
@@ -1149,6 +1158,113 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(payload["agents"]["b"]["name"], "strategic")
         self.assertEqual(payload["agents"]["b"]["heuristic"], 1)
 
+    def test_cli_batch_writes_an_extractable_jsonl_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / "batches" / "boop-random.jsonl"
+            output = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                exit_code = main(
+                    [
+                        "batch",
+                        "--game",
+                        "boop",
+                        "--matches",
+                        "2",
+                        "--agent-b",
+                        "random",
+                        "--workers",
+                        "2",
+                        "--seed",
+                        "91",
+                        "--max-plies",
+                        "1000",
+                        "--output",
+                        str(trace),
+                        "--json",
+                    ]
+                )
+
+            summary = json.loads(output.getvalue())
+            records = [json.loads(line) for line in trace.read_text().splitlines()]
+            tournament_trace = self._create_small_boop_tournament(root)
+            extraction_dir = root / "combined" / "data"
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                extraction_exit = main(
+                    [
+                        "extract",
+                        "--input",
+                        str(trace),
+                        str(tournament_trace),
+                        "--output-dir",
+                        str(extraction_dir),
+                    ]
+                )
+            studies = self._read_csv(extraction_dir / "studies.csv")
+            matches = self._read_csv(extraction_dir / "matches.csv")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(summary["output"], str(trace))
+        self.assertEqual(records[0]["record_type"], "tournament")
+        self.assertEqual(records[0]["study_type"], "batch")
+        self.assertEqual(records[0]["total_pairings"], 1)
+        self.assertEqual(records[0]["total_matches"], 2)
+        self.assertEqual(
+            records[0]["agents"],
+            [
+                {
+                    "name": "random",
+                    "type": "random",
+                    "self_play": True,
+                }
+            ],
+        )
+        self.assertEqual([record["match_number"] for record in records[1:]], [1, 2])
+        self.assertEqual(
+            [record["pairing_match_number"] for record in records[1:]],
+            [1, 2],
+        )
+        self.assertTrue(all(record["result"]["moves"] for record in records[1:]))
+        self.assertEqual(extraction_exit, 0)
+        self.assertEqual(len(matches), 3)
+        self.assertEqual(
+            {study["study_type"] for study in studies},
+            {"batch", "tournament"},
+        )
+
+    def test_cli_batch_protects_an_existing_trace_unless_overwrite_is_used(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory, "batch.jsonl")
+            trace.write_text("keep me\n", encoding="utf-8")
+            arguments = [
+                "batch",
+                "--game",
+                "tic-tac-toe",
+                "--matches",
+                "1",
+                "--agent-b",
+                "random",
+                "--workers",
+                "1",
+                "--output",
+                str(trace),
+            ]
+            errors = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                protected_exit = main(arguments)
+
+            self.assertEqual(protected_exit, 1)
+            self.assertIn("--overwrite", errors.getvalue())
+            self.assertEqual(trace.read_text(encoding="utf-8"), "keep me\n")
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                overwritten_exit = main([*arguments, "--overwrite"])
+            records = [json.loads(line) for line in trace.read_text().splitlines()]
+
+        self.assertEqual(overwritten_exit, 0)
+        self.assertEqual(records[0]["study_type"], "batch")
+        self.assertEqual(len(records), 2)
+
     def test_cli_tournament_runs_round_robin_and_selected_self_play(self) -> None:
         output = io.StringIO()
         progress = io.StringIO()
@@ -1203,6 +1319,7 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(summary["standings"]["alpha"]["self_play_games"], 2)
         self.assertEqual(records[0]["record_type"], "tournament")
         self.assertEqual(records[0]["schema_version"], 1)
+        self.assertEqual(records[0]["study_type"], "tournament")
         self.assertEqual(records[0]["workers"], 1)
         self.assertEqual(len(records), 5)
         self.assertEqual(
@@ -1473,6 +1590,100 @@ class MatchApiTests(unittest.TestCase):
                 with Path(output_dir, filename).open(encoding="utf-8", newline="") as source:
                     header = next(csv.reader(source))
                 self.assertEqual(len(header), len(set(header)), filename)
+
+    def test_cli_extract_combines_compatible_studies_with_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_trace = self._create_small_spotf_tournament(root)
+            second_trace = root / "spotf-replica.jsonl"
+            second_trace.write_text(first_trace.read_text(encoding="utf-8"), encoding="utf-8")
+            output_dir = root / "combined" / "data"
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "extract",
+                        "--input",
+                        str(first_trace),
+                        str(second_trace),
+                        "--output-dir",
+                        str(output_dir),
+                        "--json",
+                    ]
+                )
+
+            summary = json.loads(output.getvalue())
+            manifest = json.loads((output_dir / "manifest.json").read_text())
+            studies = self._read_csv(output_dir / "studies.csv")
+            agents = self._read_csv(output_dir / "agents.csv")
+            matches = self._read_csv(output_dir / "matches.csv")
+            categories = self._read_csv(output_dir / "categories.csv")
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(summary["processed_matches"], 2)
+            self.assertEqual(len(summary["inputs"]), 2)
+            self.assertEqual(len(studies), 2)
+            self.assertEqual(len(agents), 2)
+            self.assertEqual([row["match_number"] for row in matches], ["1", "2"])
+            self.assertEqual(
+                [row["source_match_number"] for row in matches],
+                ["1", "1"],
+            )
+            self.assertEqual(
+                [row["pairing_number"] for row in matches],
+                ["1", "2"],
+            )
+            self.assertEqual(
+                {row["study_id"] for row in matches},
+                {"spotf-study", "spotf-replica"},
+            )
+            self.assertEqual(
+                {row["study_id"] for row in categories},
+                {"spotf-study", "spotf-replica"},
+            )
+            self.assertIsNone(manifest["source"])
+            self.assertEqual(len(manifest["sources"]), 2)
+            self.assertEqual(manifest["analysis_schema_version"], 2)
+            self.assertEqual(manifest["row_counts"]["studies"], 2)
+
+    def test_cli_extract_rejects_conflicting_agent_names_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_trace = self._create_small_spotf_tournament(root)
+            records = first_trace.read_text(encoding="utf-8").splitlines()
+            header = json.loads(records[0])
+            header["agents"][0] = {
+                "name": "alpha",
+                "type": "mcts",
+                "iterations": 5000,
+                "rollout_depth": 32,
+                "exploration": 2**0.5,
+                "heuristic": 0,
+                "self_play": False,
+            }
+            conflicting_trace = root / "spotf-conflict.jsonl"
+            conflicting_trace.write_text(
+                "\n".join([json.dumps(header), *records[1:]]) + "\n",
+                encoding="utf-8",
+            )
+            output_dir = root / "combined" / "data"
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                exit_code = main(
+                    [
+                        "extract",
+                        "--input",
+                        str(first_trace),
+                        str(conflicting_trace),
+                        "--output-dir",
+                        str(output_dir),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn('agent "alpha" has conflicting configurations', errors.getvalue())
+            self.assertIn("use distinct agent names", errors.getvalue())
+            self.assertFalse(output_dir.exists())
 
     def test_cli_extract_accepts_a_partial_trace_and_ignores_a_truncated_tail(
         self,

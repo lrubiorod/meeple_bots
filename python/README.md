@@ -183,10 +183,10 @@ experiments are starting points, not playing-strength guarantees. See the
 | --- | --- | --- |
 | `gui` | Play or watch a local browser match. | Interactive web page |
 | `match` | Run and display one match. | Terminal text or JSON |
-| `batch` | Compare two automated participants. | Progress and aggregate result |
+| `batch` | Compare two automated participants. | Summary and optional JSONL trace |
 | `analyze` | Sample game structure and calibrate MCTS. | Evaluation report |
 | `tournament` | Run configured round-robin pairings. | JSONL trace |
-| `extract` | Convert a tournament trace into tables. | Manifest and CSV files |
+| `extract` | Convert tournament or batch traces into tables. | Manifest and CSV files |
 | `report` | Build statistics and figures from extracted tables. | HTML, JSON, PNG, and CSV |
 
 Use `meeple-bots COMMAND --help` for the complete options and defaults installed in the active
@@ -270,6 +270,22 @@ meeple-bots batch --game boop --matches 20 \
 Use `--no-alternate-sides` only when keeping agent A in seat 0 is intentional. Batch summaries are
 participant-oriented, so normal comparisons should leave alternation enabled.
 
+Use `--output` to preserve every action in an extract-compatible JSONL trace:
+
+```bash
+meeple-bots batch --game boop --matches 100 \
+  --agent-a mcts --agent-a-config configs/mcts/template.toml \
+  --agent-b mcts --agent-b-config configs/mcts/heuristic.toml \
+  --workers auto --seed 42 \
+  --output results/batches/boop-comparison.jsonl
+```
+
+The trace uses the tournament schema with one pairing and marks its header with
+`"study_type": "batch"`. It is written incrementally in deterministic match order and can be
+passed directly to `extract`. Existing files are protected unless `--overwrite` is supplied.
+`--json` continues to control the summary printed to standard output and can be used together with
+`--output`.
+
 ### Analyze a game
 
 ```bash
@@ -284,8 +300,8 @@ that duration. Its measurements, fields, and interpretation are kept in the
 
 ## Run a study
 
-Use a tournament when more than two configurations must be compared or when every action trace
-must be preserved for later analysis.
+Use a tournament when more than two configurations must be compared. Both tournaments and batches
+created with `--output` preserve every action for later analysis.
 
 ```text
 tournament TOML
@@ -394,12 +410,48 @@ meeple-bots extract \
   --input results/tournaments/spotf-study.jsonl
 ```
 
+Compatible studies can be combined into one extraction. Inputs may follow one `--input` or repeat
+the option:
+
+```bash
+meeple-bots extract \
+  --input results/tournaments/spotf-study-1.jsonl \
+          results/tournaments/spotf-study-2.jsonl \
+  --input results/tournaments/spotf-study-3.jsonl \
+  --output-dir results/tournaments/spotf-combined/data
+```
+
+Batch traces can be extracted alone or mixed with tournament traces:
+
+```bash
+meeple-bots extract \
+  --input results/batches/spotf-comparison.jsonl \
+          results/tournaments/spotf-study.jsonl \
+  --output-dir results/spotf-combined/data
+```
+
+Multiple inputs must use the same game and tournament schema. An agent name may appear in several
+studies only when its kind, iterations, rollout depth, exploration, and heuristic are identical.
+Conflicting definitions stop extraction before output is written; studies or matches are never
+silently excluded. Give genuinely different configurations distinct names before combining them.
+
+Combined matches receive a new global `match_number` while retaining `study_id` and
+`source_match_number`. Pairings are likewise renumbered globally. `studies.csv` records every input,
+its completion status, and processed match count. `manifest.json` stores the same information in
+its `sources` list. The original single-input behavior remains available without `--output-dir`;
+multiple inputs require an explicit destination.
+
+Reports over combined data give every recorded match equal weight. When source studies use
+different agents or numbers of matches, use the `study_id` column for source-level comparisons and
+do not interpret the aggregate win rate as though every agent had faced an identical schedule.
+
 The default output is `results/tournaments/boop-study/data/`. Use `--output-dir PATH` to override
 it. Existing known outputs are protected unless `--overwrite` is supplied.
 
-Extraction is registered for Boop and SPOTF. It starts with three generic tournament tables:
+Extraction is registered for Boop and SPOTF. It starts with four generic study tables:
 
-- `manifest.json`: schemas, completeness, table names, and row counts;
+- `manifest.json`: sources, schemas, completeness, table names, and row counts;
+- `studies.csv`: one row per source trace, including whether it came from a batch or tournament;
 - `agents.csv`: one row per configured agent;
 - `matches.csv`: game-independent outcomes, seats, durations, and utilities.
 

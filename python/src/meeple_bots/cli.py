@@ -148,6 +148,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="alternate_sides",
         help="keep agent A as player 0 in every match",
     )
+    batch.add_argument(
+        "--output",
+        type=Path,
+        help="save full match traces as extract-compatible JSONL",
+    )
+    batch.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an existing trace file instead of refusing to run",
+    )
     batch.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
     tournament = commands.add_parser(
@@ -174,13 +184,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     extract = commands.add_parser(
         "extract",
-        help="extract game-specific analysis tables from a tournament trace",
+        help="extract game-specific analysis tables from tournament or batch traces",
     )
-    extract.add_argument("--input", type=Path, required=True)
+    extract.add_argument(
+        "--input",
+        type=Path,
+        nargs="+",
+        action="extend",
+        required=True,
+        help="one or more compatible tournament or batch JSONL traces",
+    )
     extract.add_argument(
         "--output-dir",
         type=Path,
-        help="write tables here instead of beside the tournament trace",
+        help="output location; required for multiple study traces",
     )
     extract.add_argument(
         "--overwrite",
@@ -191,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = commands.add_parser(
         "report",
-        help="generate statistics and figures from extracted tournament tables",
+        help="generate statistics and figures from extracted study tables",
     )
     report.add_argument("--input", type=Path, required=True)
     report.add_argument(
@@ -321,7 +338,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _print_extraction_summary(summary: dict[str, object]) -> None:
-    print(f"Input: {summary['input']}")
+    inputs = summary.get("inputs", [summary["input"]])
+    print(f"Inputs ({len(inputs)}):")
+    for input_path in inputs:
+        print(f"  {input_path}")
     print(f"Output directory: {summary['output_dir']}")
     print(
         f"Matches: {summary['processed_matches']}/{summary['declared_matches']} "
@@ -445,6 +465,7 @@ def _run_tournament(args: argparse.Namespace) -> int:
             {
                 "record_type": "tournament",
                 "schema_version": 1,
+                "study_type": "tournament",
                 "game": _game_name(config.game),
                 "output": str(output_path),
                 "matches_per_pair": config.matches_per_pair,
@@ -497,27 +518,20 @@ def _run_tournament(args: argparse.Namespace) -> int:
                     winner,
                 )
 
-            players = (
-                [job.agent_a.name, job.agent_b.name]
-                if job.agent_a_player == 0
-                else [job.agent_b.name, job.agent_a.name]
-            )
             _write_jsonl(
                 output,
-                {
-                    "record_type": "match",
-                    "match_number": job.match_number,
-                    "pairing_number": job.pairing_number,
-                    "pairing_match_number": job.pairing_match_number,
-                    "agent_a": job.agent_a.name,
-                    "agent_b": job.agent_b.name,
-                    "self_play": job.self_play,
-                    "agent_a_player": job.agent_a_player,
-                    "players": players,
-                    "winner": winner,
-                    "duration_seconds": outcome.duration_seconds,
-                    "result": _result_dict(result),
-                },
+                _trace_match_dict(
+                    result=result,
+                    match_number=job.match_number,
+                    pairing_number=job.pairing_number,
+                    pairing_match_number=job.pairing_match_number,
+                    agent_a=job.agent_a.name,
+                    agent_b=job.agent_b.name,
+                    self_play=job.self_play,
+                    agent_a_player=job.agent_a_player,
+                    winner=winner,
+                    duration_seconds=outcome.duration_seconds,
+                ),
             )
             print(
                 f"[{job.match_number}/{total_matches}] "
@@ -868,6 +882,36 @@ def _write_jsonl(output, value: dict[str, object]) -> None:
     output.flush()
 
 
+def _trace_match_dict(
+    *,
+    result: MatchResult,
+    match_number: int,
+    pairing_number: int,
+    pairing_match_number: int,
+    agent_a: str,
+    agent_b: str,
+    self_play: bool,
+    agent_a_player: int,
+    winner: str | None,
+    duration_seconds: float,
+) -> dict[str, object]:
+    players = [agent_a, agent_b] if agent_a_player == 0 else [agent_b, agent_a]
+    return {
+        "record_type": "match",
+        "match_number": match_number,
+        "pairing_number": pairing_number,
+        "pairing_match_number": pairing_match_number,
+        "agent_a": agent_a,
+        "agent_b": agent_b,
+        "self_play": self_play,
+        "agent_a_player": agent_a_player,
+        "players": players,
+        "winner": winner,
+        "duration_seconds": duration_seconds,
+        "result": _result_dict(result),
+    }
+
+
 def _print_tournament_summary(summary: dict[str, object]) -> None:
     print(f"Game: {summary['game']}")
     print(f"Agents: {summary['agents']}")
@@ -894,6 +938,8 @@ def _run_batch(
 ) -> int:
     agent_a, name_a = _batch_agent(args.agent_a, args.agent_a_config, "--agent-a-config")
     agent_b, name_b = _batch_agent(args.agent_b, args.agent_b_config, "--agent-b-config")
+    if args.overwrite and args.output is None:
+        raise ValueError("--overwrite requires --output")
     batch = Batch(
         game=game,
         agent_a=agent_a,
@@ -905,19 +951,117 @@ def _run_batch(
         workers=args.workers,
     )
     _print_batch_setup(batch, game, name_a, agent_a, name_b, agent_b)
-    result = batch.run(
-        progress=lambda event: _print_batch_progress(event, name_a, name_b)
-    )
+    if args.output is None:
+        result = batch.run(
+            progress=lambda event: _print_batch_progress(event, name_a, name_b)
+        )
+    else:
+        trace_agents, self_play = _batch_trace_agents(name_a, agent_a, name_b, agent_b)
+        if args.output.exists() and not args.overwrite:
+            raise FileExistsError(
+                f"batch trace already exists; use --overwrite to replace: {args.output}"
+            )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        output_mode = "w" if args.overwrite else "x"
+        with args.output.open(output_mode, encoding="utf-8") as trace_output:
+            _write_jsonl(
+                trace_output,
+                {
+                    "record_type": "tournament",
+                    "schema_version": 1,
+                    "study_type": "batch",
+                    "game": _game_name(game),
+                    "output": str(args.output),
+                    "matches_per_pair": batch.matches,
+                    "seed": batch.seed,
+                    "max_plies": batch.max_plies,
+                    "workers": min(resolve_workers(batch.workers), batch.matches),
+                    "total_pairings": 1,
+                    "total_matches": batch.matches,
+                    "agents": trace_agents,
+                },
+            )
+
+            def report_progress(event: BatchProgress) -> None:
+                _print_batch_progress(event, name_a, name_b)
+                if event.status is not BatchProgressStatus.COMPLETED:
+                    return
+                if event.result is None or event.match_result is None:
+                    raise RuntimeError("completed batch progress is missing its match trace")
+                winner = (
+                    None
+                    if event.result.winner is None
+                    else "agent_a"
+                    if event.result.winner == 0
+                    else "agent_b"
+                )
+                _write_jsonl(
+                    trace_output,
+                    _trace_match_dict(
+                        result=event.match_result,
+                        match_number=event.match_number,
+                        pairing_number=1,
+                        pairing_match_number=event.match_number,
+                        agent_a=name_a,
+                        agent_b=name_b,
+                        self_play=self_play,
+                        agent_a_player=event.agent_a_player,
+                        winner=winner,
+                        duration_seconds=event.result.duration_seconds,
+                    ),
+                )
+
+            result = batch.run(progress=report_progress)
     if args.json:
         print(
             json.dumps(
-                _batch_dict(result, game, name_a, agent_a, name_b, agent_b),
+                _batch_dict(
+                    result,
+                    game,
+                    name_a,
+                    agent_a,
+                    name_b,
+                    agent_b,
+                    output=args.output,
+                ),
                 indent=2,
             )
         )
     else:
-        _print_batch_result(result, game, name_a, agent_a, name_b, agent_b)
+        _print_batch_result(
+            result,
+            game,
+            name_a,
+            agent_a,
+            name_b,
+            agent_b,
+            output=args.output,
+        )
     return 0
+
+
+def _batch_trace_agents(
+    name_a: str,
+    agent_a: RandomAgent | MctsAgent,
+    name_b: str,
+    agent_b: RandomAgent | MctsAgent,
+) -> tuple[list[dict[str, object]], bool]:
+    if name_a == name_b:
+        if agent_a != agent_b:
+            raise ValueError(
+                f'batch agents share the name "{name_a}" but have different configurations; '
+                "use distinct profile names"
+            )
+        description = _batch_agent_dict(name_a, agent_a)
+        description["self_play"] = True
+        return [description], True
+
+    descriptions = []
+    for name, agent in ((name_a, agent_a), (name_b, agent_b)):
+        description = _batch_agent_dict(name, agent)
+        description["self_play"] = False
+        descriptions.append(description)
+    return descriptions, False
 
 
 def _batch_agent(
@@ -1054,8 +1198,10 @@ def _batch_dict(
     agent_a: RandomAgent | MctsAgent,
     name_b: str,
     agent_b: RandomAgent | MctsAgent,
+    *,
+    output: Path | None = None,
 ) -> dict[str, object]:
-    return {
+    payload = {
         "game": _game_name(game),
         "seed": result.seed,
         "matches": result.matches,
@@ -1092,6 +1238,9 @@ def _batch_dict(
             for game_result in result.games
         ],
     }
+    if output is not None:
+        payload["output"] = str(output)
+    return payload
 
 
 def _print_batch_result(
@@ -1101,6 +1250,8 @@ def _print_batch_result(
     agent_a: RandomAgent | MctsAgent,
     name_b: str,
     agent_b: RandomAgent | MctsAgent,
+    *,
+    output: Path | None = None,
 ) -> None:
     print(f"Game: {_game_name(game)}")
     print(f"Matches: {result.matches}")
@@ -1108,6 +1259,8 @@ def _print_batch_result(
     print(f"Alternate sides: {'yes' if result.alternate_sides else 'no'}")
     print(f"Agent A: {_batch_agent_description(name_a, agent_a)}")
     print(f"Agent B: {_batch_agent_description(name_b, agent_b)}")
+    if output is not None:
+        print(f"Trace: {output}")
     print()
     print("Results:")
     print(
