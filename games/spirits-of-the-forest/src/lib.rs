@@ -589,7 +589,9 @@ impl Game for SpiritsOfTheForest {
                 state.collected_this_turn += 1;
                 state.collection_spirit = Some(tile.spirit);
 
-                if state.remaining_tiles() > 0 {
+                if state.remaining_tiles() == 0 {
+                    state.completed_turns += 1;
+                } else {
                     let first_turn = state.completed_turns == 0;
                     if first_turn || tile.spirit_symbols == 2 || state.collected_this_turn == 2 {
                         state.phase = TurnPhase::PlaceGemstone;
@@ -980,6 +982,7 @@ mod tests {
         assert_eq!(game.status(&state), PositionStatus::Terminal);
         assert_eq!(state.next_player(), PlayerId::FIRST);
         assert_eq!(state.remaining_tiles(), 0);
+        assert_eq!(state.completed_turns(), 2);
         assert_eq!(game.legal_actions(&state).count(), 0);
     }
 
