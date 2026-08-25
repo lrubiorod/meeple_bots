@@ -62,6 +62,12 @@ _AGENT_FIELDS = (
     "rollout_depth",
     "exploration",
     "heuristic",
+    "cutoff_evaluator",
+    "cutoff_heuristic",
+    "rollout_policy",
+    "rollout_evaluator",
+    "rollout_heuristic",
+    "rollout_epsilon",
     "self_play",
 )
 
@@ -517,6 +523,12 @@ def _agent_signature(row: dict[str, object]) -> dict[str, object]:
             "rollout_depth",
             "exploration",
             "heuristic",
+            "cutoff_evaluator",
+            "cutoff_heuristic",
+            "rollout_policy",
+            "rollout_evaluator",
+            "rollout_heuristic",
+            "rollout_epsilon",
         )
     }
 
@@ -721,7 +733,7 @@ def extract_tournament(
             "output_dir": str(output_dir),
             "game": game_name,
             "tournament_schema_version": 1,
-            "analysis_schema_version": 2,
+            "analysis_schema_version": 3,
             "declared_matches": declared_matches,
             "processed_matches": processed_matches,
             "complete": complete,
@@ -1465,15 +1477,75 @@ def _agent_row(raw: object) -> dict[str, object]:
     self_play = raw.get("self_play", False)
     if not isinstance(self_play, bool):
         raise TypeError("tournament agent self_play must be a boolean")
+    kind = _string_field(raw, "type", "tournament agent")
+    rollout_policy = raw.get("rollout_policy")
+    if rollout_policy is None:
+        rollout_policy = "uniform_random" if kind == "mcts" else ""
+    if not isinstance(rollout_policy, str):
+        raise TypeError("tournament agent rollout_policy must be a string")
+    if rollout_policy == "epsilon_greedy_heuristic":
+        rollout_policy = "epsilon_greedy"
+    cutoff_kind, cutoff_heuristic = _serialized_evaluator(
+        raw.get("cutoff_evaluator"),
+        fallback_heuristic=raw.get("heuristic"),
+        context="tournament cutoff evaluator",
+        allow_missing=kind != "mcts",
+    )
+    rollout_raw = raw.get("rollout_evaluator")
+    rollout_fallback = (
+        raw.get("heuristic")
+        if rollout_raw is None and rollout_policy in {"greedy", "epsilon_greedy"}
+        else None
+    )
+    rollout_kind, rollout_heuristic = _serialized_evaluator(
+        rollout_raw,
+        fallback_heuristic=rollout_fallback,
+        context="tournament rollout evaluator",
+        allow_missing=True,
+    )
     return {
         "agent_name": _string_field(raw, "name", "tournament agent"),
-        "kind": _string_field(raw, "type", "tournament agent"),
+        "kind": kind,
         "iterations": raw.get("iterations", ""),
         "rollout_depth": raw.get("rollout_depth", ""),
         "exploration": raw.get("exploration", ""),
         "heuristic": "" if raw.get("heuristic") is None else raw["heuristic"],
+        "cutoff_evaluator": cutoff_kind,
+        "cutoff_heuristic": cutoff_heuristic,
+        "rollout_policy": rollout_policy,
+        "rollout_evaluator": rollout_kind,
+        "rollout_heuristic": rollout_heuristic,
+        "rollout_epsilon": (
+            "" if raw.get("rollout_epsilon") is None else raw["rollout_epsilon"]
+        ),
         "self_play": self_play,
     }
+
+
+def _serialized_evaluator(
+    raw: object,
+    *,
+    fallback_heuristic: object,
+    context: str,
+    allow_missing: bool = False,
+) -> tuple[str, object]:
+    if raw is None:
+        if fallback_heuristic is not None:
+            return "game_heuristic", fallback_heuristic
+        return ("", "") if allow_missing else ("neutral", "")
+    if not isinstance(raw, dict):
+        raise TypeError(f"{context} must be an object")
+    kind = raw.get("kind")
+    if kind == "neutral":
+        if raw.get("index") is not None:
+            raise ValueError(f"{context} neutral evaluator cannot have an index")
+        return "neutral", ""
+    if kind != "game_heuristic":
+        raise ValueError(f"{context} kind must be neutral or game_heuristic")
+    index = raw.get("index")
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise TypeError(f"{context} game_heuristic requires an integer index")
+    return "game_heuristic", index
 
 
 def _position_columns(

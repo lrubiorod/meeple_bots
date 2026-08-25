@@ -19,8 +19,8 @@ meeple-bots analyze --game boop --samples 128 --max-depth 256 --seed 42
 meeple-bots analyze --game boop --target-time 5 --seed 42 --json
 meeple-bots analyze --game boop --target-time 1 \
   --agent 'iterations=5000,depth=120' \
-  --agent 'iterations=20000,depth=32,heuristic=0' \
-  --agent-config configs/mcts/heuristic2.toml
+  --agent 'name=rollout-h1,iterations=20000,depth=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
+  --agent-config configs/mcts/heuristic.toml
 ```
 
 From Python:
@@ -145,15 +145,23 @@ meeple-bots analyze --game spotf \
   --agent \
   --agent 'i=5000,d=120' \
   --agent 'name=horizon,i=20000,d=32,h=0' \
+  --agent 'name=informed,i=10000,d=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
   --agent 'iterations=10000,exploration=0.8'
 ```
 
-Supported fields are `name`, `iterations`, `depth` (or `rollout_depth`), `exploration`, and
-`heuristic`. The short aliases `i`, `d`, and `h` are also accepted for iterations, depth, and
-heuristic. Missing values default to 1000 iterations, depth 16, square-root-of-two exploration, and
-no heuristic. A bare `--agent` uses every default. Automatic names encode the effective
-configuration, for example `mcts-i5000-d120` and `mcts-h0-i20000-d32`; a non-default exploration
+Supported fields are `name`, `iterations`, `depth`, `exploration`, cutoff `heuristic` or
+`cutoff_evaluator`, rollout `policy`, `rollout_heuristic`, and `epsilon`. Their short aliases are
+`i`, `d`, `c`, `h` or `ce`, `p`, `rh`, and `e`. `ce` accepts `neutral` or `hINDEX`. Missing values
+default to 1000 iterations, depth 16, square-root-of-two exploration, uniform-random rollouts, and
+neutral cutoff evaluation. A bare `--agent` uses every default. Automatic names encode the
+effective configuration, for example
+`mcts-i5000-d120` and `mcts-h0-i20000-d32`; a non-default exploration
 constant is appended as `-cVALUE`.
+
+`p=random` and `p=uniform` abbreviate uniform-random rollout. `p=greedy` and `p=epsilon` require
+`rh=INDEX`; epsilon-greedy uses `e=0.1` when omitted. `h=INDEX` configures only cutoff evaluation,
+whereas `rh=INDEX` configures only informed rollout selection, so either mechanism can be enabled
+alone or both can use different game heuristics.
 
 Inline agents and `--agent-config` profiles can be mixed in one comparison. Explicit and generated
 names must remain unique. Profiles are preferable when a configuration must be preserved as a

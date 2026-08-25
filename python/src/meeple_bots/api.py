@@ -50,6 +50,62 @@ class RandomAgent:
 
 
 @dataclass(frozen=True, slots=True)
+class NeutralEvaluator:
+    """Assign zero utility to every non-terminal state."""
+
+
+@dataclass(frozen=True, slots=True)
+class GameHeuristic:
+    """Evaluate states with one zero-based heuristic supplied by the game."""
+
+    index: int
+
+    def __post_init__(self) -> None:
+        _non_negative_u32("heuristic index", self.index)
+
+
+StateEvaluator: TypeAlias = NeutralEvaluator | GameHeuristic
+
+
+def _validate_state_evaluator(name: str, evaluator: object) -> None:
+    if not isinstance(evaluator, (NeutralEvaluator, GameHeuristic)):
+        raise TypeError(f"{name} must be NeutralEvaluator or GameHeuristic")
+
+
+@dataclass(frozen=True, slots=True)
+class UniformRandom:
+    """Select rollout actions uniformly without evaluating successors."""
+
+
+@dataclass(frozen=True, slots=True)
+class Greedy:
+    """Always select a rollout action with the best evaluated successor."""
+
+    evaluator: StateEvaluator
+
+    def __post_init__(self) -> None:
+        _validate_state_evaluator("rollout evaluator", self.evaluator)
+
+
+@dataclass(frozen=True, slots=True)
+class EpsilonGreedy:
+    """Usually select the heuristic-best rollout action and sometimes explore."""
+
+    epsilon: float
+    evaluator: StateEvaluator
+
+    def __post_init__(self) -> None:
+        if isinstance(self.epsilon, bool) or not isinstance(self.epsilon, (int, float)):
+            raise TypeError("rollout epsilon must be a number")
+        if not isfinite(self.epsilon) or not 0.0 <= self.epsilon <= 1.0:
+            raise ValueError("rollout epsilon must be finite and between 0.0 and 1.0")
+        _validate_state_evaluator("rollout evaluator", self.evaluator)
+
+
+RolloutPolicy: TypeAlias = UniformRandom | Greedy | EpsilonGreedy
+
+
+@dataclass(frozen=True, slots=True)
 class MctsAgent:
     """Configuration for the Monte Carlo Tree Search agent."""
 
@@ -57,6 +113,8 @@ class MctsAgent:
     exploration: float = sqrt(2.0)
     rollout_depth: int = 256
     heuristic: int | None = None
+    cutoff_evaluator: StateEvaluator | None = None
+    rollout_policy: RolloutPolicy = field(default_factory=UniformRandom)
 
     def __post_init__(self) -> None:
         _positive_u32("iterations", self.iterations)
@@ -67,6 +125,28 @@ class MctsAgent:
             raise ValueError("exploration must be finite and non-negative")
         if self.heuristic is not None:
             _non_negative_u32("heuristic", self.heuristic)
+        cutoff_evaluator = self.cutoff_evaluator
+        if cutoff_evaluator is None:
+            cutoff_evaluator = (
+                NeutralEvaluator()
+                if self.heuristic is None
+                else GameHeuristic(self.heuristic)
+            )
+            object.__setattr__(self, "cutoff_evaluator", cutoff_evaluator)
+        else:
+            _validate_state_evaluator("cutoff_evaluator", cutoff_evaluator)
+            evaluator_heuristic = (
+                cutoff_evaluator.index
+                if isinstance(cutoff_evaluator, GameHeuristic)
+                else None
+            )
+            if self.heuristic is not None and self.heuristic != evaluator_heuristic:
+                raise ValueError("heuristic and cutoff_evaluator configure different evaluators")
+            object.__setattr__(self, "heuristic", evaluator_heuristic)
+        if not isinstance(self.rollout_policy, (UniformRandom, Greedy, EpsilonGreedy)):
+            raise TypeError(
+                "rollout_policy must be UniformRandom, Greedy, or EpsilonGreedy"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -625,8 +705,8 @@ class Match:
             raise TypeError("first must be RandomAgent, MctsAgent, or HumanAgent")
         if not isinstance(self.second, (RandomAgent, MctsAgent, HumanAgent)):
             raise TypeError("second must be RandomAgent, MctsAgent, or HumanAgent")
-        _validate_agent_heuristic(self.game, self.first)
-        _validate_agent_heuristic(self.game, self.second)
+        _validate_agent_evaluators(self.game, self.first)
+        _validate_agent_evaluators(self.game, self.second)
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
             raise TypeError("seed must be an integer")
         if not 0 <= self.seed <= _MAX_U64:
@@ -696,7 +776,7 @@ class Batch:
         for name, agent in (("agent_a", self.agent_a), ("agent_b", self.agent_b)):
             if not isinstance(agent, (RandomAgent, MctsAgent)):
                 raise TypeError(f"{name} must be RandomAgent or MctsAgent")
-            _validate_agent_heuristic(self.game, agent)
+            _validate_agent_evaluators(self.game, agent)
         _positive_u32("matches", self.matches)
         _positive_u32("max_plies", self.max_plies)
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
@@ -932,14 +1012,15 @@ def benchmark_mcts_agent(
         raise TypeError("seed must be an integer")
     if not 0 <= seed <= _MAX_U64:
         raise ValueError(f"seed must be between 0 and {_MAX_U64}")
-    _validate_agent_heuristic(game, agent)
+    _validate_agent_evaluators(game, agent)
 
     raw = _native.benchmark_mcts_agent(
         _native_game(game),
         agent.iterations,
         float(agent.exploration),
         agent.rollout_depth,
-        agent.heuristic,
+        *_native_evaluator(agent.cutoff_evaluator),
+        *_native_rollout_policy(agent.rollout_policy),
         median_depth,
         seed,
     )
@@ -1064,11 +1145,20 @@ def _native_agent(agent: Agent, game: Game):
     if isinstance(agent, RandomAgent):
         return _native.AgentConfig.random()
     if isinstance(agent, MctsAgent):
+        policy, rollout_evaluator, rollout_heuristic, epsilon = _native_rollout_policy(
+            agent.rollout_policy
+        )
+        cutoff_evaluator, cutoff_heuristic = _native_evaluator(agent.cutoff_evaluator)
         return _native.AgentConfig.mcts(
             agent.iterations,
             float(agent.exploration),
             agent.rollout_depth,
-            agent.heuristic,
+            cutoff_evaluator,
+            cutoff_heuristic,
+            policy,
+            rollout_evaluator,
+            rollout_heuristic,
+            epsilon,
         )
     return _native.AgentConfig.human(
         _human_selector(agent, game),
@@ -1083,9 +1173,48 @@ def _non_negative_u32(name: str, value: int) -> None:
         raise ValueError(f"{name} must be between 0 and {_MAX_U32}")
 
 
-def _validate_agent_heuristic(game: Game, agent: Agent) -> None:
+def _validate_agent_evaluators(game: Game, agent: Agent) -> None:
     if isinstance(agent, MctsAgent):
-        _validate_game_heuristic(game, agent.heuristic)
+        _validate_game_evaluator(game, agent.cutoff_evaluator)
+        rollout_evaluator = _rollout_evaluator(agent.rollout_policy)
+        if rollout_evaluator is not None:
+            _validate_game_evaluator(game, rollout_evaluator)
+
+
+def _native_evaluator(
+    evaluator: StateEvaluator | None,
+) -> tuple[str, int | None]:
+    if isinstance(evaluator, GameHeuristic):
+        return "game_heuristic", evaluator.index
+    return "neutral", None
+
+
+def _native_rollout_policy(
+    policy: RolloutPolicy,
+) -> tuple[str, str | None, int | None, float | None]:
+    if isinstance(policy, UniformRandom):
+        return "uniform_random", None, None, None
+    if isinstance(policy, Greedy):
+        evaluator, heuristic = _native_evaluator(policy.evaluator)
+        return "greedy", evaluator, heuristic, None
+    evaluator, heuristic = _native_evaluator(policy.evaluator)
+    return (
+        "epsilon_greedy",
+        evaluator,
+        heuristic,
+        float(policy.epsilon),
+    )
+
+
+def _rollout_evaluator(policy: RolloutPolicy) -> StateEvaluator | None:
+    if isinstance(policy, UniformRandom):
+        return None
+    return policy.evaluator
+
+
+def _validate_game_evaluator(game: Game, evaluator: StateEvaluator | None) -> None:
+    if isinstance(evaluator, GameHeuristic):
+        _validate_game_heuristic(game, evaluator.index)
 
 
 def _validate_game_heuristic(game: Game, heuristic: int | None) -> None:

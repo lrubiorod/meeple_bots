@@ -19,21 +19,31 @@ from meeple_bots import (
     BoopPieceKind,
     ConnectFour,
     ConnectFourAction,
+    EpsilonGreedy,
+    GameHeuristic,
+    Greedy,
     HumanAgent,
     HumanMoveObservation,
     Match,
     MatchMoveObservation,
     MctsAgent,
+    NeutralEvaluator,
     RandomAgent,
     SpiritTile,
     SpiritsOfTheForest,
     TakeSpiritTile,
     TicTacToe,
     TicTacToeAction,
+    UniformRandom,
     benchmark_mcts_agent,
     evaluate_game,
 )
-from meeple_bots.cli import _load_tournament_config, build_parser, main
+from meeple_bots.cli import (
+    _load_tournament_config,
+    _parse_inline_mcts_profile,
+    build_parser,
+    main,
+)
 from meeple_bots._concurrency import ordered_parallel_map, resolve_workers
 from meeple_bots.games.boop.gui import BoopGui
 from meeple_bots.games.connect_four.gui import ConnectFourGui
@@ -420,8 +430,45 @@ class MatchApiTests(unittest.TestCase):
             MctsAgent(heuristic=True)
         with self.assertRaises(ValueError):
             MctsAgent(heuristic=-1)
+        with self.assertRaises(ValueError):
+            EpsilonGreedy(epsilon=1.1, evaluator=GameHeuristic(0))
+        with self.assertRaises(TypeError):
+            MctsAgent(rollout_policy="uniform_random")
         with self.assertRaises(TypeError):
             HumanAgent(observe_action="not callable")
+
+    def test_epsilon_greedy_rollout_does_not_require_a_cutoff_heuristic(self) -> None:
+        result = Match(
+            game=Boop(),
+            first=MctsAgent(
+                iterations=2,
+                rollout_depth=2,
+                cutoff_evaluator=NeutralEvaluator(),
+                rollout_policy=EpsilonGreedy(0.1, GameHeuristic(0)),
+            ),
+            second=RandomAgent(),
+            seed=19,
+        ).run()
+
+        self.assertGreater(result.plies, 0)
+
+    def test_uniform_random_is_the_default_rollout_policy(self) -> None:
+        self.assertIsInstance(MctsAgent().rollout_policy, UniformRandom)
+
+    def test_epsilon_greedy_rollout_runs_with_a_supported_heuristic(self) -> None:
+        result = Match(
+            game=Boop(),
+            first=MctsAgent(
+                iterations=2,
+                rollout_depth=2,
+                cutoff_evaluator=NeutralEvaluator(),
+                rollout_policy=EpsilonGreedy(0.1, GameHeuristic(0)),
+            ),
+            second=RandomAgent(),
+            seed=19,
+        ).run()
+
+        self.assertGreater(result.plies, 0)
 
     def test_boop_match_accepts_both_heuristics(self) -> None:
         for heuristic in (0, 1):
@@ -526,15 +573,36 @@ class MatchApiTests(unittest.TestCase):
         )
 
     def test_configured_mcts_benchmark_supports_a_game_heuristic(self) -> None:
+        agent = MctsAgent(
+            iterations=1,
+            rollout_depth=1,
+            cutoff_evaluator=NeutralEvaluator(),
+            rollout_policy=EpsilonGreedy(0.2, GameHeuristic(0)),
+        )
         benchmark = benchmark_mcts_agent(
             Boop(),
-            MctsAgent(iterations=1, rollout_depth=1, heuristic=0),
+            agent,
             median_depth=3,
             seed=7,
         )
 
-        self.assertEqual(benchmark.agent.heuristic, 0)
+        self.assertEqual(benchmark.agent, agent)
         self.assertEqual(benchmark.sampled_positions, 3)
+
+    def test_inline_mcts_profile_accepts_short_rollout_policy_fields(self) -> None:
+        profile = _parse_inline_mcts_profile(
+            "name=informed,i=100,d=32,c=0.8,ce=neutral,p=epsilon,rh=1,e=0.25"
+        )
+
+        self.assertEqual(profile.name, "informed")
+        self.assertEqual(profile.agent.iterations, 100)
+        self.assertEqual(profile.agent.rollout_depth, 32)
+        self.assertEqual(profile.agent.exploration, 0.8)
+        self.assertIsInstance(profile.agent.cutoff_evaluator, NeutralEvaluator)
+        self.assertEqual(
+            profile.agent.rollout_policy,
+            EpsilonGreedy(0.25, GameHeuristic(1)),
+        )
 
     def test_scripted_humans_receive_positions_and_finish_a_match(self) -> None:
         first_moves = iter([(0, 0), (0, 1), (0, 2)])
@@ -993,6 +1061,8 @@ class MatchApiTests(unittest.TestCase):
                         "rollout_depth = 1",
                         "use_heuristic = true",
                         "heuristic_index = 1",
+                        'rollout_policy = "epsilon_greedy_heuristic"',
+                        "rollout_epsilon = 0.2",
                     ]
                 ),
                 encoding="utf-8",
@@ -1018,6 +1088,19 @@ class MatchApiTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["players"][0]["heuristic"], 1)
+        self.assertEqual(
+            payload["players"][0]["rollout_policy"],
+            "epsilon_greedy",
+        )
+        self.assertEqual(
+            payload["players"][0]["cutoff_evaluator"],
+            {"kind": "game_heuristic", "index": 1},
+        )
+        self.assertEqual(
+            payload["players"][0]["rollout_evaluator"],
+            {"kind": "game_heuristic", "index": 1},
+        )
+        self.assertEqual(payload["players"][0]["rollout_epsilon"], 0.2)
 
     def test_cli_match_rejects_a_profile_for_a_non_mcts_player(self) -> None:
         errors = io.StringIO()
@@ -1629,6 +1712,158 @@ class MatchApiTests(unittest.TestCase):
             ],
         )
 
+    def test_tournament_supports_independent_cutoff_and_rollout_evaluators(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "evaluators.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "spotf"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "neutral"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        'cutoff_evaluator = { kind = "neutral" }',
+                        'rollout_policy = { kind = "uniform_random" }',
+                        "[[agents]]",
+                        'name = "cutoff-only"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        'cutoff_evaluator = { kind = "game_heuristic", index = 1 }',
+                        'rollout_policy = { kind = "uniform_random" }',
+                        "[[agents]]",
+                        'name = "rollout-only"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        'cutoff_evaluator = { kind = "neutral" }',
+                        'rollout_policy = { kind = "epsilon_greedy", epsilon = 0.2, '
+                        'evaluator = { kind = "game_heuristic", index = 0 } }',
+                        "[[agents]]",
+                        'name = "both"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        'cutoff_evaluator = { kind = "game_heuristic", index = 0 }',
+                        'rollout_policy = { kind = "greedy", '
+                        'evaluator = { kind = "game_heuristic", index = 1 } }',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+
+        neutral, cutoff_only, rollout_only, both = [
+            entry.agent for entry in config.agents
+        ]
+        self.assertIsInstance(neutral.cutoff_evaluator, NeutralEvaluator)
+        self.assertIsInstance(neutral.rollout_policy, UniformRandom)
+        self.assertEqual(cutoff_only.cutoff_evaluator, GameHeuristic(1))
+        self.assertIsInstance(cutoff_only.rollout_policy, UniformRandom)
+        self.assertIsInstance(rollout_only.cutoff_evaluator, NeutralEvaluator)
+        self.assertEqual(
+            rollout_only.rollout_policy,
+            EpsilonGreedy(0.2, GameHeuristic(0)),
+        )
+        self.assertEqual(both.cutoff_evaluator, GameHeuristic(0))
+        self.assertEqual(both.rollout_policy, Greedy(GameHeuristic(1)))
+
+    def test_tournament_agent_grid_can_vary_rollout_epsilon(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "rollout-grid.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "spotf"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "random"',
+                        'kind = "random"',
+                        "[[agents]]",
+                        'name = "informed"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        "use_heuristic = true",
+                        "heuristic_index = 0",
+                        'rollout_policy = "epsilon_greedy_heuristic"',
+                        "rollout_epsilon = [0.0, 0.2]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+
+        self.assertEqual(
+            [agent.name for agent in config.agents],
+            ["random", "informed-e0.0", "informed-e0.2"],
+        )
+        policies = [agent.agent.rollout_policy for agent in config.agents[1:]]
+        self.assertTrue(
+            all(isinstance(policy, EpsilonGreedy) for policy in policies)
+        )
+        self.assertEqual([policy.epsilon for policy in policies], [0.0, 0.2])
+
+    def test_tournament_structured_grid_expands_nested_evaluator_and_epsilon(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "structured-grid.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "spotf"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "random"',
+                        'kind = "random"',
+                        "[[agents]]",
+                        'name = "structured"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        'cutoff_evaluator = { kind = "game_heuristic", index = [0, 1] }',
+                        'rollout_policy = { kind = "epsilon_greedy", '
+                        'epsilon = [0.0, 0.2], evaluator = { '
+                        'kind = "game_heuristic", index = [0, 1] } }',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+
+        self.assertEqual(
+            [entry.name for entry in config.agents],
+            [
+                "random",
+                "structured-h0-rh0-e0.0",
+                "structured-h0-rh0-e0.2",
+                "structured-h0-rh1-e0.0",
+                "structured-h0-rh1-e0.2",
+                "structured-h1-rh0-e0.0",
+                "structured-h1-rh0-e0.2",
+                "structured-h1-rh1-e0.0",
+                "structured-h1-rh1-e0.2",
+            ],
+        )
+        agents = [entry.agent for entry in config.agents[1:]]
+        self.assertEqual(
+            [agent.cutoff_evaluator.index for agent in agents],
+            [0, 0, 0, 0, 1, 1, 1, 1],
+        )
+        self.assertEqual(
+            [agent.rollout_policy.evaluator.index for agent in agents],
+            [0, 0, 1, 1, 0, 0, 1, 1],
+        )
+        self.assertEqual(
+            [agent.rollout_policy.epsilon for agent in agents],
+            [0.0, 0.2, 0.0, 0.2, 0.0, 0.2, 0.0, 0.2],
+        )
+
     def test_tournament_agent_grid_rejects_duplicate_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory, "grid.toml")
@@ -1849,7 +2084,7 @@ class MatchApiTests(unittest.TestCase):
             )
             self.assertIsNone(manifest["source"])
             self.assertEqual(len(manifest["sources"]), 2)
-            self.assertEqual(manifest["analysis_schema_version"], 2)
+            self.assertEqual(manifest["analysis_schema_version"], 3)
             self.assertEqual(manifest["row_counts"]["studies"], 2)
 
     def test_cli_extract_rejects_conflicting_agent_names_before_writing(self) -> None:

@@ -1,0 +1,84 @@
+# Executable SPOTF tournament template demonstrating the supported agent configurations.
+# It expands to 13 agents, 78 cross-agent pairings, and one selected self-play pairing.
+# With two matches per pairing this produces 158 matches. Increase the budgets only after
+# checking the expected runtime with `meeple-bots analyze`.
+game = "spotf"
+output = "../../results/tournaments/template-study.jsonl"
+matches_per_pair = 2
+seed = 42
+max_plies = 10000
+workers = "auto"
+
+# A non-search baseline. Random agents do not accept any MCTS-only fields.
+[[agents]]
+name = "random"
+kind = "random"
+
+# Original MCTS baseline: uniform-random rollouts and neutral cutoff evaluation.
+# Omitted rollout_policy defaults to `uniform_random`.
+[[agents]]
+name = "mcts-uniform"
+kind = "mcts"
+iterations = 250
+rollout_depth = 32
+exploration = 1.4142135623730951
+use_heuristic = false
+self_play = true
+
+# Uniform-random rollout with heuristic 1 used only when the rollout reaches its depth cutoff.
+# Because the rollout policy is uniform, the heuristic does not influence intermediate actions.
+[[agents]]
+name = "mcts-cutoff-h1"
+kind = "mcts"
+iterations = 250
+rollout_depth = 32
+exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "game_heuristic", index = 1 }
+rollout_policy = { kind = "uniform_random" }
+
+# Informed rollout only: cutoff states are neutral, while heuristic 0 selects rollout actions.
+# With epsilon 0.10, approximately 10% are random and 90% choose a best-rated successor.
+[[agents]]
+name = "mcts-rollout-h0"
+kind = "mcts"
+iterations = 250
+rollout_depth = 32
+exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "neutral" }
+rollout_policy = { kind = "epsilon_greedy", epsilon = 0.10, evaluator = { kind = "game_heuristic", index = 0 } }
+
+# Both mechanisms enabled with independent configuration. They may use different evaluators.
+[[agents]]
+name = "mcts-cutoff-h0-rollout-h1"
+kind = "mcts"
+iterations = 250
+rollout_depth = 32
+exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "game_heuristic", index = 0 }
+rollout_policy = { kind = "greedy", evaluator = { kind = "game_heuristic", index = 1 } }
+
+# Epsilon sweep using heuristic 1 only for informed action selection.
+# The array creates four agents named with -e0.0, -e0.1, -e0.25, and -e1.0 suffixes:
+#   epsilon 0.0  -> fully greedy rollout;
+#   epsilon 0.1  -> 90% greedy, 10% random;
+#   epsilon 0.25 -> 75% greedy, 25% random;
+#   epsilon 1.0  -> fully random rollout (the evaluator is not consulted for selection).
+[[agents]]
+name = "mcts-epsilon-h1"
+kind = "mcts"
+iterations = 250
+rollout_depth = 32
+exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "neutral" }
+rollout_policy = { kind = "epsilon_greedy", epsilon = [0.0, 0.1, 0.25, 1.0], evaluator = { kind = "game_heuristic", index = 1 } }
+
+# Cartesian-product example for comparing search width and horizon. These two arrays create four
+# uniform-rollout agents: every combination of 100/500 iterations and depth 16/64.
+[[agents]]
+name = "mcts-width-depth-grid"
+kind = "mcts"
+iterations = [100, 500]
+rollout_depth = [16, 64]
+exploration = 1.4142135623730951
+use_heuristic = false
+rollout_policy = "uniform_random"

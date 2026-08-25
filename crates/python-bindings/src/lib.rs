@@ -9,11 +9,12 @@ use meeple_bots_boop::{
 use meeple_bots_catalog::{
     AgentConfig, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution, CatalogError,
     CatalogGemstoneSacrifice, CatalogMatchReport, CatalogPieceKind, CatalogPowerSource,
-    CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, EvaluationConfig, GameId,
-    MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, analyze_seeded_trace, analyze_trace,
-    benchmark_mcts_agent, configured_boop_mcts, configured_connect_four_mcts,
-    configured_spirits_of_the_forest_mcts, configured_tic_tac_toe_mcts, evaluate_game,
-    run_boop_match_with_observer, run_boop_match_with_trace, run_connect_four_match_with_observer,
+    CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, EvaluationConfig, EvaluatorConfig,
+    GameId, MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, RolloutPolicyConfig,
+    analyze_seeded_trace, analyze_trace, benchmark_mcts_agent, configured_boop_mcts,
+    configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
+    configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
+    run_boop_match_with_trace, run_connect_four_match_with_observer,
     run_connect_four_match_with_trace, run_match_with_trace,
     run_spirits_of_the_forest_match_with_observer, run_spirits_of_the_forest_match_with_trace,
     run_tic_tac_toe_match_with_observer, run_tic_tac_toe_match_with_trace,
@@ -21,7 +22,7 @@ use meeple_bots_catalog::{
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{Agent, AgentError, DecisionContext, Game, PlayerId, RandomSource};
-use meeple_bots_mcts_agent::MctsAgent;
+use meeple_bots_mcts_agent::{MctsAgent, NeutralEvaluator, UniformRandom};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::MatchObserver;
 use meeple_bots_spirits_of_the_forest::{
@@ -61,13 +62,23 @@ impl PyAgentConfig {
         iterations=1_000,
         exploration=std::f64::consts::SQRT_2,
         rollout_depth=256,
-        heuristic=None,
+        cutoff_evaluator="neutral",
+        cutoff_heuristic=None,
+        rollout_policy="uniform_random",
+        rollout_evaluator=None,
+        rollout_heuristic=None,
+        rollout_epsilon=None,
     ))]
     fn mcts(
         iterations: u32,
         exploration: f64,
         rollout_depth: u32,
-        heuristic: Option<u32>,
+        cutoff_evaluator: &str,
+        cutoff_heuristic: Option<u32>,
+        rollout_policy: &str,
+        rollout_evaluator: Option<&str>,
+        rollout_heuristic: Option<u32>,
+        rollout_epsilon: Option<f64>,
     ) -> PyResult<Self> {
         let iterations = NonZeroU32::new(iterations)
             .ok_or_else(|| PyValueError::new_err("iterations must be greater than zero"))?;
@@ -88,8 +99,14 @@ impl PyAgentConfig {
                     iterations,
                     exploration,
                     rollout_depth,
+                    rollout_policy: parse_rollout_policy(
+                        rollout_policy,
+                        rollout_evaluator,
+                        rollout_heuristic,
+                        rollout_epsilon,
+                    )?,
                 },
-                heuristic,
+                cutoff_evaluator: parse_evaluator(cutoff_evaluator, cutoff_heuristic)?,
             })),
         })
     }
@@ -139,9 +156,11 @@ struct PythonSpiritsMatchObserver<'a> {
 
 enum PythonObservedAgent<'a> {
     Human(PythonHumanAgent<'a>),
-    Mcts(MctsAgent),
+    Mcts(UninformedMctsAgent),
     Random(RandomAgent),
 }
+
+type UninformedMctsAgent = MctsAgent<NeutralEvaluator, UniformRandom>;
 
 enum PythonObservedBoopAgent<'a> {
     Human(PythonHumanAgent<'a>),
@@ -488,7 +507,12 @@ fn py_evaluate_game(
     iterations,
     exploration,
     rollout_depth,
-    heuristic,
+    cutoff_evaluator,
+    cutoff_heuristic,
+    rollout_policy,
+    rollout_evaluator,
+    rollout_heuristic,
+    rollout_epsilon,
     median_depth,
     seed=0,
 ))]
@@ -498,7 +522,12 @@ fn py_benchmark_mcts_agent(
     iterations: u32,
     exploration: f64,
     rollout_depth: u32,
-    heuristic: Option<u32>,
+    cutoff_evaluator: &str,
+    cutoff_heuristic: Option<u32>,
+    rollout_policy: &str,
+    rollout_evaluator: Option<&str>,
+    rollout_heuristic: Option<u32>,
+    rollout_epsilon: Option<f64>,
     median_depth: u32,
     seed: u64,
 ) -> PyResult<Py<PyDict>> {
@@ -522,8 +551,14 @@ fn py_benchmark_mcts_agent(
                 iterations,
                 exploration,
                 rollout_depth,
+                rollout_policy: parse_rollout_policy(
+                    rollout_policy,
+                    rollout_evaluator,
+                    rollout_heuristic,
+                    rollout_epsilon,
+                )?,
             },
-            heuristic,
+            cutoff_evaluator: parse_evaluator(cutoff_evaluator, cutoff_heuristic)?,
         },
         median_depth,
         seed,
@@ -549,6 +584,76 @@ fn py_benchmark_mcts_agent(
     }
     serialized.set_item("position_timings", position_timings)?;
     Ok(serialized.unbind())
+}
+
+fn parse_evaluator(kind: &str, heuristic: Option<u32>) -> PyResult<EvaluatorConfig> {
+    match kind {
+        "neutral" => {
+            if heuristic.is_some() {
+                return Err(PyValueError::new_err(
+                    "neutral evaluator does not accept a heuristic index",
+                ));
+            }
+            Ok(EvaluatorConfig::Neutral)
+        }
+        "game_heuristic" => heuristic
+            .map(|index| EvaluatorConfig::GameHeuristic { index })
+            .ok_or_else(|| {
+                PyValueError::new_err("game_heuristic evaluator requires a heuristic index")
+            }),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown evaluator {kind}; expected neutral or game_heuristic"
+        ))),
+    }
+}
+
+fn parse_rollout_policy(
+    policy: &str,
+    evaluator: Option<&str>,
+    heuristic: Option<u32>,
+    epsilon: Option<f64>,
+) -> PyResult<RolloutPolicyConfig<EvaluatorConfig>> {
+    match policy {
+        "uniform_random" => {
+            if evaluator.is_some() || heuristic.is_some() || epsilon.is_some() {
+                return Err(PyValueError::new_err(
+                    "uniform_random rollout does not accept an evaluator or epsilon",
+                ));
+            }
+            Ok(RolloutPolicyConfig::UniformRandom)
+        }
+        "greedy" => {
+            if epsilon.is_some() {
+                return Err(PyValueError::new_err(
+                    "greedy rollout does not accept epsilon",
+                ));
+            }
+            let evaluator = evaluator
+                .ok_or_else(|| PyValueError::new_err("greedy rollout requires an evaluator"))?;
+            Ok(RolloutPolicyConfig::Greedy {
+                evaluator: parse_evaluator(evaluator, heuristic)?,
+            })
+        }
+        "epsilon_greedy" | "epsilon_greedy_heuristic" => {
+            let evaluator = evaluator.ok_or_else(|| {
+                PyValueError::new_err("epsilon_greedy rollout requires an evaluator")
+            })?;
+            let epsilon = epsilon
+                .ok_or_else(|| PyValueError::new_err("epsilon_greedy requires rollout_epsilon"))?;
+            if !epsilon.is_finite() || !(0.0..=1.0).contains(&epsilon) {
+                return Err(PyValueError::new_err(
+                    "rollout_epsilon must be finite and between 0.0 and 1.0",
+                ));
+            }
+            Ok(RolloutPolicyConfig::EpsilonGreedy {
+                epsilon,
+                evaluator: parse_evaluator(evaluator, heuristic)?,
+            })
+        }
+        _ => Err(PyValueError::new_err(format!(
+            "unknown rollout policy {policy}; expected uniform_random, greedy, or epsilon_greedy"
+        ))),
+    }
 }
 
 impl Agent<TicTacToe> for PythonHumanAgent<'_> {
@@ -1527,7 +1632,9 @@ fn run_observed_spirits_match(
     Ok(report)
 }
 
-fn configured_tic_tac_toe_mcts_for_python(config: MctsAgentConfig) -> PyResult<MctsAgent> {
+fn configured_tic_tac_toe_mcts_for_python(
+    config: MctsAgentConfig,
+) -> PyResult<UninformedMctsAgent> {
     configured_tic_tac_toe_mcts(config).map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
 

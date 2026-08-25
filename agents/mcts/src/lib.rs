@@ -1,6 +1,6 @@
 //! Monte Carlo Tree Search for deterministic, perfect-information games.
 
-use std::num::NonZeroU32;
+use std::{cmp::Ordering, num::NonZeroU32};
 
 use meeple_bots_core::{
     Agent, AgentError, DecisionContext, DeterministicGame, HeuristicGame, PerfectInformationGame,
@@ -8,23 +8,38 @@ use meeple_bots_core::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MctsConfig {
+pub struct MctsConfig<P = RolloutPolicyConfig<NeutralEvaluator>> {
     pub iterations: NonZeroU32,
     pub exploration: f64,
     pub rollout_depth: u32,
+    pub rollout_policy: P,
 }
 
-impl Default for MctsConfig {
+impl Default for MctsConfig<RolloutPolicyConfig<NeutralEvaluator>> {
     fn default() -> Self {
         Self {
             iterations: NonZeroU32::new(1_000).expect("constant is non-zero"),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 256,
+            rollout_policy: RolloutPolicyConfig::default(),
         }
     }
 }
 
-pub trait CutoffEvaluator<G: DeterministicGame> {
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum RolloutPolicyConfig<E = NeutralEvaluator> {
+    #[default]
+    UniformRandom,
+    Greedy {
+        evaluator: E,
+    },
+    EpsilonGreedy {
+        epsilon: f64,
+        evaluator: E,
+    },
+}
+
+pub trait StateEvaluator<G: DeterministicGame> {
     fn evaluate(
         &self,
         game: &G,
@@ -36,7 +51,7 @@ pub trait CutoffEvaluator<G: DeterministicGame> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NeutralEvaluator;
 
-impl<G: DeterministicGame> CutoffEvaluator<G> for NeutralEvaluator {
+impl<G: DeterministicGame> StateEvaluator<G> for NeutralEvaluator {
     fn evaluate(
         &self,
         _game: &G,
@@ -58,7 +73,7 @@ impl GameHeuristic {
     }
 }
 
-impl<G> CutoffEvaluator<G> for GameHeuristic
+impl<G> StateEvaluator<G> for GameHeuristic
 where
     G: DeterministicGame + HeuristicGame,
 {
@@ -80,30 +95,242 @@ where
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct MctsAgent<E = NeutralEvaluator> {
-    pub config: MctsConfig,
+pub trait RolloutPolicy<G>
+where
+    G: DeterministicGame,
+    G::State: Clone,
+    G::Action: Clone,
+{
+    fn select_action<R: RandomSource + ?Sized>(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UniformRandom;
+
+impl<G> RolloutPolicy<G> for UniformRandom
+where
+    G: DeterministicGame,
+    G::State: Clone,
+    G::Action: Clone,
+{
+    fn select_action<R: RandomSource + ?Sized>(
+        &self,
+        game: &G,
+        state: &G::State,
+        _active_player: PlayerId,
+        _root_player: PlayerId,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        let actions: Vec<_> = game.legal_actions(state).collect();
+        let index = rng.index(actions.len()).ok_or(AgentError::NoLegalActions)?;
+        Ok(actions[index].clone())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Greedy<E> {
     pub evaluator: E,
 }
 
-impl Default for MctsAgent<NeutralEvaluator> {
+impl<E> Greedy<E> {
+    pub const fn new(evaluator: E) -> Self {
+        Self { evaluator }
+    }
+}
+
+impl<G, E> RolloutPolicy<G> for Greedy<E>
+where
+    G: DeterministicGame,
+    G::State: Clone,
+    G::Action: Clone,
+    E: StateEvaluator<G>,
+{
+    fn select_action<R: RandomSource + ?Sized>(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        select_greedy_action(
+            game,
+            state,
+            active_player,
+            root_player,
+            &self.evaluator,
+            rng,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EpsilonGreedy<E> {
+    pub epsilon: f64,
+    pub evaluator: E,
+}
+
+impl<E> EpsilonGreedy<E> {
+    pub const fn new(epsilon: f64, evaluator: E) -> Self {
+        Self { epsilon, evaluator }
+    }
+}
+
+impl<G, E> RolloutPolicy<G> for EpsilonGreedy<E>
+where
+    G: DeterministicGame,
+    G::State: Clone,
+    G::Action: Clone,
+    E: StateEvaluator<G>,
+{
+    fn select_action<R: RandomSource + ?Sized>(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        if !self.epsilon.is_finite() || !(0.0..=1.0).contains(&self.epsilon) {
+            return Err(AgentError::message(
+                "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
+            ));
+        }
+
+        if self.epsilon == 1.0 || (self.epsilon > 0.0 && rng.unit_f64() < self.epsilon) {
+            return UniformRandom.select_action(game, state, active_player, root_player, rng);
+        }
+
+        select_greedy_action(
+            game,
+            state,
+            active_player,
+            root_player,
+            &self.evaluator,
+            rng,
+        )
+    }
+}
+
+impl<G, E> RolloutPolicy<G> for RolloutPolicyConfig<E>
+where
+    G: DeterministicGame,
+    G::State: Clone,
+    G::Action: Clone,
+    E: StateEvaluator<G>,
+{
+    fn select_action<R: RandomSource + ?Sized>(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        match self {
+            Self::UniformRandom => {
+                UniformRandom.select_action(game, state, active_player, root_player, rng)
+            }
+            Self::Greedy { evaluator } => {
+                select_greedy_action(game, state, active_player, root_player, evaluator, rng)
+            }
+            Self::EpsilonGreedy { epsilon, evaluator } => {
+                if !epsilon.is_finite() || !(0.0..=1.0).contains(epsilon) {
+                    return Err(AgentError::message(
+                        "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
+                    ));
+                }
+                if *epsilon == 1.0 || (*epsilon > 0.0 && rng.unit_f64() < *epsilon) {
+                    UniformRandom.select_action(game, state, active_player, root_player, rng)
+                } else {
+                    select_greedy_action(game, state, active_player, root_player, evaluator, rng)
+                }
+            }
+        }
+    }
+}
+
+fn select_greedy_action<G, E, R>(
+    game: &G,
+    state: &G::State,
+    active_player: PlayerId,
+    root_player: PlayerId,
+    evaluator: &E,
+    rng: &mut R,
+) -> Result<G::Action, AgentError>
+where
+    G: DeterministicGame,
+    G::State: Clone,
+    G::Action: Clone,
+    E: StateEvaluator<G>,
+    R: RandomSource + ?Sized,
+{
+    let actions: Vec<_> = game.legal_actions(state).collect();
+    if actions.is_empty() {
+        return Err(AgentError::NoLegalActions);
+    }
+    let maximizing = active_player == root_player;
+    let mut best_score = None;
+    let mut best_indices = Vec::new();
+    for (index, action) in actions.iter().enumerate() {
+        let mut successor = state.clone();
+        game.apply_action(&mut successor, action)
+            .map_err(|error| AgentError::message(error.to_string()))?;
+        let score = evaluate_state(game, &successor, root_player, evaluator)?;
+        let ordering = best_score.map(|best: f64| score.total_cmp(&best));
+        let is_better = matches!(
+            (maximizing, ordering),
+            (true, Some(Ordering::Greater)) | (false, Some(Ordering::Less))
+        );
+        if best_score.is_none() || is_better {
+            best_score = Some(score);
+            best_indices.clear();
+            best_indices.push(index);
+        } else if ordering == Some(Ordering::Equal) {
+            best_indices.push(index);
+        }
+    }
+
+    let tie_index = rng
+        .index(best_indices.len())
+        .expect("at least one action has the best score");
+    Ok(actions[best_indices[tie_index]].clone())
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MctsAgent<C = NeutralEvaluator, P = RolloutPolicyConfig<NeutralEvaluator>> {
+    pub config: MctsConfig<P>,
+    pub cutoff_evaluator: C,
+}
+
+impl Default for MctsAgent<NeutralEvaluator, RolloutPolicyConfig<NeutralEvaluator>> {
     fn default() -> Self {
         Self::new(MctsConfig::default())
     }
 }
 
-impl MctsAgent<NeutralEvaluator> {
-    pub const fn new(config: MctsConfig) -> Self {
+impl<P> MctsAgent<NeutralEvaluator, P> {
+    pub const fn new(config: MctsConfig<P>) -> Self {
         Self {
             config,
-            evaluator: NeutralEvaluator,
+            cutoff_evaluator: NeutralEvaluator,
         }
     }
 }
 
-impl<E> MctsAgent<E> {
-    pub const fn with_evaluator(config: MctsConfig, evaluator: E) -> Self {
-        Self { config, evaluator }
+impl<C, P> MctsAgent<C, P> {
+    pub const fn with_cutoff_evaluator(config: MctsConfig<P>, cutoff_evaluator: C) -> Self {
+        Self {
+            config,
+            cutoff_evaluator,
+        }
     }
 
     fn choose_action<G, R>(
@@ -115,7 +342,8 @@ impl<E> MctsAgent<E> {
         G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
         G::State: Clone,
         G::Action: Clone,
-        E: CutoffEvaluator<G>,
+        C: StateEvaluator<G>,
+        P: RolloutPolicy<G>,
         R: RandomSource + ?Sized,
     {
         let game = decision.game();
@@ -202,7 +430,8 @@ impl<E> MctsAgent<E> {
                 &mut state,
                 root_player,
                 self.config.rollout_depth,
-                &self.evaluator,
+                &self.config.rollout_policy,
+                &self.cutoff_evaluator,
                 rng,
             )?;
             for visited in path {
@@ -261,12 +490,13 @@ impl<A> Node<A> {
     }
 }
 
-impl<G, E> Agent<G> for MctsAgent<E>
+impl<G, C, P> Agent<G> for MctsAgent<C, P>
 where
     G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
     G::State: Clone,
     G::Action: Clone,
-    E: CutoffEvaluator<G>,
+    C: StateEvaluator<G>,
+    P: RolloutPolicy<G>,
 {
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
@@ -307,18 +537,21 @@ fn uct_score<A>(node: &Node<A>, parent_visits: f64, maximizing: bool, exploratio
     exploitation + exploration * (parent_visits.ln() / f64::from(node.visits)).sqrt()
 }
 
-fn rollout<G, E, R>(
+fn rollout<G, P, C, R>(
     game: &G,
     state: &mut G::State,
     root_player: PlayerId,
     max_depth: u32,
-    evaluator: &E,
+    policy: &P,
+    cutoff_evaluator: &C,
     rng: &mut R,
 ) -> Result<f64, AgentError>
 where
     G: DeterministicGame,
+    G::State: Clone,
     G::Action: Clone,
-    E: CutoffEvaluator<G>,
+    P: RolloutPolicy<G>,
+    C: StateEvaluator<G>,
     R: RandomSource + ?Sized,
 {
     for _ in 0..max_depth {
@@ -329,10 +562,9 @@ where
                     .map(f64::from)
                     .ok_or_else(|| AgentError::message("terminal utility is missing"));
             }
-            PositionStatus::PlayerTurn(_) => {
-                let actions: Vec<_> = game.legal_actions(state).collect();
-                let index = rng.index(actions.len()).ok_or(AgentError::NoLegalActions)?;
-                game.apply_action(state, &actions[index])
+            PositionStatus::PlayerTurn(active_player) => {
+                let action = policy.select_action(game, state, active_player, root_player, rng)?;
+                game.apply_action(state, &action)
                     .map_err(|error| AgentError::message(error.to_string()))?;
             }
             PositionStatus::Chance => {
@@ -349,16 +581,33 @@ where
             .terminal_utility(state, root_player)
             .map(f64::from)
             .ok_or_else(|| AgentError::message("terminal utility is missing")),
-        _ => {
-            let utility = evaluator.evaluate(game, state, root_player)?;
-            if !utility.is_finite() || !(-1.0..=1.0).contains(&utility) {
-                return Err(AgentError::message(
-                    "MCTS heuristic utility must be finite and between -1.0 and 1.0",
-                ));
-            }
-            Ok(utility)
-        }
+        _ => evaluate_state(game, state, root_player, cutoff_evaluator),
     }
+}
+
+fn evaluate_state<G, E>(
+    game: &G,
+    state: &G::State,
+    root_player: PlayerId,
+    evaluator: &E,
+) -> Result<f64, AgentError>
+where
+    G: DeterministicGame,
+    E: StateEvaluator<G>,
+{
+    let utility = match game.status(state) {
+        PositionStatus::Terminal => game
+            .terminal_utility(state, root_player)
+            .map(f64::from)
+            .ok_or_else(|| AgentError::message("terminal utility is missing"))?,
+        _ => evaluator.evaluate(game, state, root_player)?,
+    };
+    if !utility.is_finite() || !(-1.0..=1.0).contains(&utility) {
+        return Err(AgentError::message(
+            "MCTS heuristic utility must be finite and between -1.0 and 1.0",
+        ));
+    }
+    Ok(utility)
 }
 
 #[cfg(test)]
@@ -373,7 +622,7 @@ mod tests {
     #[derive(Clone, Copy)]
     struct FixedEvaluator(f64);
 
-    impl CutoffEvaluator<TicTacToe> for FixedEvaluator {
+    impl StateEvaluator<TicTacToe> for FixedEvaluator {
         fn evaluate(
             &self,
             _game: &TicTacToe,
@@ -387,7 +636,7 @@ mod tests {
     #[derive(Clone, Copy)]
     struct FailingEvaluator;
 
-    impl CutoffEvaluator<TicTacToe> for FailingEvaluator {
+    impl StateEvaluator<TicTacToe> for FailingEvaluator {
         fn evaluate(
             &self,
             _game: &TicTacToe,
@@ -507,6 +756,7 @@ mod tests {
             iterations: NonZeroU32::new(2_000).unwrap(),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 4,
+            rollout_policy: UniformRandom,
         });
         agent
             .select_action(
@@ -613,6 +863,27 @@ mod tests {
     }
 
     #[test]
+    fn a_concrete_rollout_policy_can_be_injected_without_runtime_dispatch() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let mut agent = MctsAgent::new(MctsConfig {
+            iterations: NonZeroU32::new(4).unwrap(),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 2,
+            rollout_policy: UniformRandom,
+        });
+
+        let selected = agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut SplitMix64::new(5),
+            )
+            .unwrap();
+
+        assert!(game.legal_actions(&state).any(|action| action == selected));
+    }
+
+    #[test]
     fn cutoff_uses_the_configured_evaluator() {
         let game = TicTacToe;
         let mut state = game.initial_state();
@@ -621,6 +892,7 @@ mod tests {
             &mut state,
             PlayerId::FIRST,
             0,
+            &UniformRandom,
             &FixedEvaluator(0.25),
             &mut SplitMix64::new(3),
         )
@@ -642,6 +914,7 @@ mod tests {
             &mut state,
             PlayerId::FIRST,
             0,
+            &UniformRandom,
             &FailingEvaluator,
             &mut SplitMix64::new(3),
         )
@@ -659,12 +932,84 @@ mod tests {
                 &mut game.initial_state(),
                 PlayerId::FIRST,
                 0,
+                &UniformRandom,
                 &FixedEvaluator(invalid),
                 &mut SplitMix64::new(3),
             )
             .unwrap_err();
 
             assert!(error.to_string().contains("between -1.0 and 1.0"));
+        }
+    }
+
+    #[test]
+    fn epsilon_greedy_uses_the_active_players_perspective() {
+        let policy = EpsilonGreedy::new(0.0, NeutralEvaluator);
+
+        for (active_player, expected) in [
+            (PlayerId::FIRST, ChainedAction::Win),
+            (PlayerId::SECOND, ChainedAction::Lose),
+        ] {
+            let game = ChainedDecisionGame {
+                continuation_player: active_player,
+            };
+            let selected = policy
+                .select_action(
+                    &game,
+                    &ChainedState::Continuation,
+                    active_player,
+                    PlayerId::FIRST,
+                    &mut SplitMix64::new(7),
+                )
+                .unwrap();
+            assert_eq!(selected, expected);
+        }
+    }
+
+    #[test]
+    fn epsilon_one_matches_uniform_random_selection() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let mut uniform_rng = SplitMix64::new(13);
+        let mut epsilon_rng = SplitMix64::new(13);
+
+        let uniform = UniformRandom
+            .select_action(
+                &game,
+                &state,
+                PlayerId::FIRST,
+                PlayerId::FIRST,
+                &mut uniform_rng,
+            )
+            .unwrap();
+        let epsilon = EpsilonGreedy::new(1.0, FixedEvaluator(0.0))
+            .select_action(
+                &game,
+                &state,
+                PlayerId::FIRST,
+                PlayerId::FIRST,
+                &mut epsilon_rng,
+            )
+            .unwrap();
+
+        assert_eq!(epsilon, uniform);
+    }
+
+    #[test]
+    fn rejects_invalid_rollout_epsilon() {
+        let game = TicTacToe;
+        for epsilon in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
+            let error = EpsilonGreedy::new(epsilon, FixedEvaluator(0.0))
+                .select_action(
+                    &game,
+                    &game.initial_state(),
+                    PlayerId::FIRST,
+                    PlayerId::FIRST,
+                    &mut SplitMix64::new(3),
+                )
+                .unwrap_err();
+
+            assert!(error.to_string().contains("between 0.0 and 1.0"));
         }
     }
 }

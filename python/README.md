@@ -232,11 +232,14 @@ per seat:
 ```bash
 meeple-bots match --game boop --first human --second mcts \
   --mcts-iterations 1000 --mcts-rollout-depth 16 \
-  --second-mcts-heuristic 1 --seed 42
+  --mcts-rollout-policy epsilon_greedy --mcts-rollout-heuristic 1 \
+  --mcts-rollout-epsilon 0.1 --seed 42
 ```
 
 Omitting the value after `--first-mcts-heuristic` or `--second-mcts-heuristic` selects index `0`.
-Unsupported indices and heuristics on unsupported games are rejected.
+Those seat-specific options configure cutoff evaluation only. `--mcts-rollout-heuristic` selects
+the independent evaluator used by `greedy` or `epsilon_greedy` rollout policies. Unsupported
+combinations and indices are rejected.
 
 Load a complete profile for one seat when the configuration should be reusable:
 
@@ -300,16 +303,16 @@ Benchmark and rank any number of exact MCTS profiles on the same sampled positio
 meeple-bots analyze --game boop --target-time 1 --seed 42 \
   --agent \
   --agent 'i=5000,d=120' \
-  --agent 'name=h0,i=20000,d=32,h=0' \
-  --agent-config configs/mcts/heuristic2.toml
+  --agent 'name=rollout-h1,i=20000,d=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
+  --agent-config configs/mcts/heuristic.toml
 ```
 
 Each `--agent-config` uses the [reusable scalar profile](../agents/README.md#reusable-profiles)
-format. For quick tests, repeat `--agent [SPEC]` with comma-separated fields `name`, `iterations`,
-`depth`, `exploration`, and `heuristic`; `i`, `d`, and `h` are accepted as short aliases for
-iterations, depth, and heuristic. A bare `--agent` defaults to 1000 iterations, depth 16,
-square-root-of-two exploration, and no heuristic. Inline agents and profiles can be mixed;
-tournament grids are not accepted here.
+format. For quick tests, repeat `--agent [SPEC]` with comma-separated fields. The cutoff evaluator
+uses `h=INDEX` or `ce=neutral`; informed rollout uses `p=greedy|epsilon`, `rh=INDEX`, and optionally
+`e=EPSILON`. A bare `--agent` defaults to 1000 iterations, depth 16, square-root-of-two
+exploration, uniform-random rollout, and neutral cutoff evaluation. Inline agents and profiles can
+be mixed; tournament grids are not accepted here.
 
 This command is the CLI equivalent of `evaluate_game`. `--target-time` chooses the approximate
 seconds per decision used for the suggested benchmark points; it does not lengthen calibration to
@@ -345,6 +348,11 @@ meeple-bots tournament \
 A configuration defines shared execution settings and enough agent entries or matrix combinations
 to produce at least two uniquely named agents:
 
+The fully commented
+[`configs/tournaments/template-study.toml`](../configs/tournaments/template-study.toml) shows
+Random, uniform-rollout, cutoff-heuristic, epsilon-greedy, epsilon-sweep, and Cartesian-grid
+examples in one executable study.
+
 ```toml
 game = "boop"
 output = "../../results/tournaments/boop-study.jsonl"
@@ -363,6 +371,8 @@ kind = "mcts"
 iterations = 10000
 rollout_depth = 16
 exploration = 1.4142135623730951
+rollout_policy = "uniform_random"
+# rollout_epsilon = 0.1
 use_heuristic = true
 heuristic_index = 0
 self_play = true
@@ -383,9 +393,23 @@ Only the main thread updates standings, reports progress, and writes JSONL. Matc
 seats, and trace order therefore remain deterministic even when later matches finish computation
 first. The JSONL header records the effective worker count.
 
-An MCTS entry can use arrays for `iterations`, `rollout_depth`, `exploration`, and
-`heuristic_index`. The loader creates the Cartesian product, so this compact entry produces nine
-agents:
+An MCTS entry independently configures cutoff evaluation and rollout action selection:
+
+```toml
+cutoff_evaluator = { kind = "neutral" }
+rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 1 } }
+```
+
+This example uses heuristic 1 during rollout selection but not at the depth cutoff. The inverse and
+combined configurations are valid too. `uniform_random`, `greedy`, and `epsilon_greedy` are the
+built-in policies. Informed iterations cost more because they evaluate every legal successor, so
+compare policies at equal decision time as well as equal iterations. See the executable
+[`template-study.toml`](../configs/tournaments/template-study.toml) for all combinations and grid
+examples.
+
+An MCTS entry can use arrays for `iterations`, `rollout_depth`, and `exploration`. Structured
+configuration also accepts arrays in `cutoff_evaluator.index`, `rollout_policy.evaluator.index`,
+and `rollout_policy.epsilon`. The loader creates their Cartesian product. For example:
 
 ```toml
 [[agents]]
@@ -398,10 +422,21 @@ use_heuristic = true
 heuristic_index = 0
 ```
 
+An informed-rollout epsilon sweep remains fully structured:
+
+```toml
+cutoff_evaluator = { kind = "neutral" }
+rollout_policy = { kind = "epsilon_greedy", epsilon = [0.0, 0.1, 0.25, 1.0], evaluator = { kind = "game_heuristic", index = 1 } }
+```
+
+The flat compatibility fields `heuristic_index`, `rollout_heuristic_index`, and
+`rollout_epsilon` continue to accept arrays as well.
+
 Generated names append only the fields written as arrays. The suffixes are `i` for iterations, `d`
-for rollout depth, `c` for exploration, and `h` for heuristic index. The example therefore creates
-names from `mcts-h0-i100-d8` through `mcts-h0-i10000-d32`. Scalar entries retain their original
-names, so existing tournament files remain compatible.
+for rollout depth, `c` for exploration, `h` for cutoff heuristic index, `rh` for rollout heuristic
+index, and `e` for rollout epsilon. The
+example therefore creates names from `mcts-h0-i100-d8` through `mcts-h0-i10000-d32`. Scalar
+entries retain their original names, so existing tournament files remain compatible.
 
 Lists must be non-empty and cannot contain duplicate values. One matrix entry can generate at most
 256 agents, preventing an accidental quadratic explosion in round-robin pairings. `use_heuristic`

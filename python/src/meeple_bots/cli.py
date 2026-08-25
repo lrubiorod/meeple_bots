@@ -26,13 +26,17 @@ from .api import (
     ConnectFour,
     ConnectFourAction,
     EndSpiritCollection,
+    EpsilonGreedy,
     GameEvaluationReport,
+    GameHeuristic,
+    Greedy,
     HumanAgent,
     HumanMoveObservation,
     Match,
     MatchResult,
     MctsAgent,
     MctsAgentBenchmark,
+    NeutralEvaluator,
     MoveSpiritGemstone,
     PlaceSpiritGemstone,
     RandomAgent,
@@ -42,6 +46,7 @@ from .api import (
     TakeSpiritTile,
     TicTacToe,
     TicTacToeAction,
+    UniformRandom,
     benchmark_mcts_agent,
     evaluate_game,
 )
@@ -52,12 +57,18 @@ from .reporting import generate_study_report
 
 _PLAYABLE_GAMES = ["boop", "connect-four", "spotf", "tic-tac-toe"]
 _TOURNAMENT_GRID_FIELDS = (
-    ("iterations", "i"),
-    ("rollout_depth", "d"),
-    ("exploration", "c"),
-    ("heuristic_index", "h"),
+    (("iterations",), "i"),
+    (("rollout_depth",), "d"),
+    (("exploration",), "c"),
+    (("heuristic_index",), "h"),
+    (("cutoff_evaluator", "index"), "h"),
+    (("rollout_heuristic_index",), "rh"),
+    (("rollout_policy", "evaluator", "index"), "rh"),
+    (("rollout_epsilon",), "e"),
+    (("rollout_policy", "epsilon"), "e"),
 )
 _MAX_AGENTS_PER_TOURNAMENT_GRID = 256
+_MISSING_GRID_VALUE = object()
 
 
 def _game_tag(value: str) -> str:
@@ -109,6 +120,30 @@ def build_parser() -> argparse.ArgumentParser:
     match.add_argument("--mcts-iterations", type=int)
     match.add_argument("--mcts-exploration", type=float, default=sqrt_two())
     match.add_argument("--mcts-rollout-depth", type=int)
+    match.add_argument(
+        "--mcts-rollout-policy",
+        choices=[
+            "uniform_random",
+            "uniform",
+            "random",
+            "greedy",
+            "epsilon_greedy_heuristic",
+            "epsilon_greedy",
+            "epsilon",
+        ],
+        default="uniform_random",
+        help="rollout action policy shared by manually configured MCTS players",
+    )
+    match.add_argument(
+        "--mcts-rollout-epsilon",
+        type=float,
+        help="random-action probability for epsilon-greedy heuristic rollouts",
+    )
+    match.add_argument(
+        "--mcts-rollout-heuristic",
+        type=int,
+        help="game heuristic used only to rank informed rollout actions",
+    )
     match.add_argument("--first-mcts-config", type=Path)
     match.add_argument("--second-mcts-config", type=Path)
     match.add_argument(
@@ -316,7 +351,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(
                     f"Benchmarking {profile.name}: {profile.agent.iterations:,} iterations, "
                     f"depth {profile.agent.rollout_depth}, "
-                    f"heuristic={_heuristic_name(profile.agent.heuristic)}",
+                    f"cutoff={_evaluator_name(profile.agent.cutoff_evaluator)}, "
+                    f"rollout={_rollout_policy_description(profile.agent)}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -759,6 +795,12 @@ def _load_tournament_agents(
         "rollout_depth",
         "use_heuristic",
         "heuristic_index",
+        "cutoff_evaluator",
+        "rollout_policy",
+        "rollout_evaluator",
+        "rollout_use_heuristic",
+        "rollout_heuristic_index",
+        "rollout_epsilon",
         "self_play",
     }
     unknown = sorted(values.keys() - allowed)
@@ -782,6 +824,12 @@ def _load_tournament_agents(
         "rollout_depth",
         "use_heuristic",
         "heuristic_index",
+        "cutoff_evaluator",
+        "rollout_policy",
+        "rollout_evaluator",
+        "rollout_use_heuristic",
+        "rollout_heuristic_index",
+        "rollout_epsilon",
     }
     if kind == "random":
         unexpected = sorted(values.keys() & mcts_fields)
@@ -809,20 +857,30 @@ def _load_tournament_agents(
             "use_heuristic is false"
         )
 
-    grid_fields: list[str] = []
+    grid_fields: list[tuple[tuple[str, ...], str]] = []
     grid_options: list[list[object]] = []
     combination_count = 1
-    for field, _suffix in _TOURNAMENT_GRID_FIELDS:
-        if field not in values or not isinstance(values[field], list):
+    used_suffixes: dict[str, tuple[str, ...]] = {}
+    for path, suffix in _TOURNAMENT_GRID_FIELDS:
+        raw_options = _nested_tournament_value(values, path)
+        if not isinstance(raw_options, list):
             continue
-        options = values[field]
+        field = ".".join(path)
+        previous_path = used_suffixes.get(suffix)
+        if previous_path is not None:
+            raise ValueError(
+                f"tournament agent {name} cannot vary both "
+                f"{'.'.join(previous_path)} and {field}"
+            )
+        used_suffixes[suffix] = path
+        options = raw_options
         if not options:
             raise ValueError(f"tournament agent {name} {field} list cannot be empty")
         if any(value in options[:option_index] for option_index, value in enumerate(options)):
             raise ValueError(
                 f"tournament agent {name} {field} list contains duplicate values"
             )
-        grid_fields.append(field)
+        grid_fields.append((path, suffix))
         grid_options.append(options)
         combination_count *= len(options)
     if combination_count > _MAX_AGENTS_PER_TOURNAMENT_GRID:
@@ -835,10 +893,16 @@ def _load_tournament_agents(
     expanded = []
     for combination in combinations:
         concrete = dict(values)
-        concrete.update(zip(grid_fields, combination, strict=True))
+        for (path, _suffix), value in zip(grid_fields, combination, strict=True):
+            _set_nested_tournament_value(concrete, path, value)
         agent = _build_tournament_mcts_agent(concrete, name, game)
         suffix = "".join(
-            _tournament_grid_suffix(field, agent) for field in grid_fields
+            f"-{field_suffix}{value}"
+            for (_path, field_suffix), value in zip(
+                grid_fields,
+                combination,
+                strict=True,
+            )
         )
         expanded.append(
             _TournamentAgent(
@@ -850,34 +914,51 @@ def _load_tournament_agents(
     return tuple(expanded)
 
 
+def _nested_tournament_value(
+    values: dict[str, object],
+    path: tuple[str, ...],
+) -> object:
+    current: object = values
+    for field in path:
+        if not isinstance(current, dict) or field not in current:
+            return _MISSING_GRID_VALUE
+        current = current[field]
+    return current
+
+
+def _set_nested_tournament_value(
+    values: dict[str, object],
+    path: tuple[str, ...],
+    value: object,
+) -> None:
+    current = values
+    for field in path[:-1]:
+        child = current.get(field)
+        if not isinstance(child, dict):
+            raise ValueError(f"tournament grid path {'.'.join(path)} is not a table")
+        copied_child = dict(child)
+        current[field] = copied_child
+        current = copied_child
+    current[path[-1]] = value
+
+
 def _build_tournament_mcts_agent(
     values: dict[str, object],
     name: str,
     game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
 ) -> MctsAgent:
-    use_heuristic = values.get("use_heuristic", False)
-    heuristic_index = values.get("heuristic_index", 0)
-    if isinstance(heuristic_index, bool) or not isinstance(heuristic_index, int):
-        raise TypeError(f"tournament agent {name} heuristic_index must be an integer")
     agent = MctsAgent(
         iterations=values["iterations"],
         exploration=values.get("exploration", sqrt_two()),
         rollout_depth=values["rollout_depth"],
-        heuristic=heuristic_index if use_heuristic else None,
+        cutoff_evaluator=_configured_cutoff_evaluator(
+            values,
+            f"tournament agent {name}",
+        ),
+        rollout_policy=_configured_rollout_policy(values, f"tournament agent {name}"),
     )
     Match(game=game, first=agent, second=RandomAgent())
     return agent
-
-
-def _tournament_grid_suffix(field: str, agent: MctsAgent) -> str:
-    suffix = dict(_TOURNAMENT_GRID_FIELDS)[field]
-    value = {
-        "iterations": agent.iterations,
-        "rollout_depth": agent.rollout_depth,
-        "exploration": agent.exploration,
-        "heuristic_index": agent.heuristic,
-    }[field]
-    return f"-{suffix}{value}"
 
 
 def _positive_tournament_integer(name: str, value: object) -> int:
@@ -1137,6 +1218,12 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
         "rollout_depth",
         "use_heuristic",
         "heuristic_index",
+        "cutoff_evaluator",
+        "rollout_policy",
+        "rollout_evaluator",
+        "rollout_use_heuristic",
+        "rollout_heuristic_index",
+        "rollout_epsilon",
     }
     unknown = sorted(values.keys() - allowed)
     if unknown:
@@ -1148,20 +1235,14 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
     name = values.get("name", path.stem)
     if not isinstance(name, str) or not name.strip():
         raise ValueError("MCTS profile name must be a non-empty string")
-    use_heuristic = values.get("use_heuristic", False)
-    if not isinstance(use_heuristic, bool):
-        raise TypeError("MCTS profile use_heuristic must be a boolean")
-    heuristic_index = values.get("heuristic_index", 0)
-    if isinstance(heuristic_index, bool) or not isinstance(heuristic_index, int):
-        raise TypeError("MCTS profile heuristic_index must be an integer")
-
     return _MctsProfile(
         name=name.strip(),
         agent=MctsAgent(
             iterations=values["iterations"],
             exploration=values.get("exploration", sqrt_two()),
             rollout_depth=values["rollout_depth"],
-            heuristic=heuristic_index if use_heuristic else None,
+            cutoff_evaluator=_configured_cutoff_evaluator(values, "MCTS profile"),
+            rollout_policy=_configured_rollout_policy(values, "MCTS profile"),
         ),
     )
 
@@ -1194,9 +1275,22 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         "d": "rollout_depth",
         "depth": "rollout_depth",
         "rollout_depth": "rollout_depth",
+        "c": "exploration",
         "exploration": "exploration",
         "h": "heuristic",
         "heuristic": "heuristic",
+        "ce": "cutoff_evaluator",
+        "cutoff": "cutoff_evaluator",
+        "cutoff_evaluator": "cutoff_evaluator",
+        "p": "rollout_policy",
+        "policy": "rollout_policy",
+        "rollout_policy": "rollout_policy",
+        "e": "rollout_epsilon",
+        "epsilon": "rollout_epsilon",
+        "rollout_epsilon": "rollout_epsilon",
+        "rh": "rollout_heuristic",
+        "rollout_h": "rollout_heuristic",
+        "rollout_heuristic": "rollout_heuristic",
     }
     if spec.strip():
         for raw_field in spec.split(","):
@@ -1231,11 +1325,34 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         if heuristic_text.lower() == "none"
         else _inline_agent_integer(heuristic_text, "heuristic")
     )
+    if "cutoff_evaluator" in values and "heuristic" in values:
+        raise ValueError("inline analyze agent cannot combine h with ce/cutoff")
+    cutoff_evaluator = (
+        _inline_evaluator(values["cutoff_evaluator"], "cutoff")
+        if "cutoff_evaluator" in values
+        else (NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic))
+    )
+    policy_name = values.get("rollout_policy", "uniform_random").lower()
+    policy_values: dict[str, object] = {"rollout_policy": policy_name}
+    if "rollout_epsilon" in values:
+        try:
+            policy_values["rollout_epsilon"] = float(values["rollout_epsilon"])
+        except ValueError as error:
+            raise ValueError("inline analyze agent rollout epsilon must be a number") from error
+    if "rollout_heuristic" in values:
+        policy_values["rollout_heuristic_index"] = _inline_agent_integer(
+            values["rollout_heuristic"],
+            "rollout heuristic",
+        )
     agent = MctsAgent(
         iterations=iterations,
         exploration=exploration,
         rollout_depth=rollout_depth,
-        heuristic=heuristic,
+        cutoff_evaluator=cutoff_evaluator,
+        rollout_policy=_configured_rollout_policy(
+            policy_values,
+            "inline analyze agent",
+        ),
     )
     name = values.get("name")
     if name is not None and not name.strip():
@@ -1253,6 +1370,15 @@ def _inline_agent_integer(value: str, field: str) -> int:
         raise ValueError(f"inline analyze agent {field} must be an integer") from error
 
 
+def _inline_evaluator(value: str, field: str) -> NeutralEvaluator | GameHeuristic:
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized in {"neutral", "none"}:
+        return NeutralEvaluator()
+    if normalized.startswith("h"):
+        return GameHeuristic(_inline_agent_integer(normalized[1:], field))
+    raise ValueError(f"inline analyze agent {field} evaluator must be neutral or hINDEX")
+
+
 def _inline_agent_name(agent: MctsAgent) -> str:
     parts = ["mcts"]
     if agent.heuristic is not None:
@@ -1260,6 +1386,15 @@ def _inline_agent_name(agent: MctsAgent) -> str:
     parts.extend((f"i{agent.iterations}", f"d{agent.rollout_depth}"))
     if agent.exploration != sqrt_two():
         parts.append(f"c{agent.exploration}")
+    rollout_heuristic = _evaluator_heuristic_index(
+        _rollout_policy_evaluator(agent.rollout_policy)
+    )
+    if isinstance(agent.rollout_policy, EpsilonGreedy):
+        parts.extend(("p-epsilon-greedy", f"e{agent.rollout_policy.epsilon}"))
+    elif isinstance(agent.rollout_policy, Greedy):
+        parts.append("p-greedy")
+    if rollout_heuristic is not None:
+        parts.append(f"rh{rollout_heuristic}")
     return "-".join(parts)
 
 
@@ -1319,7 +1454,8 @@ def _batch_agent_description(name: str, agent: RandomAgent | MctsAgent) -> str:
     return (
         f"{name} (iterations={agent.iterations}, rollout_depth={agent.rollout_depth}, "
         f"exploration={agent.exploration:.6f}, "
-        f"heuristic={_heuristic_name(agent.heuristic)})"
+        f"cutoff={_evaluator_name(agent.cutoff_evaluator)}, "
+        f"rollout={_rollout_policy_description(agent)})"
     )
 
 
@@ -1333,6 +1469,16 @@ def _batch_agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, ob
         "rollout_depth": agent.rollout_depth,
         "exploration": agent.exploration,
         "heuristic": agent.heuristic,
+        "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator),
+        "rollout_policy": _rollout_policy_name(agent),
+        "rollout_evaluator": _evaluator_dict(
+            _rollout_policy_evaluator(agent.rollout_policy)
+        ),
+        "rollout_epsilon": (
+            agent.rollout_policy.epsilon
+            if isinstance(agent.rollout_policy, EpsilonGreedy)
+            else None
+        ),
     }
 
 
@@ -1438,6 +1584,22 @@ def _mcts_configuration(args: argparse.Namespace) -> MctsAgent:
         rollout_depth=(
             256 if args.mcts_rollout_depth is None else args.mcts_rollout_depth
         ),
+        rollout_policy=_configured_rollout_policy(
+            {
+                "rollout_policy": args.mcts_rollout_policy,
+                **(
+                    {"rollout_epsilon": args.mcts_rollout_epsilon}
+                    if args.mcts_rollout_epsilon is not None
+                    else {}
+                ),
+                **(
+                    {"rollout_heuristic_index": args.mcts_rollout_heuristic}
+                    if args.mcts_rollout_heuristic is not None
+                    else {}
+                ),
+            },
+            "manual MCTS configuration",
+        ),
     )
 
 
@@ -1473,20 +1635,249 @@ def _agent(
             iterations=mcts.iterations,
             exploration=mcts.exploration,
             rollout_depth=mcts.rollout_depth,
-            heuristic=heuristic,
+            cutoff_evaluator=(
+                NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic)
+            ),
+            rollout_policy=mcts.rollout_policy,
         )
     return RandomAgent()
 
 
 def _agent_dict(name: str, agent) -> dict[str, object]:
+    cutoff_evaluator = agent.cutoff_evaluator if isinstance(agent, MctsAgent) else None
+    rollout_evaluator = (
+        _rollout_policy_evaluator(agent.rollout_policy)
+        if isinstance(agent, MctsAgent)
+        else None
+    )
     return {
         "type": name,
         "heuristic": agent.heuristic if isinstance(agent, MctsAgent) else None,
+        "cutoff_evaluator": _evaluator_dict(cutoff_evaluator),
+        "rollout_policy": (
+            _rollout_policy_name(agent) if isinstance(agent, MctsAgent) else None
+        ),
+        "rollout_evaluator": _evaluator_dict(rollout_evaluator),
+        "rollout_epsilon": (
+            agent.rollout_policy.epsilon
+            if isinstance(agent, MctsAgent)
+            and isinstance(agent.rollout_policy, EpsilonGreedy)
+            else None
+        ),
     }
 
 
 def _heuristic_name(heuristic: int | None) -> str:
     return "none" if heuristic is None else str(heuristic)
+
+
+def _configured_cutoff_evaluator(
+    values: dict[str, object],
+    context: str,
+) -> NeutralEvaluator | GameHeuristic:
+    if "cutoff_evaluator" in values:
+        legacy = {"use_heuristic", "heuristic_index"} & values.keys()
+        if legacy:
+            raise ValueError(
+                f"{context} cutoff_evaluator cannot be combined with: "
+                + ", ".join(sorted(legacy))
+            )
+        return _configured_evaluator(values["cutoff_evaluator"], f"{context} cutoff")
+
+    use_heuristic = values.get("use_heuristic", False)
+    if not isinstance(use_heuristic, bool):
+        raise TypeError(f"{context} use_heuristic must be a boolean")
+    heuristic_index = values.get("heuristic_index", 0)
+    if isinstance(heuristic_index, bool) or not isinstance(heuristic_index, int):
+        raise TypeError(f"{context} heuristic_index must be an integer")
+    return GameHeuristic(heuristic_index) if use_heuristic else NeutralEvaluator()
+
+
+def _configured_evaluator(
+    value: object,
+    context: str,
+) -> NeutralEvaluator | GameHeuristic:
+    if isinstance(value, str):
+        kind = value
+        fields: dict[str, object] = {}
+    elif isinstance(value, dict):
+        unknown = sorted(value.keys() - {"kind", "index"})
+        if unknown:
+            raise ValueError(f"unknown {context} evaluator fields: {', '.join(unknown)}")
+        kind = value.get("kind")
+        fields = value
+    else:
+        raise TypeError(f"{context} evaluator must be a string or TOML table")
+
+    if not isinstance(kind, str):
+        raise TypeError(f"{context} evaluator kind must be a string")
+    normalized = kind.strip().lower().replace("-", "_")
+    if normalized == "neutral":
+        if "index" in fields:
+            raise ValueError(f"{context} neutral evaluator cannot have an index")
+        return NeutralEvaluator()
+    if normalized not in {"game_heuristic", "heuristic"}:
+        raise ValueError(f"{context} evaluator kind must be neutral or game_heuristic")
+    index = fields.get("index")
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise TypeError(f"{context} game_heuristic evaluator requires an integer index")
+    return GameHeuristic(index)
+
+
+def _configured_rollout_policy(
+    values: dict[str, object],
+    context: str,
+) -> UniformRandom | Greedy | EpsilonGreedy:
+    policy = values.get("rollout_policy", "uniform_random")
+    if isinstance(policy, dict):
+        unknown = sorted(policy.keys() - {"kind", "epsilon", "evaluator"})
+        if unknown:
+            raise ValueError(f"unknown {context} rollout policy fields: {', '.join(unknown)}")
+        kind = policy.get("kind")
+        if not isinstance(kind, str):
+            raise TypeError(f"{context} rollout policy kind must be a string")
+        flat_fields = {
+            "rollout_evaluator",
+            "rollout_use_heuristic",
+            "rollout_heuristic_index",
+            "rollout_epsilon",
+        }
+        if flat_fields & values.keys():
+            raise ValueError(
+                f"{context} structured rollout_policy cannot use flat rollout evaluator fields"
+            )
+        normalized_policy = kind.strip().lower().replace("-", "_")
+        evaluator = (
+            _configured_evaluator(policy["evaluator"], f"{context} rollout")
+            if "evaluator" in policy
+            else None
+        )
+        epsilon = policy.get("epsilon")
+    elif isinstance(policy, str):
+        normalized_policy = policy.strip().lower().replace("-", "_")
+        evaluator = _configured_legacy_rollout_evaluator(
+            values,
+            context,
+            share_legacy_cutoff=normalized_policy
+            not in {"uniform_random", "uniform", "random"},
+        )
+        epsilon = values.get("rollout_epsilon")
+    else:
+        raise TypeError(f"{context} rollout_policy must be a string or TOML table")
+
+    if normalized_policy in {"uniform_random", "uniform", "random"}:
+        if evaluator is not None or epsilon is not None:
+            raise ValueError(f"{context} uniform_random rollout accepts no evaluator or epsilon")
+        return UniformRandom()
+    if evaluator is None:
+        raise ValueError(f"{context} {normalized_policy} rollout requires an evaluator")
+    if normalized_policy == "greedy":
+        if epsilon is not None:
+            raise ValueError(f"{context} greedy rollout does not accept epsilon")
+        return Greedy(evaluator)
+    if normalized_policy not in {
+        "epsilon_greedy_heuristic",
+        "epsilon_greedy",
+        "epsilon",
+    }:
+        raise ValueError(
+            f"{context} rollout_policy must be uniform_random, greedy, or epsilon_greedy"
+        )
+    epsilon = 0.1 if epsilon is None else epsilon
+    if isinstance(epsilon, bool) or not isinstance(epsilon, (int, float)):
+        raise TypeError(f"{context} rollout_epsilon must be a number")
+    return EpsilonGreedy(float(epsilon), evaluator)
+
+
+def _configured_legacy_rollout_evaluator(
+    values: dict[str, object],
+    context: str,
+    *,
+    share_legacy_cutoff: bool,
+) -> NeutralEvaluator | GameHeuristic | None:
+    if "rollout_evaluator" in values:
+        legacy = {"rollout_use_heuristic", "rollout_heuristic_index"} & values.keys()
+        if legacy:
+            raise ValueError(
+                f"{context} rollout_evaluator cannot be combined with: "
+                + ", ".join(sorted(legacy))
+            )
+        return _configured_evaluator(values["rollout_evaluator"], f"{context} rollout")
+    if "rollout_use_heuristic" in values:
+        enabled = values["rollout_use_heuristic"]
+        if not isinstance(enabled, bool):
+            raise TypeError(f"{context} rollout_use_heuristic must be a boolean")
+        if not enabled:
+            return NeutralEvaluator()
+    if "rollout_heuristic_index" in values or values.get("rollout_use_heuristic") is True:
+        index = values.get("rollout_heuristic_index", 0)
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError(f"{context} rollout_heuristic_index must be an integer")
+        return GameHeuristic(index)
+
+    # Compatibility with the first informed-rollout format, where one heuristic was shared.
+    if share_legacy_cutoff and values.get("use_heuristic") is True:
+        index = values.get("heuristic_index", 0)
+        if isinstance(index, int) and not isinstance(index, bool):
+            return GameHeuristic(index)
+    return None
+
+
+def _rollout_policy_name(agent: MctsAgent) -> str:
+    if isinstance(agent.rollout_policy, EpsilonGreedy):
+        return "epsilon_greedy"
+    if isinstance(agent.rollout_policy, Greedy):
+        return "greedy"
+    return "uniform_random"
+
+
+def _rollout_policy_evaluator(
+    policy: UniformRandom | Greedy | EpsilonGreedy,
+) -> NeutralEvaluator | GameHeuristic | None:
+    return None if isinstance(policy, UniformRandom) else policy.evaluator
+
+
+def _evaluator_heuristic_index(
+    evaluator: NeutralEvaluator | GameHeuristic | None,
+) -> int | None:
+    return evaluator.index if isinstance(evaluator, GameHeuristic) else None
+
+
+def _evaluator_dict(
+    evaluator: NeutralEvaluator | GameHeuristic | None,
+) -> dict[str, object] | None:
+    if evaluator is None:
+        return None
+    if isinstance(evaluator, GameHeuristic):
+        return {"kind": "game_heuristic", "index": evaluator.index}
+    return {"kind": "neutral"}
+
+
+def _evaluator_name(evaluator: NeutralEvaluator | GameHeuristic | None) -> str:
+    if isinstance(evaluator, GameHeuristic):
+        return f"game_heuristic({evaluator.index})"
+    return "neutral" if evaluator is not None else "none"
+
+
+def _serialized_evaluator_name(evaluator: object) -> str:
+    if evaluator is None:
+        return "none"
+    if not isinstance(evaluator, dict):
+        raise TypeError("serialized evaluator must be an object")
+    kind = evaluator.get("kind")
+    if kind == "game_heuristic":
+        return f"game_heuristic({evaluator.get('index')})"
+    return str(kind)
+
+
+def _rollout_policy_description(agent: MctsAgent) -> str:
+    policy = _rollout_policy_name(agent)
+    evaluator = _rollout_policy_evaluator(agent.rollout_policy)
+    if evaluator is not None:
+        policy += f"/{_evaluator_name(evaluator)}"
+    if isinstance(agent.rollout_policy, EpsilonGreedy):
+        policy += f"/epsilon={agent.rollout_policy.epsilon}"
+    return policy
 
 
 def _result_dict(result: MatchResult) -> dict[str, object]:
@@ -1635,7 +2026,10 @@ def _print_result(
 
 def _agent_name(name: str, agent) -> str:
     if isinstance(agent, MctsAgent):
-        return f"{name} (heuristic {_heuristic_name(agent.heuristic)})"
+        return (
+            f"{name} (cutoff {_evaluator_name(agent.cutoff_evaluator)}, "
+            f"rollout {_rollout_policy_description(agent)})"
+        )
     return name
 
 
@@ -1796,6 +2190,16 @@ def _configured_benchmark_dicts(
                 "rollout_depth": agent.rollout_depth,
                 "exploration": agent.exploration,
                 "heuristic": agent.heuristic,
+                "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator),
+                "rollout_policy": _rollout_policy_name(agent),
+                "rollout_evaluator": _evaluator_dict(
+                    _rollout_policy_evaluator(agent.rollout_policy)
+                ),
+                "rollout_epsilon": (
+                    agent.rollout_policy.epsilon
+                    if isinstance(agent.rollout_policy, EpsilonGreedy)
+                    else None
+                ),
                 "sampled_positions": benchmark.sampled_positions,
                 "decision_time_mean_ms": benchmark.decision_time_mean_ms,
                 "decision_time_p50_ms": benchmark.decision_time_p50_ms,
@@ -1888,14 +2292,21 @@ def _print_evaluation(
         )
         rows = _configured_benchmark_dicts(report, configured_benchmarks)
         for row in rows:
-            heuristic = _heuristic_name(row["heuristic"])
+            rollout_policy = row["rollout_policy"]
+            if row["rollout_epsilon"] is not None:
+                rollout_policy += f"(epsilon={row['rollout_epsilon']})"
+            rollout_evaluator = _serialized_evaluator_name(row["rollout_evaluator"])
+            if rollout_evaluator != "none":
+                rollout_policy += f", evaluator={rollout_evaluator}"
             timings = ", ".join(
                 f"ply {timing['sampled_ply']}={timing['milliseconds']:.2f} ms"
                 for timing in row["position_timings"]
             )
             print(
                 f"  {row['rank']}. {row['name']}: {row['iterations']:,} iterations, "
-                f"depth {row['rollout_depth']}, heuristic={heuristic}"
+                f"depth {row['rollout_depth']}, "
+                f"cutoff={_serialized_evaluator_name(row['cutoff_evaluator'])}, "
+                f"rollout={rollout_policy}"
             )
             print(
                 f"     mean={row['decision_time_mean_ms']:.2f} ms, "

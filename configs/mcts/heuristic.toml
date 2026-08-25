@@ -3,7 +3,5 @@ name = "heuristic-mcts"
 iterations = 10000
 rollout_depth = 16
 exploration = 1.4142135623730951
-
-# Set this to true to enable the selected game's heuristic.
-use_heuristic = true
-heuristic_index = 0
+cutoff_evaluator = { kind = "game_heuristic", index = 0 }
+rollout_policy = { kind = "uniform_random" }

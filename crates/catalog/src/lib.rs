@@ -8,7 +8,7 @@ use meeple_bots_boop::{
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{
-    Agent, AgentError, DecisionContext, Game, HeuristicGame, PlayerId, RandomSource,
+    Agent, AgentError, DeterministicGame, Game, HeuristicGame, PlayerId, RandomSource,
 };
 pub use meeple_bots_evaluation::{
     EvaluationConfig, EvaluationError, GameEvaluationReport, IterationBudgetEstimate,
@@ -17,8 +17,8 @@ pub use meeple_bots_evaluation::{
 use meeple_bots_evaluation::{
     benchmark_mcts_agent as benchmark_typed_mcts_agent, evaluate_game as evaluate_typed_game,
 };
-pub use meeple_bots_mcts_agent::MctsConfig;
-use meeple_bots_mcts_agent::{GameHeuristic, MctsAgent};
+use meeple_bots_mcts_agent::{GameHeuristic, MctsAgent, StateEvaluator};
+pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, UniformRandom};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{
     BatchConfig, MatchError, MatchObserver, SplitMix64, TracedMatchResult, play_batch, play_match,
@@ -47,8 +47,17 @@ pub enum AgentConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MctsAgentConfig {
-    pub search: MctsConfig,
-    pub heuristic: Option<u32>,
+    pub search: MctsConfig<RolloutPolicyConfig<EvaluatorConfig>>,
+    pub cutoff_evaluator: EvaluatorConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EvaluatorConfig {
+    #[default]
+    Neutral,
+    GameHeuristic {
+        index: u32,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -212,6 +221,7 @@ pub enum CatalogError {
         index: u32,
         available: u32,
     },
+    InvalidMctsConfig(&'static str),
     AnalysisUnavailable(GameId),
     InvalidTrace {
         game: GameId,
@@ -240,6 +250,7 @@ impl fmt::Display for CatalogError {
                     )
                 }
             }
+            Self::InvalidMctsConfig(message) => formatter.write_str(message),
             Self::AnalysisUnavailable(game) => {
                 write!(
                     formatter,
@@ -464,82 +475,120 @@ fn catalog_boop_action(action: &CatalogAction) -> Result<BoopAction, &'static st
     Ok(BoopAction::new(piece, position, resolution))
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum BoopMctsAgent {
-    Neutral(MctsAgent),
-    Heuristic(MctsAgent<GameHeuristic>),
-}
+pub type BoopMctsAgent = MctsAgent<EvaluatorConfig, RolloutPolicyConfig<EvaluatorConfig>>;
+pub type SpiritsOfTheForestMctsAgent =
+    MctsAgent<EvaluatorConfig, RolloutPolicyConfig<EvaluatorConfig>>;
 
-#[derive(Clone, Copy, Debug)]
-pub enum SpiritsOfTheForestMctsAgent {
-    Neutral(MctsAgent),
-    Heuristic(MctsAgent<GameHeuristic>),
-}
-
-impl Agent<SpiritsOfTheForest> for SpiritsOfTheForestMctsAgent {
-    fn select_action<R: RandomSource + ?Sized>(
-        &mut self,
-        decision: DecisionContext<'_, SpiritsOfTheForest>,
-        rng: &mut R,
-    ) -> Result<SpiritsOfTheForestAction, AgentError> {
-        match self {
-            Self::Neutral(agent) => agent.select_action(decision, rng),
-            Self::Heuristic(agent) => agent.select_action(decision, rng),
-        }
-    }
-}
-
-impl Agent<Boop> for BoopMctsAgent {
-    fn select_action<R: RandomSource + ?Sized>(
-        &mut self,
-        decision: DecisionContext<'_, Boop>,
-        rng: &mut R,
-    ) -> Result<BoopAction, AgentError> {
-        match self {
-            Self::Neutral(agent) => agent.select_action(decision, rng),
-            Self::Heuristic(agent) => agent.select_action(decision, rng),
+impl<G> StateEvaluator<G> for EvaluatorConfig
+where
+    G: DeterministicGame + HeuristicGame,
+{
+    fn evaluate(
+        &self,
+        game: &G,
+        state: &G::State,
+        perspective: PlayerId,
+    ) -> Result<f64, AgentError> {
+        match *self {
+            Self::Neutral => Ok(0.0),
+            Self::GameHeuristic { index } => {
+                GameHeuristic::new(index).evaluate(game, state, perspective)
+            }
         }
     }
 }
 
 pub fn configured_boop_mcts(config: MctsAgentConfig) -> Result<BoopMctsAgent, CatalogError> {
-    match config.heuristic {
-        None => Ok(BoopMctsAgent::Neutral(MctsAgent::new(config.search))),
-        Some(index) => {
-            validate_heuristic(GameId::Boop, &Boop, index)?;
-            Ok(BoopMctsAgent::Heuristic(MctsAgent::with_evaluator(
-                config.search,
-                GameHeuristic::new(index),
-            )))
-        }
-    }
+    validate_agent_evaluators(GameId::Boop, &Boop, &config)?;
+    Ok(MctsAgent::with_cutoff_evaluator(
+        config.search,
+        config.cutoff_evaluator,
+    ))
 }
 
 pub fn configured_spirits_of_the_forest_mcts(
     config: MctsAgentConfig,
 ) -> Result<SpiritsOfTheForestMctsAgent, CatalogError> {
-    match config.heuristic {
-        None => Ok(SpiritsOfTheForestMctsAgent::Neutral(MctsAgent::new(
-            config.search,
-        ))),
-        Some(index) => {
-            let game = spirits_of_the_forest_game(0);
-            validate_heuristic(GameId::SpiritsOfTheForest, &game, index)?;
-            Ok(SpiritsOfTheForestMctsAgent::Heuristic(
-                MctsAgent::with_evaluator(config.search, GameHeuristic::new(index)),
-            ))
+    let game = spirits_of_the_forest_game(0);
+    validate_agent_evaluators(GameId::SpiritsOfTheForest, &game, &config)?;
+    Ok(MctsAgent::with_cutoff_evaluator(
+        config.search,
+        config.cutoff_evaluator,
+    ))
+}
+
+pub fn configured_connect_four_mcts(
+    config: MctsAgentConfig,
+) -> Result<MctsAgent<meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>, CatalogError> {
+    validate_uninformed_agent(GameId::ConnectFour, &config)?;
+    Ok(MctsAgent::new(uniform_search_config(config.search)))
+}
+
+pub fn configured_tic_tac_toe_mcts(
+    config: MctsAgentConfig,
+) -> Result<MctsAgent<meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>, CatalogError> {
+    validate_uninformed_agent(GameId::TicTacToe, &config)?;
+    Ok(MctsAgent::new(uniform_search_config(config.search)))
+}
+
+fn validate_agent_evaluators<G: HeuristicGame>(
+    game_id: GameId,
+    game: &G,
+    config: &MctsAgentConfig,
+) -> Result<(), CatalogError> {
+    validate_evaluator(game_id, game, config.cutoff_evaluator)?;
+    match config.search.rollout_policy {
+        RolloutPolicyConfig::UniformRandom => {}
+        RolloutPolicyConfig::Greedy { evaluator } => {
+            validate_evaluator(game_id, game, evaluator)?;
         }
+        RolloutPolicyConfig::EpsilonGreedy { epsilon, evaluator } => {
+            if !epsilon.is_finite() || !(0.0..=1.0).contains(&epsilon) {
+                return Err(CatalogError::InvalidMctsConfig(
+                    "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
+                ));
+            }
+            validate_evaluator(game_id, game, evaluator)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_evaluator<G: HeuristicGame>(
+    game_id: GameId,
+    game: &G,
+    evaluator: EvaluatorConfig,
+) -> Result<(), CatalogError> {
+    match evaluator {
+        EvaluatorConfig::Neutral => Ok(()),
+        EvaluatorConfig::GameHeuristic { index } => validate_heuristic(game_id, game, index),
     }
 }
 
-pub fn configured_connect_four_mcts(config: MctsAgentConfig) -> Result<MctsAgent, CatalogError> {
-    reject_unsupported_heuristic(GameId::ConnectFour, config.heuristic)?;
-    Ok(MctsAgent::new(config.search))
+fn validate_uninformed_agent(game: GameId, config: &MctsAgentConfig) -> Result<(), CatalogError> {
+    if let EvaluatorConfig::GameHeuristic { index } = config.cutoff_evaluator {
+        return Err(unsupported_heuristic(game, index, 0));
+    }
+    if !matches!(
+        config.search.rollout_policy,
+        RolloutPolicyConfig::UniformRandom
+    ) {
+        return Err(CatalogError::InvalidMctsConfig(
+            "informed rollout requires a game with MCTS evaluators",
+        ));
+    }
+    Ok(())
 }
 
-pub fn configured_tic_tac_toe_mcts(config: MctsAgentConfig) -> Result<MctsAgent, CatalogError> {
-    reject_unsupported_heuristic(GameId::TicTacToe, config.heuristic)?;
-    Ok(MctsAgent::new(config.search))
+fn uniform_search_config(
+    config: MctsConfig<RolloutPolicyConfig<EvaluatorConfig>>,
+) -> MctsConfig<UniformRandom> {
+    MctsConfig {
+        iterations: config.iterations,
+        exploration: config.exploration,
+        rollout_depth: config.rollout_depth,
+        rollout_policy: UniformRandom,
+    }
 }
 
 fn validate_heuristic<G: HeuristicGame>(
@@ -552,13 +601,6 @@ fn validate_heuristic<G: HeuristicGame>(
         Ok(())
     } else {
         Err(unsupported_heuristic(game_id, index, available))
-    }
-}
-
-fn reject_unsupported_heuristic(game: GameId, heuristic: Option<u32>) -> Result<(), CatalogError> {
-    match heuristic {
-        Some(index) => Err(unsupported_heuristic(game, index, 0)),
-        None => Ok(()),
     }
 }
 
@@ -1372,10 +1414,13 @@ mod tests {
         AgentConfig::Mcts(MctsAgentConfig {
             search: MctsConfig {
                 iterations: NonZeroU32::new(4).unwrap(),
+                exploration: std::f64::consts::SQRT_2,
                 rollout_depth: 1,
-                ..MctsConfig::default()
+                rollout_policy: RolloutPolicyConfig::UniformRandom,
             },
-            heuristic,
+            cutoff_evaluator: heuristic.map_or(EvaluatorConfig::Neutral, |index| {
+                EvaluatorConfig::GameHeuristic { index }
+            }),
         })
     }
 
@@ -1426,6 +1471,25 @@ mod tests {
             unsupported.to_string(),
             "tic-tac-toe does not provide MCTS heuristics"
         );
+
+        let AgentConfig::Mcts(mut informed_without_cutoff_heuristic) = mcts(None) else {
+            unreachable!();
+        };
+        informed_without_cutoff_heuristic.search.rollout_policy =
+            RolloutPolicyConfig::EpsilonGreedy {
+                epsilon: 0.1,
+                evaluator: EvaluatorConfig::GameHeuristic { index: 0 },
+            };
+        configured_boop_mcts(informed_without_cutoff_heuristic).unwrap();
+
+        let AgentConfig::Mcts(mut invalid_rollout_heuristic) = mcts(None) else {
+            unreachable!();
+        };
+        invalid_rollout_heuristic.search.rollout_policy = RolloutPolicyConfig::Greedy {
+            evaluator: EvaluatorConfig::GameHeuristic { index: 2 },
+        };
+        let error = configured_boop_mcts(invalid_rollout_heuristic).unwrap_err();
+        assert!(error.to_string().contains("available indices: 0..1"));
     }
 
     #[test]

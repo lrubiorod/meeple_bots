@@ -3,7 +3,10 @@ name = "example-mcts"
 iterations = 500
 rollout_depth = 16
 exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "neutral" }
+rollout_policy = { kind = "uniform_random" }
 
-# Set this to true to enable the selected game's heuristic.
-use_heuristic = false
-heuristic_index = 0
+# Informed-rollout example, independent from cutoff evaluation:
+# rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 0 } }
+
+# Legacy profiles using use_heuristic/heuristic_index and flat rollout fields remain supported.

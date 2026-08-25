@@ -612,6 +612,7 @@ where
         iterations,
         exploration: std::f64::consts::SQRT_2,
         rollout_depth,
+        ..MctsConfig::default()
     });
     let mut rng = SplitMix64::new(seed);
     let started = Instant::now();

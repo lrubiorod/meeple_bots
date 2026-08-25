@@ -34,7 +34,8 @@ decision it builds a new tree and repeats four steps:
 
 1. Select children with UCT until reaching a node with an unexpanded action.
 2. Expand one randomly selected action.
-3. Play uniformly random actions until the game ends or the rollout limit is reached.
+3. Select simulated actions with the configured rollout policy until the game ends or the rollout
+   limit is reached.
 4. Backpropagate the utility from the root player's perspective.
 
 The real action is the root child with the most visits; mean utility breaks visit ties.
@@ -43,8 +44,8 @@ Utilities stored in the tree always use the root player's perspective. During UC
 reads the active player from `PositionStatus`: it maximizes the stored utility while the root
 player keeps making decisions and minimizes it once control passes to the opponent. It does not
 alternate maximize and minimize by tree depth. A game may therefore represent one physical turn
-as several consecutive engine actions without changing the search semantics. Rollout actions are
-still selected uniformly rather than by minimax.
+as several consecutive engine actions without changing the search semantics. Uniform rollout is
+the default; informed policies use the same active-player perspective when ranking actions.
 
 The current agent builds a fresh tree for every real engine action. A later decision in the same
 physical turn is considered by earlier simulations, then searched again from its authoritative
@@ -68,11 +69,51 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 | `iterations` | `1_000` | Tree-search iterations performed for each decision. |
 | `exploration` | `sqrt(2)` | UCT balance between utility and less-visited branches. |
 | `rollout_depth` | `256` | Maximum simulated actions after expansion. |
-| `heuristic` | `None` | Optional zero-based game evaluator used at a rollout cutoff. |
+| `cutoff_evaluator` | `NeutralEvaluator()` | Evaluator used only when a rollout reaches its depth cutoff. |
+| `rollout_policy` | `UniformRandom()` | Policy used to select simulated actions outside the tree. |
+
+The legacy `heuristic=INDEX` argument remains available as shorthand for
+`cutoff_evaluator=GameHeuristic(INDEX)`.
 
 More iterations usually improve coverage but also increase response time. Iteration count is not a
 portable measure of work: action generation, branching, rollout length, and build profile all
 affect the cost of one iteration.
+
+### Rollout policies
+
+`UniformRandom` is the baseline and preserves the original MCTS behavior. It samples every legal
+rollout action with equal probability and does not require a game heuristic.
+
+`Greedy` always chooses a best-rated successor. `EpsilonGreedy` does so with probability
+`1 - epsilon` and otherwise explores a uniformly random action. Both receive their own evaluator,
+independent from the cutoff evaluator. They maximize for the root player and minimize for the
+opponent by reading the active player from `PositionStatus`, so consecutive actions by one player
+remain correct.
+
+```python
+from meeple_bots import EpsilonGreedy, GameHeuristic, MctsAgent, NeutralEvaluator
+
+agent = MctsAgent(
+    iterations=10_000,
+    rollout_depth=32,
+    cutoff_evaluator=NeutralEvaluator(),
+    rollout_policy=EpsilonGreedy(
+        epsilon=0.1,
+        evaluator=GameHeuristic(1),
+    ),
+)
+```
+
+This example is an informed rollout without heuristic cutoff evaluation. The inverse combination
+is also valid: `GameHeuristic(1)` as `cutoff_evaluator` with `UniformRandom()` rollouts. Informed
+policies evaluate and copy every candidate successor, so their iterations are more expensive than
+uniform-random iterations. Compare policies at equal wall-clock decision budgets as well as equal
+iteration counts.
+
+In Rust, `MctsAgent<C, P>` is generic over `C: StateEvaluator` and `P: RolloutPolicy`. `Greedy<E>`
+and `EpsilonGreedy<E>` are themselves generic over their rollout evaluator. The runtime catalog
+uses configuration enums for the built-in variants, while a Rust integration can inject another
+concrete evaluator or policy without duplicating the MCTS loop or paying for dynamic dispatch.
 
 ### Cutoff evaluation
 
@@ -92,8 +133,8 @@ Boop currently exposes two evaluators:
 
 See the [Boop guide](../games/boop/README.md#mcts-heuristics) for their exact interpretation.
 
-Spirits of the Forest exposes heuristic `0`, which combines provisional majority scoring with
-usable gemstones and active reservations. See its
+Spirits of the Forest exposes heuristic `0`, plus heuristic `1` with stronger early- and mid-game
+gemstone conservation. See its
 [game guide](../games/spirits-of-the-forest/README.md#mcts-heuristic).
 
 ### Reusable profiles
@@ -107,13 +148,15 @@ name = "example-mcts"
 iterations = 500
 rollout_depth = 16
 exploration = 1.4142135623730951
-use_heuristic = false
-heuristic_index = 0
+cutoff_evaluator = { kind = "neutral" }
+rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 0 } }
 ```
 
 `iterations` and `rollout_depth` are required. `exploration` defaults to `sqrt(2)`,
-`use_heuristic` defaults to `false`, and `heuristic_index` defaults to `0`. The index is ignored
-unless heuristic use is enabled.
+`cutoff_evaluator` defaults to neutral, and `rollout_policy` defaults to uniform random. Evaluator
+kinds currently supported by the catalog are `neutral` and `game_heuristic`. Rollout policy kinds
+are `uniform_random`, `greedy`, and `epsilon_greedy`. The legacy `use_heuristic`,
+`heuristic_index`, `rollout_heuristic_index`, and flat rollout fields remain accepted.
 
 ```bash
 meeple-bots match --game boop --first mcts --second random \
