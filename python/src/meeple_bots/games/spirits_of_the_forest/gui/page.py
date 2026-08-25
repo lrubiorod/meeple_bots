@@ -27,7 +27,7 @@ PAGE = r"""<!doctype html>
 <label>Jugador 2<select id="player-1"><option value="mcts">MCTS</option><option value="human">Humano</option><option value="random">Random</option></select></label>
 <label>Iteraciones MCTS<input id="iterations" type="number" min="1" value="500"></label>
 <label>Profundidad<input id="depth" type="number" min="1" value="64"></label>
-<label>Heurística<select id="heuristic"><option value="0">Puntuación y gemas</option><option value="none">Ninguna</option></select></label>
+<label>Heurística<select id="heuristic"><option value="0">H0 · Puntuación provisional y gemas</option><option value="1">H1 · Conservación de gemas</option><option value="2">H2 · Progreso alcanzable</option><option value="none">Ninguna</option></select></label>
 <label>Semilla<input id="seed" type="number" min="0" value="0"></label>
 <label>Ritmo (s)<input id="pace" type="number" min="0" max="10" step="0.1" value="0.4"></label>
 <button id="start">Nueva partida</button><div class="error" id="error"></div>
@@ -131,7 +131,7 @@ function initializeGui(){
     const button=document.createElement('button');button.className='tile empty';button.addEventListener('click',()=>chooseTile(i));forest.appendChild(button);
   }
   async function api(path,options={}){const response=await fetch(path,options),payload=await response.json();if(!response.ok)throw Error(payload.error||'Error');return payload}
-  function playerConfig(index){return{kind:document.querySelector(`#player-${index}`).value,iterations:Number(document.querySelector('#iterations').value),rollout_depth:Number(document.querySelector('#depth').value),heuristic:document.querySelector('#heuristic').value==='none'?null:0}}
+  function playerConfig(index){const heuristic=document.querySelector('#heuristic').value;return{kind:document.querySelector(`#player-${index}`).value,iterations:Number(document.querySelector('#iterations').value),rollout_depth:Number(document.querySelector('#depth').value),heuristic:heuristic==='none'?null:Number(heuristic)}}
   document.querySelector('#start').onclick=async()=>{try{review=null;selection=null;document.querySelector('#error').textContent='';state=await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({first:playerConfig(0),second:playerConfig(1),seed:Number(document.querySelector('#seed').value),minimum_move_seconds:Number(document.querySelector('#pace').value)})});render()}catch(error){document.querySelector('#error').textContent=error.message}};
   setInterval(async()=>{if(!state||!['playing','waiting_human'].includes(state.status))return;try{state=await api('/api/state');render()}catch(error){}},250);
   function frame(){if(review===null)return state;if(review===0)return state.initial||state;return state.moves[review-1]}

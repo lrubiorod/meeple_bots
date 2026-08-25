@@ -67,9 +67,9 @@ The public action union contains `TakeSpiritTile`, `EndSpiritCollection`,
 `PlaceSpiritGemstone`, `MoveSpiritGemstone`, and `SkipSpiritGemstone`. Human selectors receive
 only currently legal instances of these types.
 
-## MCTS heuristic
+## MCTS heuristics
 
-Two cutoff heuristics are available:
+Three state evaluators are available for cutoff evaluation or informed rollouts:
 
 - Index `0` combines provisional score difference, remaining usable gemstones, and a small
   reservation bonus. Every usable gemstone has a constant weight of `0.5`.
@@ -77,8 +77,13 @@ Two cutoff heuristics are available:
   the fraction of forest tiles remaining: `0.5 + 4 * remaining_fraction^2`. A sacrificed gemstone
   therefore costs `4.5` raw heuristic points at the start, `1.5` halfway through the forest, and
   approaches the index `0` cost near the end.
+- Index `2` keeps the gemstone terms from index `1`, but replaces provisional majority scoring
+  with reachable progress. For each spirit and power source, every collected symbol is worth one
+  raw point only while `collected + remaining >= ceil(total / 2)`. A mathematically lost category
+  is worth zero; once no symbol remains, a player with none receives the real `-3` penalty. All
+  forest symbols are treated as potentially reachable, including reservations.
 
-Both results are normalized to `[-1, 1]`; terminal states always use exact match utility. Neutral
+All results are normalized to `[-1, 1]`; terminal states always use exact match utility. Neutral
 terminal rollouts remain available by leaving `heuristic=None`.
 
 ## Tournament analysis

@@ -1490,6 +1490,17 @@ mod tests {
         };
         let error = configured_boop_mcts(invalid_rollout_heuristic).unwrap_err();
         assert!(error.to_string().contains("available indices: 0..1"));
+
+        let AgentConfig::Mcts(spirits_h2) = mcts(Some(2)) else {
+            unreachable!();
+        };
+        configured_spirits_of_the_forest_mcts(spirits_h2).unwrap();
+
+        let AgentConfig::Mcts(spirits_h3) = mcts(Some(3)) else {
+            unreachable!();
+        };
+        let error = configured_spirits_of_the_forest_mcts(spirits_h3).unwrap_err();
+        assert!(error.to_string().contains("available indices: 0..2"));
     }
 
     #[test]

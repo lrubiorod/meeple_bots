@@ -133,8 +133,9 @@ Boop currently exposes two evaluators:
 
 See the [Boop guide](../games/boop/README.md#mcts-heuristics) for their exact interpretation.
 
-Spirits of the Forest exposes heuristic `0`, plus heuristic `1` with stronger early- and mid-game
-gemstone conservation. See its
+Spirits of the Forest exposes heuristic `0`, heuristic `1` with stronger early- and mid-game
+gemstone conservation, and heuristic `2` based on category progress that can still reach a scoring
+threshold. See its
 [game guide](../games/spirits-of-the-forest/README.md#mcts-heuristic).
 
 ### Reusable profiles

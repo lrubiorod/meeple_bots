@@ -370,6 +370,43 @@ impl SpiritsOfTheForest {
         scores
     }
 
+    fn reachable_progress_scores(&self, state: &SpiritsOfTheForestState) -> [i16; 2] {
+        let mut remaining_spirits = [0_u8; 9];
+        let mut remaining_sources = [0_u8; 3];
+        for (tile, remaining) in self.tiles.iter().zip(state.remaining) {
+            if !remaining {
+                continue;
+            }
+            remaining_spirits[tile.spirit.index()] += tile.spirit_symbols;
+            if let Some(source) = tile.power_source {
+                remaining_sources[source.index()] += 1;
+            }
+        }
+
+        let mut scores = [0_i16; 2];
+        for spirit in Spirit::ALL {
+            score_reachable_category(
+                &mut scores,
+                [
+                    state.collections[0].spirit_symbols[spirit.index()],
+                    state.collections[1].spirit_symbols[spirit.index()],
+                ],
+                remaining_spirits[spirit.index()],
+            );
+        }
+        for source in PowerSource::ALL {
+            score_reachable_category(
+                &mut scores,
+                [
+                    state.collections[0].power_sources[source.index()],
+                    state.collections[1].power_sources[source.index()],
+                ],
+                remaining_sources[source.index()],
+            );
+        }
+        scores
+    }
+
     pub fn winner(&self, state: &SpiritsOfTheForestState) -> Option<PlayerId> {
         if state.remaining_tiles() != 0 {
             return None;
@@ -637,7 +674,7 @@ impl Game for SpiritsOfTheForest {
 
 impl HeuristicGame for SpiritsOfTheForest {
     fn heuristic_count(&self) -> u32 {
-        2
+        3
     }
 
     fn heuristic_utility(&self, index: u32, state: &Self::State, player: PlayerId) -> Option<f32> {
@@ -646,7 +683,7 @@ impl HeuristicGame for SpiritsOfTheForest {
         }
         let gemstone_weight = match index {
             0 => 0.5,
-            1 => {
+            1 | 2 => {
                 let remaining_fraction = state.remaining_tiles() as f32 / TILE_COUNT as f32;
                 0.5 + 4.0 * remaining_fraction * remaining_fraction
             }
@@ -656,7 +693,11 @@ impl HeuristicGame for SpiritsOfTheForest {
             return Some(utility);
         }
         let opponent = <Self as TwoPlayerZeroSumGame>::opponent(player)?;
-        let scores = self.scores(state);
+        let scores = if index == 2 {
+            self.reachable_progress_scores(state)
+        } else {
+            self.scores(state)
+        };
         let player_pool = state.gemstone_pools[player.index()];
         let opponent_pool = state.gemstone_pools[opponent.index()];
         let raw = f32::from(scores[player.index()] - scores[opponent.index()])
@@ -682,6 +723,18 @@ fn score_category(scores: &mut [i16; 2], first: u8, second: u8) {
         scores[1] -= 3;
     } else if second >= first {
         scores[1] += i16::from(second);
+    }
+}
+
+fn score_reachable_category(scores: &mut [i16; 2], collected: [u8; 2], remaining: u8) {
+    let total = collected[0] + collected[1] + remaining;
+    let threshold = total.div_ceil(2);
+    for player in 0..2 {
+        if collected[player] == 0 && remaining == 0 {
+            scores[player] -= 3;
+        } else if collected[player] + remaining >= threshold {
+            scores[player] += i16::from(collected[player]);
+        }
     }
 }
 
@@ -1165,7 +1218,7 @@ mod tests {
     fn heuristics_are_bounded_and_zero_sum() {
         let game = SpiritsOfTheForest::from_tiles(SPIRIT_TILES);
         let state = game.initial_state();
-        assert_eq!(game.heuristic_count(), 2);
+        assert_eq!(game.heuristic_count(), 3);
         for index in 0..game.heuristic_count() {
             let first = game
                 .heuristic_utility(index, &state, PlayerId::FIRST)
@@ -1176,7 +1229,36 @@ mod tests {
             assert!((-1.0..=1.0).contains(&first));
             assert_eq!(first, -second);
         }
-        assert_eq!(game.heuristic_utility(2, &state, PlayerId::FIRST), None);
+        assert_eq!(game.heuristic_utility(3, &state, PlayerId::FIRST), None);
+    }
+
+    #[test]
+    fn reachable_progress_scores_only_categories_that_can_still_reach_half() {
+        let mut scores = [0, 0];
+        score_reachable_category(&mut scores, [2, 1], 2);
+        assert_eq!(scores, [2, 1]);
+
+        let mut scores = [0, 0];
+        score_reachable_category(&mut scores, [2, 3], 0);
+        assert_eq!(scores, [0, 3]);
+
+        let mut scores = [0, 0];
+        score_reachable_category(&mut scores, [0, 5], 0);
+        assert_eq!(scores, [-3, 5]);
+    }
+
+    #[test]
+    fn reachable_progress_reduces_early_provisional_majority_value() {
+        let game = SpiritsOfTheForest::from_tiles(SPIRIT_TILES);
+        let mut state = game.initial_state();
+        state.remaining[0] = false;
+        state.collections[0].add(game.tiles[0]);
+
+        let provisional = game.heuristic_utility(1, &state, PlayerId::FIRST).unwrap();
+        let reachable = game.heuristic_utility(2, &state, PlayerId::FIRST).unwrap();
+
+        assert!(reachable > 0.0);
+        assert!(reachable < provisional);
     }
 
     #[test]
@@ -1188,11 +1270,15 @@ mod tests {
 
         let baseline = game.heuristic_utility(0, &early, PlayerId::FIRST).unwrap();
         let early_conservation = game.heuristic_utility(1, &early, PlayerId::FIRST).unwrap();
+        let early_reachable = game.heuristic_utility(2, &early, PlayerId::FIRST).unwrap();
         assert!(early_conservation < baseline);
+        assert_eq!(early_reachable, early_conservation);
 
         let mut late = early.clone();
         late.remaining[..TILE_COUNT - ROWS].fill(false);
         let late_conservation = game.heuristic_utility(1, &late, PlayerId::FIRST).unwrap();
+        let late_reachable = game.heuristic_utility(2, &late, PlayerId::FIRST).unwrap();
         assert!(early_conservation < late_conservation);
+        assert_eq!(late_reachable, late_conservation);
     }
 }

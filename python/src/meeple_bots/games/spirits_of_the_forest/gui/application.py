@@ -19,13 +19,13 @@ class SpiritsOfTheForestApplication:
             payload.get("first"),
             "first",
             default_rollout_depth=64,
-            available_heuristics=(0,),
+            available_heuristics=(0, 1, 2),
         )
         second = parse_gui_player(
             payload.get("second"),
             "second",
             default_rollout_depth=64,
-            available_heuristics=(0,),
+            available_heuristics=(0, 1, 2),
         )
         with self._lock:
             previous = self._game
@@ -56,4 +56,3 @@ class SpiritsOfTheForestApplication:
     def cancel(self) -> None:
         with self._lock:
             self._game.cancel()
-

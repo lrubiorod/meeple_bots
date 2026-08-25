@@ -34,6 +34,8 @@ class SpiritsGuiTests(unittest.TestCase):
         self.assertIn("Reserva rival: elige una gema propia", PAGE)
         self.assertIn(".players{display:grid;grid-template-columns:1fr", PAGE)
         self.assertIn("grid-template-columns:repeat(12,minmax(0,1fr))", PAGE)
+        self.assertIn('value="2">H2 · Progreso alcanzable', PAGE)
+        self.assertIn("heuristic==='none'?null:Number(heuristic)", PAGE)
 
     @unittest.skipUnless(shutil.which("node"), "Node is required for embedded GUI tests")
     def test_embedded_javascript_guides_every_board_selection(self) -> None:

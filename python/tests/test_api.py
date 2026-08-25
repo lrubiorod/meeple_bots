@@ -724,7 +724,7 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(turn.gemstone_pools[0].available, 3)
 
     def test_spirits_mcts_heuristics_and_gui_are_available(self) -> None:
-        for heuristic in (0, 1):
+        for heuristic in (0, 1, 2):
             result = Match(
                 game=SpiritsOfTheForest(),
                 first=MctsAgent(iterations=2, rollout_depth=2, heuristic=heuristic),
@@ -734,8 +734,8 @@ class MatchApiTests(unittest.TestCase):
             ).run()
             self.assertIsNotNone(result.scores)
 
-        with self.assertRaisesRegex(ValueError, "available indices: 0..1"):
-            Match(game=SpiritsOfTheForest(), first=MctsAgent(heuristic=2))
+        with self.assertRaisesRegex(ValueError, "available indices: 0..2"):
+            Match(game=SpiritsOfTheForest(), first=MctsAgent(heuristic=3))
 
         gui = SpiritsOfTheForestGui()
         gui.start(

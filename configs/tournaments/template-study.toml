@@ -47,15 +47,16 @@ exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "epsilon_greedy", epsilon = 0.10, evaluator = { kind = "game_heuristic", index = 0 } }
 
-# Both mechanisms enabled with independent configuration. They may use different evaluators.
+# Both mechanisms enabled with independent configuration. Cutoff uses H0 while rollout uses the
+# reachable-progress H2 evaluator.
 [[agents]]
-name = "mcts-cutoff-h0-rollout-h1"
+name = "mcts-cutoff-h0-rollout-h2"
 kind = "mcts"
 iterations = 250
 rollout_depth = 32
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "game_heuristic", index = 0 }
-rollout_policy = { kind = "greedy", evaluator = { kind = "game_heuristic", index = 1 } }
+rollout_policy = { kind = "greedy", evaluator = { kind = "game_heuristic", index = 2 } }
 
 # Epsilon sweep using heuristic 1 only for informed action selection.
 # The array creates four agents named with -e0.0, -e0.1, -e0.25, and -e1.0 suffixes:

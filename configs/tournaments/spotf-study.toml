@@ -1,29 +1,58 @@
-# Round-robin study with 21 distinct pairings, two selected self-play pairings,
-# and 20 matches per pairing: 460 matches in total.
+# Round-robin study comparing full-depth and short informed-rollout MCTS configurations.
+# It expands to 14 agents and 91 pairings. With 20 matches per pairing, it runs 1,820 matches.
 game = "spotf"
-output = "../../results/tournaments/spotf-study.jsonl"
+output = "../../results/tournaments/spotf-study-5.jsonl"
 matches_per_pair = 20
 seed = 42
 max_plies = 500000
 workers = "auto"
 
+# Full-depth baseline with uniform-random rollouts and neutral cutoff evaluation.
 [[agents]]
-name = "random"
-kind = "random"
-
-[[agents]]
-name = "mcts"
+name = "mcts-full-random"
 kind = "mcts"
-iterations = [5000, 20000, 50000]
+iterations = 50000
+rollout_depth = 130
+exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "neutral" }
+rollout_policy = { kind = "uniform_random" }
+
+# Full-depth informed rollout using reachable-progress H2, with neutral cutoff evaluation.
+[[agents]]
+name = "mcts-full-epsilon-h2"
+kind = "mcts"
+iterations = 50000
+rollout_depth = 130
+exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "neutral" }
+rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 2 } }
+
+# Short uniform-random rollouts. The grid compares 10k/20k iterations and H1/H2 cutoff.
+[[agents]]
+name = "mcts-short-random"
+kind = "mcts"
+iterations = [10000, 20000]
 rollout_depth = 32
 exploration = 1.4142135623730951
-use_heuristic = false
+cutoff_evaluator = { kind = "game_heuristic", index = [1, 2] }
+rollout_policy = { kind = "uniform_random" }
 
+# Short epsilon-greedy rollouts evaluated with H1. Cutoff independently varies between H1/H2.
 [[agents]]
-name = "mcts-h0"
+name = "mcts-short-epsilon-h1"
 kind = "mcts"
-iterations = [5000, 20000, 50000]
+iterations = [10000, 20000]
 rollout_depth = 32
 exploration = 1.4142135623730951
-use_heuristic = true
-heuristic_index = 0
+cutoff_evaluator = { kind = "game_heuristic", index = [1, 2] }
+rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 1 } }
+
+# Short epsilon-greedy rollouts evaluated with H2. Cutoff independently varies between H1/H2.
+[[agents]]
+name = "mcts-short-epsilon-h2"
+kind = "mcts"
+iterations = [10000, 20000]
+rollout_depth = 32
+exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "game_heuristic", index = [1, 2] }
+rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 2 } }
