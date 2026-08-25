@@ -14,12 +14,13 @@ workers = "auto"
 name = "random"
 kind = "random"
 
-# Original MCTS baseline: uniform-random rollouts and neutral cutoff evaluation.
+# Original MCTS baseline: uniform-random rollouts and neutral cutoff evaluation. This agent and
+# mcts-rollout-h0 use the same wall-clock budget so their different per-iteration costs are fair.
 # Omitted rollout_policy defaults to `uniform_random`.
 [[agents]]
 name = "mcts-uniform"
 kind = "mcts"
-iterations = 250
+time_budget = 0.05
 rollout_depth = 32
 exploration = 1.4142135623730951
 use_heuristic = false
@@ -41,7 +42,7 @@ rollout_policy = { kind = "uniform_random" }
 [[agents]]
 name = "mcts-rollout-h0"
 kind = "mcts"
-iterations = 250
+time_budget = 0.05
 rollout_depth = 32
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }

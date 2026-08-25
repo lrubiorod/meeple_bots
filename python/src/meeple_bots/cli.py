@@ -58,6 +58,7 @@ from .reporting import generate_study_report
 _PLAYABLE_GAMES = ["boop", "connect-four", "spotf", "tic-tac-toe"]
 _TOURNAMENT_GRID_FIELDS = (
     (("iterations",), "i"),
+    (("time_budget",), "t"),
     (("rollout_depth",), "d"),
     (("exploration",), "c"),
     (("heuristic_index",), "h"),
@@ -117,7 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
     match.add_argument("--second", choices=["human", "mcts", "random"], default="random")
     match.add_argument("--seed", type=int, default=0)
     match.add_argument("--max-plies", type=int, default=10_000)
-    match.add_argument("--mcts-iterations", type=int)
+    match_budget = match.add_mutually_exclusive_group()
+    match_budget.add_argument("--mcts-iterations", type=int)
+    match_budget.add_argument(
+        "--mcts-time-budget",
+        type=float,
+        help="approximate wall-clock seconds per MCTS decision",
+    )
     match.add_argument("--mcts-exploration", type=float, default=sqrt_two())
     match.add_argument("--mcts-rollout-depth", type=int)
     match.add_argument(
@@ -349,7 +356,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             benchmarks = []
             for profile in profiles:
                 print(
-                    f"Benchmarking {profile.name}: {profile.agent.iterations:,} iterations, "
+                    f"Benchmarking {profile.name}: "
+                    f"{_mcts_budget_description(profile.agent)}, "
                     f"depth {profile.agent.rollout_depth}, "
                     f"cutoff={_evaluator_name(profile.agent.cutoff_evaluator)}, "
                     f"rollout={_rollout_policy_description(profile.agent)}",
@@ -791,6 +799,7 @@ def _load_tournament_agents(
         "name",
         "kind",
         "iterations",
+        "time_budget",
         "exploration",
         "rollout_depth",
         "use_heuristic",
@@ -820,6 +829,7 @@ def _load_tournament_agents(
 
     mcts_fields = {
         "iterations",
+        "time_budget",
         "exploration",
         "rollout_depth",
         "use_heuristic",
@@ -843,11 +853,12 @@ def _load_tournament_agents(
             ),
         )
 
-    missing = sorted({"iterations", "rollout_depth"} - values.keys())
+    missing = sorted({"rollout_depth"} - values.keys())
     if missing:
         raise ValueError(
             f"missing fields for tournament agent {name}: {', '.join(missing)}"
         )
+    _mcts_budget_kwargs(values, f"tournament agent {name}")
     use_heuristic = values.get("use_heuristic", False)
     if not isinstance(use_heuristic, bool):
         raise TypeError(f"tournament agent {name} use_heuristic must be a boolean")
@@ -948,7 +959,7 @@ def _build_tournament_mcts_agent(
     game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
 ) -> MctsAgent:
     agent = MctsAgent(
-        iterations=values["iterations"],
+        **_mcts_budget_kwargs(values, f"tournament agent {name}"),
         exploration=values.get("exploration", sqrt_two()),
         rollout_depth=values["rollout_depth"],
         cutoff_evaluator=_configured_cutoff_evaluator(
@@ -967,6 +978,20 @@ def _positive_tournament_integer(name: str, value: object) -> int:
     if not 1 <= value <= 2**32 - 1:
         raise ValueError(f"tournament {name} must be between 1 and 4294967295")
     return value
+
+
+def _mcts_budget_kwargs(
+    values: dict[str, object],
+    context: str,
+) -> dict[str, object]:
+    has_iterations = "iterations" in values
+    has_time = "time_budget" in values
+    if has_iterations == has_time:
+        requirement = "exactly one of iterations or time_budget"
+        raise ValueError(f"{context} must define {requirement}")
+    if has_iterations:
+        return {"iterations": values["iterations"]}
+    return {"time_budget": values["time_budget"]}
 
 
 def _tournament_pairings(
@@ -1214,6 +1239,7 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
     allowed = {
         "name",
         "iterations",
+        "time_budget",
         "exploration",
         "rollout_depth",
         "use_heuristic",
@@ -1228,9 +1254,10 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
     unknown = sorted(values.keys() - allowed)
     if unknown:
         raise ValueError(f"unknown MCTS profile fields: {', '.join(unknown)}")
-    missing = sorted({"iterations", "rollout_depth"} - values.keys())
+    missing = sorted({"rollout_depth"} - values.keys())
     if missing:
         raise ValueError(f"missing MCTS profile fields: {', '.join(missing)}")
+    budget = _mcts_budget_kwargs(values, "MCTS profile")
 
     name = values.get("name", path.stem)
     if not isinstance(name, str) or not name.strip():
@@ -1238,7 +1265,7 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
     return _MctsProfile(
         name=name.strip(),
         agent=MctsAgent(
-            iterations=values["iterations"],
+            **budget,
             exploration=values.get("exploration", sqrt_two()),
             rollout_depth=values["rollout_depth"],
             cutoff_evaluator=_configured_cutoff_evaluator(values, "MCTS profile"),
@@ -1272,6 +1299,9 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         "name": "name",
         "i": "iterations",
         "iterations": "iterations",
+        "t": "time_budget",
+        "time": "time_budget",
+        "time_budget": "time_budget",
         "d": "rollout_depth",
         "depth": "rollout_depth",
         "rollout_depth": "rollout_depth",
@@ -1309,7 +1339,20 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
                 raise ValueError(f"duplicate inline analyze agent field: {key}")
             values[canonical] = value
 
-    iterations = _inline_agent_integer(values.get("iterations", "1000"), "iterations")
+    if "iterations" in values and "time_budget" in values:
+        raise ValueError("inline analyze agent cannot combine iterations with time_budget")
+    iterations = (
+        _inline_agent_integer(values["iterations"], "iterations")
+        if "iterations" in values
+        else None if "time_budget" in values else 1_000
+    )
+    if "time_budget" in values:
+        try:
+            time_budget = float(values["time_budget"])
+        except ValueError as error:
+            raise ValueError("inline analyze agent time budget must be a number") from error
+    else:
+        time_budget = None
     rollout_depth = _inline_agent_integer(
         values.get("rollout_depth", "16"),
         "depth",
@@ -1346,6 +1389,7 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         )
     agent = MctsAgent(
         iterations=iterations,
+        time_budget=time_budget,
         exploration=exploration,
         rollout_depth=rollout_depth,
         cutoff_evaluator=cutoff_evaluator,
@@ -1383,7 +1427,12 @@ def _inline_agent_name(agent: MctsAgent) -> str:
     parts = ["mcts"]
     if agent.heuristic is not None:
         parts.append(f"h{agent.heuristic}")
-    parts.extend((f"i{agent.iterations}", f"d{agent.rollout_depth}"))
+    parts.append(
+        f"i{agent.iterations}"
+        if agent.iterations is not None
+        else f"t{agent.time_budget}"
+    )
+    parts.append(f"d{agent.rollout_depth}")
     if agent.exploration != sqrt_two():
         parts.append(f"c{agent.exploration}")
     rollout_heuristic = _evaluator_heuristic_index(
@@ -1452,7 +1501,8 @@ def _batch_agent_description(name: str, agent: RandomAgent | MctsAgent) -> str:
     if isinstance(agent, RandomAgent):
         return name
     return (
-        f"{name} (iterations={agent.iterations}, rollout_depth={agent.rollout_depth}, "
+        f"{name} ({_mcts_budget_description(agent)}, "
+        f"rollout_depth={agent.rollout_depth}, "
         f"exploration={agent.exploration:.6f}, "
         f"cutoff={_evaluator_name(agent.cutoff_evaluator)}, "
         f"rollout={_rollout_policy_description(agent)})"
@@ -1466,6 +1516,7 @@ def _batch_agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, ob
         "name": name,
         "type": "mcts",
         "iterations": agent.iterations,
+        "time_budget": agent.time_budget,
         "rollout_depth": agent.rollout_depth,
         "exploration": agent.exploration,
         "heuristic": agent.heuristic,
@@ -1480,6 +1531,12 @@ def _batch_agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, ob
             else None
         ),
     }
+
+
+def _mcts_budget_description(agent: MctsAgent) -> str:
+    if agent.iterations is not None:
+        return f"iterations={agent.iterations}"
+    return f"time_budget={agent.time_budget:g}s"
 
 
 def _batch_dict(
@@ -1579,7 +1636,12 @@ def _game(name: str) -> TicTacToe | ConnectFour | Boop | SpiritsOfTheForest:
 
 def _mcts_configuration(args: argparse.Namespace) -> MctsAgent:
     return MctsAgent(
-        iterations=1_000 if args.mcts_iterations is None else args.mcts_iterations,
+        iterations=(
+            args.mcts_iterations
+            if args.mcts_iterations is not None
+            else None if args.mcts_time_budget is not None else 1_000
+        ),
+        time_budget=args.mcts_time_budget,
         exploration=args.mcts_exploration,
         rollout_depth=(
             256 if args.mcts_rollout_depth is None else args.mcts_rollout_depth
@@ -1633,6 +1695,7 @@ def _agent(
     if name == "mcts":
         return MctsAgent(
             iterations=mcts.iterations,
+            time_budget=mcts.time_budget,
             exploration=mcts.exploration,
             rollout_depth=mcts.rollout_depth,
             cutoff_evaluator=(
@@ -1652,6 +1715,9 @@ def _agent_dict(name: str, agent) -> dict[str, object]:
     )
     return {
         "type": name,
+        "iterations": agent.iterations if isinstance(agent, MctsAgent) else None,
+        "time_budget": agent.time_budget if isinstance(agent, MctsAgent) else None,
+        "rollout_depth": agent.rollout_depth if isinstance(agent, MctsAgent) else None,
         "heuristic": agent.heuristic if isinstance(agent, MctsAgent) else None,
         "cutoff_evaluator": _evaluator_dict(cutoff_evaluator),
         "rollout_policy": (
@@ -1891,6 +1957,9 @@ def _result_dict(result: MatchResult) -> dict[str, object]:
                 "ply": ply,
                 "player": move.player,
                 "action": _action_dict(move.action),
+                "decision_seconds": move.decision_seconds,
+                "search_iterations": move.search_iterations,
+                "search_nodes": move.search_nodes,
             }
             for ply, move in enumerate(result.moves, start=1)
         ],
@@ -2187,6 +2256,7 @@ def _configured_benchmark_dicts(
                 "rank": rank,
                 "name": configured.name,
                 "iterations": agent.iterations,
+                "time_budget": agent.time_budget,
                 "rollout_depth": agent.rollout_depth,
                 "exploration": agent.exploration,
                 "heuristic": agent.heuristic,
@@ -2212,6 +2282,8 @@ def _configured_benchmark_dicts(
                     {
                         "sampled_ply": timing.sampled_ply,
                         "milliseconds": timing.milliseconds,
+                        "iterations": timing.iterations,
+                        "nodes": timing.nodes,
                     }
                     for timing in benchmark.position_timings
                 ],
@@ -2299,11 +2371,17 @@ def _print_evaluation(
             if rollout_evaluator != "none":
                 rollout_policy += f", evaluator={rollout_evaluator}"
             timings = ", ".join(
-                f"ply {timing['sampled_ply']}={timing['milliseconds']:.2f} ms"
+                f"ply {timing['sampled_ply']}={timing['milliseconds']:.2f} ms/"
+                f"{timing['iterations']:,}i/{timing['nodes']:,} nodes"
                 for timing in row["position_timings"]
             )
+            budget = (
+                f"{row['iterations']:,} iterations"
+                if row["iterations"] is not None
+                else f"{row['time_budget']:g}s time budget"
+            )
             print(
-                f"  {row['rank']}. {row['name']}: {row['iterations']:,} iterations, "
+                f"  {row['rank']}. {row['name']}: {budget}, "
                 f"depth {row['rollout_depth']}, "
                 f"cutoff={_serialized_evaluator_name(row['cutoff_evaluator'])}, "
                 f"rollout={rollout_policy}"

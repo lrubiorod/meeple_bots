@@ -109,15 +109,28 @@ RolloutPolicy: TypeAlias = UniformRandom | Greedy | EpsilonGreedy
 class MctsAgent:
     """Configuration for the Monte Carlo Tree Search agent."""
 
-    iterations: int = 1_000
+    iterations: int | None = None
     exploration: float = sqrt(2.0)
     rollout_depth: int = 256
     heuristic: int | None = None
     cutoff_evaluator: StateEvaluator | None = None
     rollout_policy: RolloutPolicy = field(default_factory=UniformRandom)
+    time_budget: float | None = None
 
     def __post_init__(self) -> None:
-        _positive_u32("iterations", self.iterations)
+        if self.iterations is None and self.time_budget is None:
+            object.__setattr__(self, "iterations", 1_000)
+        elif self.iterations is not None and self.time_budget is not None:
+            raise ValueError("iterations and time_budget are mutually exclusive")
+        if self.iterations is not None:
+            _positive_u32("iterations", self.iterations)
+        if self.time_budget is not None:
+            if isinstance(self.time_budget, bool) or not isinstance(
+                self.time_budget, (int, float)
+            ):
+                raise TypeError("time_budget must be a number")
+            if not isfinite(self.time_budget) or self.time_budget <= 0:
+                raise ValueError("time_budget must be finite and greater than zero")
         _positive_u32("rollout_depth", self.rollout_depth)
         if isinstance(self.exploration, bool) or not isinstance(self.exploration, (int, float)):
             raise TypeError("exploration must be a number")
@@ -185,6 +198,8 @@ class SampledDecisionTiming:
 
     sampled_ply: int
     milliseconds: float
+    iterations: int
+    nodes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,6 +581,8 @@ class MatchMoveObservation:
     action: GameAction
     board: GameBoard
     decision_seconds: float
+    search_iterations: int | None = None
+    search_nodes: int | None = None
     pools: tuple[BoopPool, BoopPool] | None = None
     spirit_collections: tuple[SpiritCollection, SpiritCollection] | None = None
     gemstone_pools: tuple[SpiritGemstonePool, SpiritGemstonePool] | None = None
@@ -600,6 +617,9 @@ class Move:
 
     player: int
     action: GameAction
+    decision_seconds: float = field(default=0.0, compare=False)
+    search_iterations: int | None = field(default=None, compare=False)
+    search_nodes: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -731,6 +751,9 @@ class Match:
             Move(
                 player=item["player"],
                 action=_action_from_native(item["action"]),
+                decision_seconds=item.get("decision_seconds", 0.0),
+                search_iterations=item.get("search_iterations"),
+                search_nodes=item.get("search_nodes"),
             )
             for item in raw["moves"]
         )
@@ -1017,6 +1040,7 @@ def benchmark_mcts_agent(
     raw = _native.benchmark_mcts_agent(
         _native_game(game),
         agent.iterations,
+        agent.time_budget,
         float(agent.exploration),
         agent.rollout_depth,
         *_native_evaluator(agent.cutoff_evaluator),
@@ -1037,6 +1061,8 @@ def benchmark_mcts_agent(
             SampledDecisionTiming(
                 sampled_ply=timing["sampled_ply"],
                 milliseconds=timing["milliseconds"],
+                iterations=timing["iterations"],
+                nodes=timing["nodes"],
             )
             for timing in raw["position_timings"]
         ),
@@ -1159,6 +1185,7 @@ def _native_agent(agent: Agent, game: Game):
             rollout_evaluator,
             rollout_heuristic,
             epsilon,
+            agent.time_budget,
         )
     return _native.AgentConfig.human(
         _human_selector(agent, game),
@@ -1422,6 +1449,8 @@ def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
             native_pools,
             native_action,
             decision_seconds: float,
+            search_iterations: int | None,
+            search_nodes: int | None,
         ) -> None:
             board = _board_rows(
                 [
@@ -1443,6 +1472,8 @@ def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
                     action=_boop_action_from_selector(native_action),
                     board=board,
                     decision_seconds=decision_seconds,
+                    search_iterations=search_iterations,
+                    search_nodes=search_nodes,
                     pools=pools,
                 )
             )
@@ -1455,6 +1486,8 @@ def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
             native_state,
             native_action,
             decision_seconds: float,
+            search_iterations: int | None,
+            search_nodes: int | None,
         ) -> None:
             board, collections, gems, phase, active, scores = _spirits_state_from_native(
                 native_state
@@ -1466,6 +1499,8 @@ def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
                     action=_spirits_action_from_native(native_action),
                     board=board,
                     decision_seconds=decision_seconds,
+                    search_iterations=search_iterations,
+                    search_nodes=search_nodes,
                     spirit_collections=collections,
                     gemstone_pools=gems,
                     scores=scores,
@@ -1481,6 +1516,8 @@ def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
         flat_board,
         native_action,
         decision_seconds: float,
+        search_iterations: int | None,
+        search_nodes: int | None,
     ) -> None:
         if isinstance(game, TicTacToe):
             action: GameAction = TicTacToeAction(
@@ -1498,6 +1535,8 @@ def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
                 action=action,
                 board=board,
                 decision_seconds=decision_seconds,
+                search_iterations=search_iterations,
+                search_nodes=search_nodes,
             )
         )
 

@@ -434,6 +434,10 @@ class MatchApiTests(unittest.TestCase):
             EpsilonGreedy(epsilon=1.1, evaluator=GameHeuristic(0))
         with self.assertRaises(TypeError):
             MctsAgent(rollout_policy="uniform_random")
+        with self.assertRaises(ValueError):
+            MctsAgent(iterations=10, time_budget=0.1)
+        with self.assertRaises(ValueError):
+            MctsAgent(time_budget=0)
         with self.assertRaises(TypeError):
             HumanAgent(observe_action="not callable")
 
@@ -571,6 +575,24 @@ class MatchApiTests(unittest.TestCase):
             benchmark.milliseconds_per_iteration,
             benchmark.decision_time_mean_ms / agent.iterations,
         )
+        self.assertEqual(
+            [timing.iterations for timing in benchmark.position_timings],
+            [4, 4, 4],
+        )
+        self.assertTrue(all(timing.nodes >= 2 for timing in benchmark.position_timings))
+
+    def test_time_budget_records_actual_iterations_in_match_trace(self) -> None:
+        result = Match(
+            first=MctsAgent(time_budget=0.001, rollout_depth=2),
+            second=RandomAgent(),
+            seed=42,
+        ).run()
+
+        mcts_moves = [move for move in result.moves if move.player == 0]
+        self.assertTrue(mcts_moves)
+        self.assertTrue(all(move.decision_seconds > 0 for move in mcts_moves))
+        self.assertTrue(all((move.search_iterations or 0) >= 1 for move in mcts_moves))
+        self.assertTrue(all((move.search_nodes or 0) >= 2 for move in mcts_moves))
 
     def test_configured_mcts_benchmark_supports_a_game_heuristic(self) -> None:
         agent = MctsAgent(
@@ -603,6 +625,16 @@ class MatchApiTests(unittest.TestCase):
             profile.agent.rollout_policy,
             EpsilonGreedy(0.25, GameHeuristic(1)),
         )
+
+    def test_inline_mcts_profile_accepts_time_budget(self) -> None:
+        profile = _parse_inline_mcts_profile("t=0.25,d=32")
+
+        self.assertEqual(profile.name, "mcts-t0.25-d32")
+        self.assertIsNone(profile.agent.iterations)
+        self.assertEqual(profile.agent.time_budget, 0.25)
+
+        with self.assertRaisesRegex(ValueError, "cannot combine iterations"):
+            _parse_inline_mcts_profile("i=100,t=0.25")
 
     def test_scripted_humans_receive_positions_and_finish_a_match(self) -> None:
         first_moves = iter([(0, 0), (0, 1), (0, 2)])
@@ -1712,6 +1744,33 @@ class MatchApiTests(unittest.TestCase):
             ],
         )
 
+    def test_tournament_agent_grid_accepts_time_budgets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "time-grid.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "tic-tac-toe"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "timed"',
+                        'kind = "mcts"',
+                        "time_budget = [0.01, 0.02]",
+                        "rollout_depth = 4",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+
+        self.assertEqual([agent.name for agent in config.agents], ["timed-t0.01", "timed-t0.02"])
+        self.assertEqual(
+            [agent.agent.time_budget for agent in config.agents],
+            [0.01, 0.02],
+        )
+        self.assertTrue(all(agent.agent.iterations is None for agent in config.agents))
+
     def test_tournament_supports_independent_cutoff_and_rollout_evaluators(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory, "evaluators.toml")
@@ -1929,10 +1988,10 @@ class MatchApiTests(unittest.TestCase):
             summary = json.loads(output.getvalue())
             output_dir = Path(summary["output_dir"])
             manifest = json.loads((output_dir / "manifest.json").read_text())
+            agents = self._read_csv(output_dir / "agents.csv")
             matches = self._read_csv(output_dir / "matches.csv")
             boop_matches = self._read_csv(output_dir / "boop_matches.csv")
             turns = self._read_csv(output_dir / "turns.csv")
-            agents = self._read_csv(output_dir / "agents.csv")
             boops = self._read_csv(output_dir / "boops.csv")
 
             self.assertEqual(exit_code, 0)
@@ -1991,6 +2050,7 @@ class MatchApiTests(unittest.TestCase):
             summary = json.loads(output.getvalue())
             output_dir = Path(summary["output_dir"])
             manifest = json.loads((output_dir / "manifest.json").read_text())
+            agents = self._read_csv(output_dir / "agents.csv")
             matches = self._read_csv(output_dir / "matches.csv")
             spotf_matches = self._read_csv(output_dir / "spotf_matches.csv")
             actions = self._read_csv(output_dir / "actions.csv")
@@ -2010,6 +2070,11 @@ class MatchApiTests(unittest.TestCase):
             self.assertLess(len(player_turns), len(actions))
             self.assertLessEqual(len(gemstone_actions), len(player_turns))
             self.assertEqual(actions[-1]["terminal_after"], "True")
+            self.assertIn("time_budget", agents[0])
+            self.assertIn("decision_seconds", actions[0])
+            self.assertIn("search_iterations", actions[0])
+            self.assertIn("search_nodes", actions[0])
+            self.assertGreater(float(actions[0]["decision_seconds"]), 0.0)
             self.assertEqual(
                 int(actions[-1]["physical_turn"]),
                 int(spotf_matches[0]["physical_turns"]),

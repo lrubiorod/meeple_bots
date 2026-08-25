@@ -11,7 +11,7 @@ use meeple_bots_catalog::{
     CatalogGemstoneSacrifice, CatalogMatchReport, CatalogPieceKind, CatalogPowerSource,
     CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, EvaluationConfig, EvaluatorConfig,
     GameId, MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, RolloutPolicyConfig,
-    analyze_seeded_trace, analyze_trace, benchmark_mcts_agent, configured_boop_mcts,
+    SearchBudget, analyze_seeded_trace, analyze_trace, benchmark_mcts_agent, configured_boop_mcts,
     configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
     configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
     run_boop_match_with_trace, run_connect_four_match_with_observer,
@@ -21,7 +21,9 @@ use meeple_bots_catalog::{
     spirits_of_the_forest_game,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
-use meeple_bots_core::{Agent, AgentError, DecisionContext, Game, PlayerId, RandomSource};
+use meeple_bots_core::{
+    Agent, AgentDecisionStats, AgentError, DecisionContext, Game, PlayerId, RandomSource,
+};
 use meeple_bots_mcts_agent::{MctsAgent, NeutralEvaluator, UniformRandom};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::MatchObserver;
@@ -59,7 +61,7 @@ impl PyAgentConfig {
 
     #[staticmethod]
     #[pyo3(signature = (
-        iterations=1_000,
+        iterations=None,
         exploration=std::f64::consts::SQRT_2,
         rollout_depth=256,
         cutoff_evaluator="neutral",
@@ -68,9 +70,10 @@ impl PyAgentConfig {
         rollout_evaluator=None,
         rollout_heuristic=None,
         rollout_epsilon=None,
+        time_budget=None,
     ))]
     fn mcts(
-        iterations: u32,
+        iterations: Option<u32>,
         exploration: f64,
         rollout_depth: u32,
         cutoff_evaluator: &str,
@@ -79,9 +82,8 @@ impl PyAgentConfig {
         rollout_evaluator: Option<&str>,
         rollout_heuristic: Option<u32>,
         rollout_epsilon: Option<f64>,
+        time_budget: Option<f64>,
     ) -> PyResult<Self> {
-        let iterations = NonZeroU32::new(iterations)
-            .ok_or_else(|| PyValueError::new_err("iterations must be greater than zero"))?;
         if !exploration.is_finite() || exploration < 0.0 {
             return Err(PyValueError::new_err(
                 "exploration must be finite and non-negative",
@@ -96,7 +98,7 @@ impl PyAgentConfig {
         Ok(Self {
             inner: PythonAgentConfig::Automated(AgentConfig::Mcts(MctsAgentConfig {
                 search: MctsConfig {
-                    iterations,
+                    budget: parse_search_budget(iterations, time_budget)?,
                     exploration,
                     rollout_depth,
                     rollout_policy: parse_rollout_policy(
@@ -186,6 +188,14 @@ impl Agent<SpiritsOfTheForest> for PythonObservedSpiritsAgent<'_> {
             Self::Random(agent) => agent.select_action(decision, rng),
         }
     }
+
+    fn last_decision_stats(&self) -> AgentDecisionStats {
+        match self {
+            Self::Human(_) => AgentDecisionStats::default(),
+            Self::Mcts(agent) => agent.decision_stats(),
+            Self::Random(_) => AgentDecisionStats::default(),
+        }
+    }
 }
 
 impl Agent<Boop> for PythonObservedBoopAgent<'_> {
@@ -198,6 +208,14 @@ impl Agent<Boop> for PythonObservedBoopAgent<'_> {
             Self::Human(agent) => agent.select_action(decision, rng),
             Self::Mcts(agent) => agent.select_action(decision, rng),
             Self::Random(agent) => agent.select_action(decision, rng),
+        }
+    }
+
+    fn last_decision_stats(&self) -> AgentDecisionStats {
+        match self {
+            Self::Human(_) => AgentDecisionStats::default(),
+            Self::Mcts(agent) => agent.decision_stats(),
+            Self::Random(_) => AgentDecisionStats::default(),
         }
     }
 }
@@ -214,6 +232,14 @@ impl Agent<TicTacToe> for PythonObservedAgent<'_> {
             Self::Random(agent) => agent.select_action(decision, rng),
         }
     }
+
+    fn last_decision_stats(&self) -> AgentDecisionStats {
+        match self {
+            Self::Human(_) => AgentDecisionStats::default(),
+            Self::Mcts(agent) => agent.decision_stats(),
+            Self::Random(_) => AgentDecisionStats::default(),
+        }
+    }
 }
 
 impl Agent<ConnectFour> for PythonObservedAgent<'_> {
@@ -226,6 +252,14 @@ impl Agent<ConnectFour> for PythonObservedAgent<'_> {
             Self::Human(agent) => agent.select_action(decision, rng),
             Self::Mcts(agent) => agent.select_action(decision, rng),
             Self::Random(agent) => agent.select_action(decision, rng),
+        }
+    }
+
+    fn last_decision_stats(&self) -> AgentDecisionStats {
+        match self {
+            Self::Human(_) => AgentDecisionStats::default(),
+            Self::Mcts(agent) => agent.decision_stats(),
+            Self::Random(_) => AgentDecisionStats::default(),
         }
     }
 }
@@ -242,6 +276,7 @@ impl MatchObserver<TicTacToe> for PythonTicTacToeMatchObserver<'_> {
         player: PlayerId,
         action: &TicTacToeAction,
         decision_time: Duration,
+        decision_stats: AgentDecisionStats,
     ) {
         if self.error.is_some() {
             return;
@@ -257,6 +292,8 @@ impl MatchObserver<TicTacToe> for PythonTicTacToeMatchObserver<'_> {
                 board,
                 (action.row(), action.column()),
                 decision_time.as_secs_f64(),
+                decision_stats.search_iterations,
+                decision_stats.search_nodes,
             ))?;
             Ok(())
         }) {
@@ -277,6 +314,7 @@ impl MatchObserver<ConnectFour> for PythonConnectFourMatchObserver<'_> {
         player: PlayerId,
         action: &ConnectFourAction,
         decision_time: Duration,
+        decision_stats: AgentDecisionStats,
     ) {
         if self.error.is_some() {
             return;
@@ -292,6 +330,8 @@ impl MatchObserver<ConnectFour> for PythonConnectFourMatchObserver<'_> {
                 board,
                 action.column(),
                 decision_time.as_secs_f64(),
+                decision_stats.search_iterations,
+                decision_stats.search_nodes,
             ))?;
             Ok(())
         }) {
@@ -312,6 +352,7 @@ impl MatchObserver<Boop> for PythonBoopMatchObserver<'_> {
         player: PlayerId,
         action: &BoopAction,
         decision_time: Duration,
+        decision_stats: AgentDecisionStats,
     ) {
         if self.error.is_some() {
             return;
@@ -340,6 +381,8 @@ impl MatchObserver<Boop> for PythonBoopMatchObserver<'_> {
                 pools,
                 native_boop_action(action),
                 decision_time.as_secs_f64(),
+                decision_stats.search_iterations,
+                decision_stats.search_nodes,
             ))?;
             Ok(())
         }) {
@@ -360,6 +403,7 @@ impl MatchObserver<SpiritsOfTheForest> for PythonSpiritsMatchObserver<'_> {
         player: PlayerId,
         action: &SpiritsOfTheForestAction,
         decision_time: Duration,
+        decision_stats: AgentDecisionStats,
     ) {
         if self.error.is_some() {
             return;
@@ -370,6 +414,8 @@ impl MatchObserver<SpiritsOfTheForest> for PythonSpiritsMatchObserver<'_> {
                 native_spirits_state(game, state),
                 native_spirits_action(*action),
                 decision_time.as_secs_f64(),
+                decision_stats.search_iterations,
+                decision_stats.search_nodes,
             ))?;
             Ok(())
         }) {
@@ -505,6 +551,7 @@ fn py_evaluate_game(
 #[pyo3(signature = (
     game,
     iterations,
+    time_budget,
     exploration,
     rollout_depth,
     cutoff_evaluator,
@@ -519,7 +566,8 @@ fn py_evaluate_game(
 fn py_benchmark_mcts_agent(
     py: Python<'_>,
     game: &str,
-    iterations: u32,
+    iterations: Option<u32>,
+    time_budget: Option<f64>,
     exploration: f64,
     rollout_depth: u32,
     cutoff_evaluator: &str,
@@ -532,8 +580,6 @@ fn py_benchmark_mcts_agent(
     seed: u64,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
-    let iterations = NonZeroU32::new(iterations)
-        .ok_or_else(|| PyValueError::new_err("iterations must be greater than zero"))?;
     if !exploration.is_finite() || exploration < 0.0 {
         return Err(PyValueError::new_err(
             "exploration must be finite and non-negative",
@@ -548,7 +594,7 @@ fn py_benchmark_mcts_agent(
         game,
         MctsAgentConfig {
             search: MctsConfig {
-                iterations,
+                budget: parse_search_budget(iterations, time_budget)?,
                 exploration,
                 rollout_depth,
                 rollout_policy: parse_rollout_policy(
@@ -580,10 +626,37 @@ fn py_benchmark_mcts_agent(
         let item = PyDict::new(py);
         item.set_item("sampled_ply", timing.sampled_ply)?;
         item.set_item("milliseconds", timing.milliseconds)?;
+        item.set_item("iterations", timing.iterations)?;
+        item.set_item("nodes", timing.nodes)?;
         position_timings.append(item)?;
     }
     serialized.set_item("position_timings", position_timings)?;
     Ok(serialized.unbind())
+}
+
+fn parse_search_budget(
+    iterations: Option<u32>,
+    time_budget: Option<f64>,
+) -> PyResult<SearchBudget> {
+    match (iterations, time_budget) {
+        (Some(_), Some(_)) => Err(PyValueError::new_err(
+            "iterations and time_budget are mutually exclusive",
+        )),
+        (Some(iterations), None) => NonZeroU32::new(iterations)
+            .map(SearchBudget::Iterations)
+            .ok_or_else(|| PyValueError::new_err("iterations must be greater than zero")),
+        (None, Some(seconds)) => {
+            if !seconds.is_finite() || seconds <= 0.0 {
+                return Err(PyValueError::new_err(
+                    "time_budget must be finite and greater than zero",
+                ));
+            }
+            Duration::try_from_secs_f64(seconds)
+                .map(SearchBudget::Time)
+                .map_err(|_| PyValueError::new_err("time_budget is too large"))
+        }
+        (None, None) => Ok(SearchBudget::default()),
+    }
 }
 
 fn parse_evaluator(kind: &str, heuristic: Option<u32>) -> PyResult<EvaluatorConfig> {
@@ -1063,6 +1136,9 @@ fn py_run_match(
         let movement = PyDict::new(py);
         movement.set_item("player", recorded.player)?;
         movement.set_item("action", action)?;
+        movement.set_item("decision_seconds", recorded.decision_seconds)?;
+        movement.set_item("search_iterations", recorded.search_iterations)?;
+        movement.set_item("search_nodes", recorded.search_nodes)?;
         moves.append(movement)?;
     }
     result.set_item("moves", moves)?;
@@ -1145,6 +1221,9 @@ fn py_analyze_trace(
                 Ok(RecordedMove {
                     player: usize::from(player),
                     action: parse_native_catalog_boop_action(action)?,
+                    decision_seconds: 0.0,
+                    search_iterations: None,
+                    search_nodes: None,
                 })
             })
             .collect::<PyResult<Vec<_>>>()?,
@@ -1155,6 +1234,9 @@ fn py_analyze_trace(
                 Ok(RecordedMove {
                     player: usize::from(player),
                     action: parse_native_catalog_spirits_action(action)?,
+                    decision_seconds: 0.0,
+                    search_iterations: None,
+                    search_nodes: None,
                 })
             })
             .collect::<PyResult<Vec<_>>>()?,

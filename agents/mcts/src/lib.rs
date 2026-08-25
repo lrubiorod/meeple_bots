@@ -1,24 +1,47 @@
 //! Monte Carlo Tree Search for deterministic, perfect-information games.
 
-use std::{cmp::Ordering, num::NonZeroU32};
+use std::{
+    cmp::Ordering,
+    num::NonZeroU32,
+    time::{Duration, Instant},
+};
 
 use meeple_bots_core::{
-    Agent, AgentError, DecisionContext, DeterministicGame, HeuristicGame, PerfectInformationGame,
-    PlayerId, PositionStatus, RandomSource, TwoPlayerZeroSumGame,
+    Agent, AgentDecisionStats, AgentError, DecisionContext, DeterministicGame, HeuristicGame,
+    PerfectInformationGame, PlayerId, PositionStatus, RandomSource, TwoPlayerZeroSumGame,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MctsConfig<P = RolloutPolicyConfig<NeutralEvaluator>> {
-    pub iterations: NonZeroU32,
+    pub budget: SearchBudget,
     pub exploration: f64,
     pub rollout_depth: u32,
     pub rollout_policy: P,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchBudget {
+    Iterations(NonZeroU32),
+    Time(Duration),
+}
+
+impl Default for SearchBudget {
+    fn default() -> Self {
+        Self::Iterations(NonZeroU32::new(1_000).expect("constant is non-zero"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MctsSearchStats {
+    pub iterations: u64,
+    pub nodes: u64,
+    pub elapsed: Duration,
+}
+
 impl Default for MctsConfig<RolloutPolicyConfig<NeutralEvaluator>> {
     fn default() -> Self {
         Self {
-            iterations: NonZeroU32::new(1_000).expect("constant is non-zero"),
+            budget: SearchBudget::default(),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 256,
             rollout_policy: RolloutPolicyConfig::default(),
@@ -308,6 +331,7 @@ where
 pub struct MctsAgent<C = NeutralEvaluator, P = RolloutPolicyConfig<NeutralEvaluator>> {
     pub config: MctsConfig<P>,
     pub cutoff_evaluator: C,
+    last_search_stats: Option<MctsSearchStats>,
 }
 
 impl Default for MctsAgent<NeutralEvaluator, RolloutPolicyConfig<NeutralEvaluator>> {
@@ -321,6 +345,7 @@ impl<P> MctsAgent<NeutralEvaluator, P> {
         Self {
             config,
             cutoff_evaluator: NeutralEvaluator,
+            last_search_stats: None,
         }
     }
 }
@@ -330,7 +355,20 @@ impl<C, P> MctsAgent<C, P> {
         Self {
             config,
             cutoff_evaluator,
+            last_search_stats: None,
         }
+    }
+
+    pub const fn last_search_stats(&self) -> Option<MctsSearchStats> {
+        self.last_search_stats
+    }
+
+    pub fn decision_stats(&self) -> AgentDecisionStats {
+        self.last_search_stats
+            .map_or_else(AgentDecisionStats::default, |stats| AgentDecisionStats {
+                search_iterations: Some(stats.iterations),
+                search_nodes: Some(stats.nodes),
+            })
     }
 
     fn choose_action<G, R>(
@@ -362,7 +400,21 @@ impl<C, P> MctsAgent<C, P> {
         }
         let mut nodes = vec![Node::new(None, root_actions)];
 
-        for _ in 0..self.config.iterations.get() {
+        let search_started = Instant::now();
+        let mut completed_iterations = 0_u64;
+        loop {
+            let budget_exhausted = match self.config.budget {
+                SearchBudget::Iterations(iterations) => {
+                    completed_iterations >= u64::from(iterations.get())
+                }
+                SearchBudget::Time(duration) => {
+                    completed_iterations > 0 && search_started.elapsed() >= duration
+                }
+            };
+            if budget_exhausted {
+                break;
+            }
+
             let mut state = root_state.clone();
             let mut node_index = 0;
             let mut path = vec![0];
@@ -438,7 +490,14 @@ impl<C, P> MctsAgent<C, P> {
                 nodes[visited].visits += 1;
                 nodes[visited].total_utility += utility;
             }
+            completed_iterations += 1;
         }
+
+        self.last_search_stats = Some(MctsSearchStats {
+            iterations: completed_iterations,
+            nodes: nodes.len() as u64,
+            elapsed: search_started.elapsed(),
+        });
 
         let selected_index = nodes[0]
             .children
@@ -504,6 +563,10 @@ where
         rng: &mut R,
     ) -> Result<G::Action, AgentError> {
         self.choose_action(decision, rng)
+    }
+
+    fn last_decision_stats(&self) -> AgentDecisionStats {
+        self.decision_stats()
     }
 }
 
@@ -753,7 +816,7 @@ mod tests {
             continuation_player,
         };
         let mut agent = MctsAgent::new(MctsConfig {
-            iterations: NonZeroU32::new(2_000).unwrap(),
+            budget: SearchBudget::Iterations(NonZeroU32::new(2_000).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 4,
             rollout_policy: UniformRandom,
@@ -860,6 +923,31 @@ mod tests {
             .unwrap();
 
         assert_eq!(a, b);
+        assert_eq!(first.last_search_stats().unwrap().iterations, 1_000);
+        assert_eq!(repeated.last_search_stats().unwrap().iterations, 1_000);
+    }
+
+    #[test]
+    fn time_budget_finishes_at_least_one_complete_iteration() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let mut agent = MctsAgent::new(MctsConfig {
+            budget: SearchBudget::Time(Duration::ZERO),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 2,
+            rollout_policy: UniformRandom,
+        });
+
+        agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut SplitMix64::new(99),
+            )
+            .unwrap();
+
+        let stats = agent.last_search_stats().unwrap();
+        assert_eq!(stats.iterations, 1);
+        assert!(stats.nodes >= 2);
     }
 
     #[test]
@@ -867,7 +955,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
-            iterations: NonZeroU32::new(4).unwrap(),
+            budget: SearchBudget::Iterations(NonZeroU32::new(4).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 2,
             rollout_policy: UniformRandom,

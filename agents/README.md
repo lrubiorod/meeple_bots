@@ -66,7 +66,8 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `iterations` | `1_000` | Tree-search iterations performed for each decision. |
+| `iterations` | `1_000` | Exact iterations per decision; excludes `time_budget`. |
+| `time_budget` | `None` | Approximate seconds per decision; excludes `iterations`. |
 | `exploration` | `sqrt(2)` | UCT balance between utility and less-visited branches. |
 | `rollout_depth` | `256` | Maximum simulated actions after expansion. |
 | `cutoff_evaluator` | `NeutralEvaluator()` | Evaluator used only when a rollout reaches its depth cutoff. |
@@ -78,6 +79,19 @@ The legacy `heuristic=INDEX` argument remains available as shorthand for
 More iterations usually improve coverage but also increase response time. Iteration count is not a
 portable measure of work: action generation, branching, rollout length, and build profile all
 affect the cost of one iteration.
+
+Use an iteration budget for reproducible tests, debugging, and algorithmic comparisons. Use a time
+budget to compare agents whose iterations have different costs:
+
+```python
+agent = MctsAgent(time_budget=2.0, rollout_depth=32)
+```
+
+The deadline is checked between iterations. MCTS always completes the current iteration and always
+runs at least one, so elapsed time can exceed the requested duration by one expensive iteration.
+Time-budget searches retain seeded randomness but are not exactly reproducible: CPU load and machine
+speed change how many iterations finish. Match traces record the actual decision time, completed
+iterations, and created nodes.
 
 ### Rollout policies
 
@@ -153,7 +167,8 @@ cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 0 } }
 ```
 
-`iterations` and `rollout_depth` are required. `exploration` defaults to `sqrt(2)`,
+Exactly one of `iterations` or `time_budget` is required, together with `rollout_depth`.
+`time_budget` is expressed in seconds. `exploration` defaults to `sqrt(2)`,
 `cutoff_evaluator` defaults to neutral, and `rollout_policy` defaults to uniform random. Evaluator
 kinds currently supported by the catalog are `neutral` and `game_heuristic`. Rollout policy kinds
 are `uniform_random`, `greedy`, and `epsilon_greedy`. The legacy `use_heuristic`,

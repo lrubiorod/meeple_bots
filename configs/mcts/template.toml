@@ -1,6 +1,7 @@
 # Copy this file to create a reproducible MCTS profile.
 name = "example-mcts"
 iterations = 500
+# Use `time_budget = 1.0` instead of `iterations` for an approximate one-second decision budget.
 rollout_depth = 16
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }

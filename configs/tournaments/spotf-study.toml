@@ -1,5 +1,6 @@
-# Round-robin study comparing full-depth and short informed-rollout MCTS configurations.
-# It expands to 14 agents and 91 pairings. With 20 matches per pairing, it runs 1,820 matches.
+# Round-robin study comparing full-depth and short informed-rollout MCTS configurations at the
+# same 0.5-second wall-clock budget per decision. It expands to 8 agents and 28 pairings. With
+# 20 matches per pairing, it runs 560 matches.
 game = "spotf"
 output = "../../results/tournaments/spotf-study-5.jsonl"
 matches_per_pair = 20
@@ -11,7 +12,7 @@ workers = "auto"
 [[agents]]
 name = "mcts-full-random"
 kind = "mcts"
-iterations = 50000
+time_budget = 0.5
 rollout_depth = 130
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
@@ -21,17 +22,17 @@ rollout_policy = { kind = "uniform_random" }
 [[agents]]
 name = "mcts-full-epsilon-h2"
 kind = "mcts"
-iterations = 50000
+time_budget = 0.5
 rollout_depth = 130
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 2 } }
 
-# Short uniform-random rollouts. The grid compares 10k/20k iterations and H1/H2 cutoff.
+# Short uniform-random rollouts. The grid compares H1/H2 cutoff at the shared time budget.
 [[agents]]
 name = "mcts-short-random"
 kind = "mcts"
-iterations = [10000, 20000]
+time_budget = 0.5
 rollout_depth = 32
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "game_heuristic", index = [1, 2] }
@@ -41,7 +42,7 @@ rollout_policy = { kind = "uniform_random" }
 [[agents]]
 name = "mcts-short-epsilon-h1"
 kind = "mcts"
-iterations = [10000, 20000]
+time_budget = 0.5
 rollout_depth = 32
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "game_heuristic", index = [1, 2] }
@@ -51,7 +52,7 @@ rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = 
 [[agents]]
 name = "mcts-short-epsilon-h2"
 kind = "mcts"
-iterations = [10000, 20000]
+time_budget = 0.5
 rollout_depth = 32
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "game_heuristic", index = [1, 2] }

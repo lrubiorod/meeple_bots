@@ -34,7 +34,7 @@ Make the current MCTS behavior measurable before changing its algorithm.
 - Record the number of created nodes, maximum tree depth, rollout actions, terminal rollouts, and
   heuristic cutoffs for each decision.
 - Record root action visits, mean utilities, and the selected action.
-- Support search budgets expressed as iterations and as wall-clock time.
+- Support search budgets expressed as iterations and as wall-clock time. (Implemented.)
 - Add benchmark configurations for Tic-Tac-Toe, Connect Four, and Boop.
 - Compare agents by win rate, seat, decision time, nodes per second, and memory use.
 - Validate Tic-Tac-Toe decisions against its solved game tree.

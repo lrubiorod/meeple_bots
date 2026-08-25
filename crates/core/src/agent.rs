@@ -1,5 +1,11 @@
 use crate::{AgentError, Game, PerfectInformationGame, PlayerId, RandomSource};
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AgentDecisionStats {
+    pub search_iterations: Option<u64>,
+    pub search_nodes: Option<u64>,
+}
+
 /// Read-only decision boundary handed to an agent by the simulation.
 pub struct DecisionContext<'a, G: Game> {
     game: &'a G,
@@ -47,4 +53,8 @@ pub trait Agent<G: Game> {
         decision: DecisionContext<'_, G>,
         rng: &mut R,
     ) -> Result<G::Action, AgentError>;
+
+    fn last_decision_stats(&self) -> AgentDecisionStats {
+        AgentDecisionStats::default()
+    }
 }

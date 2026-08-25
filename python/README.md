@@ -232,7 +232,7 @@ per seat:
 
 ```bash
 meeple-bots match --game boop --first human --second mcts \
-  --mcts-iterations 1000 --mcts-rollout-depth 16 \
+  --mcts-time-budget 2 --mcts-rollout-depth 16 \
   --mcts-rollout-policy epsilon_greedy --mcts-rollout-heuristic 1 \
   --mcts-rollout-epsilon 0.1 --seed 42
 ```
@@ -241,6 +241,8 @@ Omitting the value after `--first-mcts-heuristic` or `--second-mcts-heuristic` s
 Those seat-specific options configure cutoff evaluation only. `--mcts-rollout-heuristic` selects
 the independent evaluator used by `greedy` or `epsilon_greedy` rollout policies. Unsupported
 combinations and indices are rejected.
+`--mcts-iterations` and `--mcts-time-budget` are mutually exclusive. The latter is an approximate
+number of seconds for each call to the agent, not for a complete multi-action player turn.
 
 Load a complete profile for one seat when the configuration should be reusable:
 
@@ -304,6 +306,7 @@ Benchmark and rank any number of exact MCTS profiles on the same sampled positio
 meeple-bots analyze --game boop --target-time 1 --seed 42 \
   --agent \
   --agent 'i=5000,d=120' \
+  --agent 'name=equal-time-random,t=1,d=120,p=random' \
   --agent 'name=rollout-h1,i=20000,d=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
   --agent-config configs/mcts/heuristic.toml
 ```
@@ -311,7 +314,8 @@ meeple-bots analyze --game boop --target-time 1 --seed 42 \
 Each `--agent-config` uses the [reusable scalar profile](../agents/README.md#reusable-profiles)
 format. For quick tests, repeat `--agent [SPEC]` with comma-separated fields. The cutoff evaluator
 uses `h=INDEX` or `ce=neutral`; informed rollout uses `p=greedy|epsilon`, `rh=INDEX`, and optionally
-`e=EPSILON`. A bare `--agent` defaults to 1000 iterations, depth 16, square-root-of-two
+`e=EPSILON`. Use `t=SECONDS` instead of `i=ITERATIONS` for a wall-clock profile. A bare `--agent`
+defaults to 1000 iterations, depth 16, square-root-of-two
 exploration, uniform-random rollout, and neutral cutoff evaluation. Inline agents and profiles can
 be mixed; tournament grids are not accepted here.
 
@@ -404,11 +408,14 @@ rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = 
 This example uses heuristic 1 during rollout selection but not at the depth cutoff. The inverse and
 combined configurations are valid too. `uniform_random`, `greedy`, and `epsilon_greedy` are the
 built-in policies. Informed iterations cost more because they evaluate every legal successor, so
-compare policies at equal decision time as well as equal iterations. See the executable
+compare policies with the same `time_budget` as well as with equal iterations. A timed decision
+finishes its current iteration, can slightly exceed its deadline, and records its actual elapsed
+time, iterations, and nodes in the JSONL move. See the executable
 [`template-study.toml`](../configs/tournaments/template-study.toml) for all combinations and grid
 examples.
 
-An MCTS entry can use arrays for `iterations`, `rollout_depth`, and `exploration`. Structured
+An MCTS entry must define exactly one of `iterations` or `time_budget`, plus `rollout_depth`.
+Either budget can be an array; `rollout_depth` and `exploration` can also use arrays. Structured
 configuration also accepts arrays in `cutoff_evaluator.index`, `rollout_policy.evaluator.index`,
 and `rollout_policy.epsilon`. The loader creates their Cartesian product. For example:
 
@@ -433,7 +440,8 @@ rollout_policy = { kind = "epsilon_greedy", epsilon = [0.0, 0.1, 0.25, 1.0], eva
 The flat compatibility fields `heuristic_index`, `rollout_heuristic_index`, and
 `rollout_epsilon` continue to accept arrays as well.
 
-Generated names append only the fields written as arrays. The suffixes are `i` for iterations, `d`
+Generated names append only the fields written as arrays. The suffixes are `i` for iterations, `t`
+for time budget, `d`
 for rollout depth, `c` for exploration, `h` for cutoff heuristic index, `rh` for rollout heuristic
 index, and `e` for rollout epsilon. The
 example therefore creates names from `mcts-h0-i100-d8` through `mcts-h0-i10000-d32`. Scalar
@@ -486,7 +494,8 @@ meeple-bots extract \
 ```
 
 Multiple inputs must use the same game and tournament schema. An agent name may appear in several
-studies only when its kind, iterations, rollout depth, exploration, and heuristic are identical.
+studies only when its kind, iteration/time budget, rollout depth, exploration, and evaluators are
+identical.
 Conflicting definitions stop extraction before output is written; studies or matches are never
 silently excluded. Give genuinely different configurations distinct names before combining them.
 
@@ -513,7 +522,7 @@ Extraction is registered for Boop and SPOTF. It starts with four generic study t
 Boop additionally produces:
 
 - `boop_matches.csv`: first graduation and winning mechanism per match;
-- `turns.csv`: placements, phases, zones, resolutions, boops, and state metrics;
+- `turns.csv`: placements, phases, timings, search iterations/nodes, resolutions, and state metrics;
 - `boops.csv`: one row per adjacent-piece interaction;
 - `resolutions.csv`: one row per graduation or eight-piece recovery;
 - `winning_lines.csv`: final cat-line positions and orientations.
@@ -521,7 +530,7 @@ Boop additionally produces:
 SPOTF additionally produces:
 
 - `spotf_matches.csv`: final scores, tile counts, physical turns, and gemstone totals;
-- `actions.csv`: every internal ply with phase, branching, and state before and after;
+- `actions.csv`: every internal ply with phase, branching, timing/search work, and surrounding state;
 - `player_turns.csv`: actions and collected tiles grouped into actual player turns;
 - `tile_takes.csv`: spirit, power source, reservation, and sacrifice for every tile;
 - `gemstone_actions.csv`: every place, move, or skip decision;

@@ -59,6 +59,7 @@ _AGENT_FIELDS = (
     "agent_name",
     "kind",
     "iterations",
+    "time_budget",
     "rollout_depth",
     "exploration",
     "heuristic",
@@ -128,6 +129,9 @@ _TURN_BASE_FIELDS = (
     "player",
     "agent",
     "outcome",
+    "decision_seconds",
+    "search_iterations",
+    "search_nodes",
     "progress_fraction",
     "game_quarter",
     "strategic_phase",
@@ -257,6 +261,9 @@ _SPOTF_ACTION_BASE_FIELDS = (
     "player",
     "agent",
     "outcome",
+    "decision_seconds",
+    "search_iterations",
+    "search_nodes",
     "progress_fraction",
     "game_quarter",
     "phase_before",
@@ -520,6 +527,7 @@ def _agent_signature(row: dict[str, object]) -> dict[str, object]:
         for field in (
             "kind",
             "iterations",
+            "time_budget",
             "rollout_depth",
             "exploration",
             "heuristic",
@@ -1055,6 +1063,9 @@ def _write_spotf_action(
             "player": move.player,
             "agent": context.players[move.player],
             "outcome": _player_outcome(move.player, context.winner_player),
+            "decision_seconds": move.decision_seconds,
+            "search_iterations": move.search_iterations,
+            "search_nodes": move.search_nodes,
             "progress_fraction": turn["ply"] / context.plies,
             "game_quarter": f"q{min(3, ((turn['ply'] - 1) * 4) // context.plies) + 1}",
             "phase_before": turn["phase_before"],
@@ -1313,6 +1324,9 @@ def _write_turn(
         "player": move.player,
         "agent": players[move.player],
         "outcome": "win" if move.player == winner_player else "loss",
+        "decision_seconds": move.decision_seconds,
+        "search_iterations": move.search_iterations,
+        "search_nodes": move.search_nodes,
         "progress_fraction": turn["ply"] / total_plies,
         "game_quarter": f"q{min(3, ((turn['ply'] - 1) * 4) // total_plies) + 1}",
         "strategic_phase": turn["phase"],
@@ -1387,6 +1401,9 @@ def _trace_move(raw: object, match_number: int, expected_ply: int) -> Move:
         raise ValueError(f"match {match_number} ply {ply} has unknown resolution")
     return Move(
         player=player,
+        decision_seconds=raw.get("decision_seconds", ""),
+        search_iterations=raw.get("search_iterations", ""),
+        search_nodes=raw.get("search_nodes", ""),
         action=BoopAction(
             piece=BoopPieceKind(_string_field(action, "piece", "boop action")),
             row=_integer_field(action, "row", "boop action"),
@@ -1459,7 +1476,13 @@ def _trace_spotf_move(raw: object, match_number: int, expected_ply: int) -> Move
         parsed_action = SkipSpiritGemstone()
     else:
         raise ValueError(f"match {match_number} ply {ply} has unknown spotf action")
-    return Move(player=player, action=parsed_action)
+    return Move(
+        player=player,
+        action=parsed_action,
+        decision_seconds=raw.get("decision_seconds", ""),
+        search_iterations=raw.get("search_iterations", ""),
+        search_nodes=raw.get("search_nodes", ""),
+    )
 
 
 def _trace_position(raw: object) -> BoopPosition:
@@ -1507,6 +1530,7 @@ def _agent_row(raw: object) -> dict[str, object]:
         "agent_name": _string_field(raw, "name", "tournament agent"),
         "kind": kind,
         "iterations": raw.get("iterations", ""),
+        "time_budget": raw.get("time_budget", ""),
         "rollout_depth": raw.get("rollout_depth", ""),
         "exploration": raw.get("exploration", ""),
         "heuristic": "" if raw.get("heuristic") is None else raw["heuristic"],

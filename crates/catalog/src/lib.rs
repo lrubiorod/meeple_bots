@@ -18,7 +18,7 @@ use meeple_bots_evaluation::{
     benchmark_mcts_agent as benchmark_typed_mcts_agent, evaluate_game as evaluate_typed_game,
 };
 use meeple_bots_mcts_agent::{GameHeuristic, MctsAgent, StateEvaluator};
-pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, UniformRandom};
+pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, SearchBudget, UniformRandom};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{
     BatchConfig, MatchError, MatchObserver, SplitMix64, TracedMatchResult, play_batch, play_match,
@@ -185,10 +185,13 @@ pub struct CatalogPool {
     pub cats: u8,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RecordedMove {
     pub player: usize,
     pub action: CatalogAction,
+    pub decision_seconds: f64,
+    pub search_iterations: Option<u64>,
+    pub search_nodes: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -305,24 +308,23 @@ pub fn benchmark_mcts_agent(
     median_depth: u32,
     seed: u64,
 ) -> Result<MctsAgentBenchmark, CatalogError> {
-    let iterations = config.search.iterations;
     let benchmark = match game {
         GameId::Boop => {
             let mut agent = configured_boop_mcts(config)?;
-            benchmark_typed_mcts_agent(&Boop, &mut agent, iterations, median_depth, seed)
+            benchmark_typed_mcts_agent(&Boop, &mut agent, median_depth, seed)
         }
         GameId::ConnectFour => {
             let mut agent = configured_connect_four_mcts(config)?;
-            benchmark_typed_mcts_agent(&ConnectFour, &mut agent, iterations, median_depth, seed)
+            benchmark_typed_mcts_agent(&ConnectFour, &mut agent, median_depth, seed)
         }
         GameId::SpiritsOfTheForest => {
             let game = spirits_of_the_forest_game(seed);
             let mut agent = configured_spirits_of_the_forest_mcts(config)?;
-            benchmark_typed_mcts_agent(&game, &mut agent, iterations, median_depth, seed)
+            benchmark_typed_mcts_agent(&game, &mut agent, median_depth, seed)
         }
         GameId::TicTacToe => {
             let mut agent = configured_tic_tac_toe_mcts(config)?;
-            benchmark_typed_mcts_agent(&TicTacToe, &mut agent, iterations, median_depth, seed)
+            benchmark_typed_mcts_agent(&TicTacToe, &mut agent, median_depth, seed)
         }
     }?;
     Ok(benchmark)
@@ -536,6 +538,7 @@ fn validate_agent_evaluators<G: HeuristicGame>(
     game: &G,
     config: &MctsAgentConfig,
 ) -> Result<(), CatalogError> {
+    validate_search_config(&config.search)?;
     validate_evaluator(game_id, game, config.cutoff_evaluator)?;
     match config.search.rollout_policy {
         RolloutPolicyConfig::UniformRandom => {}
@@ -566,6 +569,7 @@ fn validate_evaluator<G: HeuristicGame>(
 }
 
 fn validate_uninformed_agent(game: GameId, config: &MctsAgentConfig) -> Result<(), CatalogError> {
+    validate_search_config(&config.search)?;
     if let EvaluatorConfig::GameHeuristic { index } = config.cutoff_evaluator {
         return Err(unsupported_heuristic(game, index, 0));
     }
@@ -580,11 +584,20 @@ fn validate_uninformed_agent(game: GameId, config: &MctsAgentConfig) -> Result<(
     Ok(())
 }
 
+fn validate_search_config<P>(config: &MctsConfig<P>) -> Result<(), CatalogError> {
+    if matches!(config.budget, SearchBudget::Time(duration) if duration.is_zero()) {
+        return Err(CatalogError::InvalidMctsConfig(
+            "MCTS time budget must be greater than zero",
+        ));
+    }
+    Ok(())
+}
+
 fn uniform_search_config(
     config: MctsConfig<RolloutPolicyConfig<EvaluatorConfig>>,
 ) -> MctsConfig<UniformRandom> {
     MctsConfig {
-        iterations: config.iterations,
+        budget: config.budget,
         exploration: config.exploration,
         rollout_depth: config.rollout_depth,
         rollout_policy: UniformRandom,
@@ -1009,19 +1022,22 @@ fn run_tic_tac_toe_with_trace(
 fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogMatchReport {
     let game = ConnectFour;
     let mut state = game.initial_state();
-    for (_, action) in &traced.actions {
-        game.apply_action(&mut state, action)
+    for traced_action in &traced.actions {
+        game.apply_action(&mut state, &traced_action.action)
             .expect("trace contains actions accepted by the game");
     }
     let winner = winner_from_utilities(&traced.result.utilities);
     let moves = traced
         .actions
         .into_iter()
-        .map(|(player, action)| RecordedMove {
-            player: player.index(),
+        .map(|traced_action| RecordedMove {
+            player: traced_action.player.index(),
             action: CatalogAction::ConnectFour {
-                column: action.column(),
+                column: traced_action.action.column(),
             },
+            decision_seconds: traced_action.decision_time.as_secs_f64(),
+            search_iterations: traced_action.decision_stats.search_iterations,
+            search_nodes: traced_action.decision_stats.search_nodes,
         })
         .collect();
 
@@ -1052,20 +1068,23 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
 fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatchReport {
     let game = TicTacToe;
     let mut state = game.initial_state();
-    for (_, action) in &traced.actions {
-        game.apply_action(&mut state, action)
+    for traced_action in &traced.actions {
+        game.apply_action(&mut state, &traced_action.action)
             .expect("trace contains actions accepted by the game");
     }
     let winner = winner_from_utilities(&traced.result.utilities);
     let moves = traced
         .actions
         .into_iter()
-        .map(|(player, action)| RecordedMove {
-            player: player.index(),
+        .map(|traced_action| RecordedMove {
+            player: traced_action.player.index(),
             action: CatalogAction::TicTacToe {
-                row: action.row(),
-                column: action.column(),
+                row: traced_action.action.row(),
+                column: traced_action.action.column(),
             },
+            decision_seconds: traced_action.decision_time.as_secs_f64(),
+            search_iterations: traced_action.decision_stats.search_iterations,
+            search_nodes: traced_action.decision_stats.search_nodes,
         })
         .collect();
 
@@ -1096,21 +1115,21 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
 fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
     let game = Boop;
     let mut state = game.initial_state();
-    for (_, action) in &traced.actions {
-        game.apply_action(&mut state, action)
+    for traced_action in &traced.actions {
+        game.apply_action(&mut state, &traced_action.action)
             .expect("trace contains actions accepted by the game");
     }
     let winner = winner_from_utilities(&traced.result.utilities);
     let moves = traced
         .actions
         .into_iter()
-        .map(|(player, action)| RecordedMove {
-            player: player.index(),
+        .map(|traced_action| RecordedMove {
+            player: traced_action.player.index(),
             action: CatalogAction::Boop {
-                piece: catalog_boop_piece(action.piece()),
-                row: action.position().row(),
-                column: action.position().column(),
-                resolution: match action.resolution() {
+                piece: catalog_boop_piece(traced_action.action.piece()),
+                row: traced_action.action.position().row(),
+                column: traced_action.action.position().column(),
+                resolution: match traced_action.action.resolution() {
                     BoopResolution::None => CatalogBoopResolution::None,
                     BoopResolution::Graduate(line) => CatalogBoopResolution::Graduate {
                         positions: line
@@ -1123,6 +1142,9 @@ fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
                     },
                 },
             },
+            decision_seconds: traced_action.decision_time.as_secs_f64(),
+            search_iterations: traced_action.decision_stats.search_iterations,
+            search_nodes: traced_action.decision_stats.search_nodes,
         })
         .collect();
     let pools = state.pools().map(|pool| CatalogPool {
@@ -1162,17 +1184,20 @@ fn spirits_of_the_forest_report(
     traced: TracedMatchResult<SpiritsOfTheForestAction>,
 ) -> CatalogMatchReport {
     let mut state = game.initial_state();
-    for (_, action) in &traced.actions {
-        game.apply_action(&mut state, action)
+    for traced_action in &traced.actions {
+        game.apply_action(&mut state, &traced_action.action)
             .expect("trace contains actions accepted by the game");
     }
     let winner = winner_from_utilities(&traced.result.utilities);
     let moves = traced
         .actions
         .into_iter()
-        .map(|(player, action)| RecordedMove {
-            player: player.index(),
-            action: CatalogAction::SpiritsOfTheForest(catalog_spirits_action(action)),
+        .map(|traced_action| RecordedMove {
+            player: traced_action.player.index(),
+            action: CatalogAction::SpiritsOfTheForest(catalog_spirits_action(traced_action.action)),
+            decision_seconds: traced_action.decision_time.as_secs_f64(),
+            search_iterations: traced_action.decision_stats.search_iterations,
+            search_nodes: traced_action.decision_stats.search_nodes,
         })
         .collect();
     let spirit_forest = (0..meeple_bots_spirits_of_the_forest::TILE_COUNT)
@@ -1413,7 +1438,7 @@ mod tests {
     fn mcts(heuristic: Option<u32>) -> AgentConfig {
         AgentConfig::Mcts(MctsAgentConfig {
             search: MctsConfig {
-                iterations: NonZeroU32::new(4).unwrap(),
+                budget: SearchBudget::Iterations(NonZeroU32::new(4).unwrap()),
                 exploration: std::f64::consts::SQRT_2,
                 rollout_depth: 1,
                 rollout_policy: RolloutPolicyConfig::UniformRandom,

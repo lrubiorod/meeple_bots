@@ -19,6 +19,7 @@ meeple-bots analyze --game boop --samples 128 --max-depth 256 --seed 42
 meeple-bots analyze --game boop --target-time 5 --seed 42 --json
 meeple-bots analyze --game boop --target-time 1 \
   --agent 'iterations=5000,depth=120' \
+  --agent 'name=equal-time,time_budget=1,depth=120' \
   --agent 'name=rollout-h1,iterations=20000,depth=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
   --agent-config configs/mcts/heuristic.toml
 ```
@@ -130,9 +131,9 @@ in matches, preferably with alternating sides, fixed seed sets, and equal wall-c
 ## Configured agent benchmarks
 
 Repeat `--agent-config PATH` to measure any number of scalar MCTS profiles. Every profile is run
-with its exact iterations, rollout depth, exploration constant, and heuristic on the same seeded
-positions. Profile names must be unique. Measurements run sequentially so one compared agent does
-not compete with another benchmark for CPU time.
+with its exact iteration or time budget, rollout depth, exploration constant, and evaluators on the
+same seeded positions. Profile names must be unique. Measurements run sequentially so one compared
+agent does not compete with another benchmark for CPU time.
 
 Each path uses the [reusable scalar profile format](../../agents/README.md#reusable-profiles), not
 a tournament TOML or an agent grid containing arrays.
@@ -144,16 +145,18 @@ comma-separated `key=value` fields:
 meeple-bots analyze --game spotf \
   --agent \
   --agent 'i=5000,d=120' \
+  --agent 'name=timed,t=1,d=120' \
   --agent 'name=horizon,i=20000,d=32,h=0' \
   --agent 'name=informed,i=10000,d=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
   --agent 'iterations=10000,exploration=0.8'
 ```
 
-Supported fields are `name`, `iterations`, `depth`, `exploration`, cutoff `heuristic` or
-`cutoff_evaluator`, rollout `policy`, `rollout_heuristic`, and `epsilon`. Their short aliases are
-`i`, `d`, `c`, `h` or `ce`, `p`, `rh`, and `e`. `ce` accepts `neutral` or `hINDEX`. Missing values
-default to 1000 iterations, depth 16, square-root-of-two exploration, uniform-random rollouts, and
-neutral cutoff evaluation. A bare `--agent` uses every default. Automatic names encode the
+Supported fields are `name`, `iterations` or `time_budget`, `depth`, `exploration`, cutoff
+`heuristic` or `cutoff_evaluator`, rollout `policy`, `rollout_heuristic`, and `epsilon`. Their short
+aliases are `i` or `t`, `d`, `c`, `h` or `ce`, `p`, `rh`, and `e`. `ce` accepts `neutral` or
+`hINDEX`. Missing values default to 1000 iterations, depth 16, square-root-of-two exploration,
+uniform-random rollouts, and neutral cutoff evaluation. A bare `--agent` uses every default.
+Automatic names encode the
 effective configuration, for example
 `mcts-i5000-d120` and `mcts-h0-i20000-d32`; a non-default exploration
 constant is appended as `-cVALUE`.
@@ -176,8 +179,8 @@ Each configured benchmark reports:
 
 - exact agent configuration and sampled position count;
 - mean, p50, p95, and maximum isolated decision latency;
-- observed milliseconds per iteration at that exact iteration count;
-- latency at each sampled ply;
+- observed milliseconds per completed iteration;
+- latency, actual iterations, and created nodes at each sampled ply;
 - time relative to the fastest supplied profile;
 - ratio to `--target-time` and the profile whose mean is closest to that target.
 
@@ -190,6 +193,10 @@ These are isolated single-decision measurements. A tournament with several worke
 higher per-decision latency because multiple single-threaded MCTS searches share the machine. Run
 benchmarks on an otherwise idle system for stable isolated comparisons, or under intentional load
 when that load represents deployment.
+
+A `time_budget` is checked only between complete MCTS iterations. The reported decision may exceed
+the requested time by one iteration, and at least one iteration always runs. Seeded time-budget
+searches are not exactly reproducible because system load changes the completed iteration count.
 
 ## Compatibility fields
 

@@ -8,8 +8,8 @@ use std::{
 };
 
 use meeple_bots_core::{
-    Agent, AgentError, DecisionContext, DeterministicGame, Game, IllegalAction, PlayerId,
-    PositionStatus, RandomSource,
+    Agent, AgentDecisionStats, AgentError, DecisionContext, DeterministicGame, Game, IllegalAction,
+    PlayerId, PositionStatus, RandomSource,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,6 +103,7 @@ pub trait MatchObserver<G: Game> {
         _player: PlayerId,
         _action: &G::Action,
         _decision_time: Duration,
+        _decision_stats: AgentDecisionStats,
     ) {
     }
 
@@ -116,13 +117,21 @@ impl<G: Game> MatchObserver<G> for NoopObserver {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActionTrace<A> {
-    pub actions: Vec<(PlayerId, A)>,
+    pub actions: Vec<TracedAction<A>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TracedAction<A> {
+    pub player: PlayerId,
+    pub action: A,
+    pub decision_time: Duration,
+    pub decision_stats: AgentDecisionStats,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TracedMatchResult<A> {
     pub result: MatchResult,
-    pub actions: Vec<(PlayerId, A)>,
+    pub actions: Vec<TracedAction<A>>,
 }
 
 impl<A> Default for ActionTrace<A> {
@@ -138,15 +147,25 @@ where
     G: Game<Action = A>,
     A: Clone,
 {
+    fn measures_decision_time(&self) -> bool {
+        true
+    }
+
     fn on_action(
         &mut self,
         _game: &G,
         _state: &G::State,
         player: PlayerId,
         action: &A,
-        _decision_time: Duration,
+        decision_time: Duration,
+        decision_stats: AgentDecisionStats,
     ) {
-        self.actions.push((player, action.clone()));
+        self.actions.push(TracedAction {
+            player,
+            action: action.clone(),
+            decision_time,
+            decision_stats,
+        });
     }
 }
 
@@ -162,7 +181,7 @@ where
     A: Clone,
 {
     fn measures_decision_time(&self) -> bool {
-        self.observer.measures_decision_time()
+        true
     }
 
     fn on_start(&mut self, game: &G, state: &G::State) {
@@ -176,11 +195,12 @@ where
         player: PlayerId,
         action: &A,
         decision_time: Duration,
+        decision_stats: AgentDecisionStats,
     ) {
         self.trace
-            .on_action(game, state, player, action, decision_time);
+            .on_action(game, state, player, action, decision_time, decision_stats);
         self.observer
-            .on_action(game, state, player, action, decision_time);
+            .on_action(game, state, player, action, decision_time, decision_stats);
     }
 
     fn on_finish(&mut self, game: &G, state: &G::State, result: &MatchResult) {
@@ -320,13 +340,19 @@ where
 
                 let decision = DecisionContext::new(game, &state, player);
                 let decision_started = observer.measures_decision_time().then(Instant::now);
-                let action = match player {
-                    PlayerId::FIRST => first
-                        .select_action(decision, &mut first_rng)
-                        .map_err(|source| MatchError::Agent { player, source })?,
-                    PlayerId::SECOND => second
-                        .select_action(decision, &mut second_rng)
-                        .map_err(|source| MatchError::Agent { player, source })?,
+                let (action, decision_stats) = match player {
+                    PlayerId::FIRST => {
+                        let action = first
+                            .select_action(decision, &mut first_rng)
+                            .map_err(|source| MatchError::Agent { player, source })?;
+                        (action, first.last_decision_stats())
+                    }
+                    PlayerId::SECOND => {
+                        let action = second
+                            .select_action(decision, &mut second_rng)
+                            .map_err(|source| MatchError::Agent { player, source })?;
+                        (action, second.last_decision_stats())
+                    }
                     _ => return Err(MatchError::InvalidPlayer(player)),
                 };
                 let decision_time =
@@ -335,7 +361,7 @@ where
                 game.apply_action(&mut state, &action)
                     .map_err(|source| MatchError::IllegalAction { player, source })?;
                 plies += 1;
-                observer.on_action(game, &state, player, &action, decision_time);
+                observer.on_action(game, &state, player, &action, decision_time, decision_stats);
             }
             PositionStatus::Chance => return Err(MatchError::UnexpectedChance),
             _ => return Err(MatchError::UnexpectedChance),

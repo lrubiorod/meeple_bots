@@ -11,7 +11,7 @@ use meeple_bots_core::{
     Agent, AgentError, DecisionContext, DeterministicGame, IllegalAction, PerfectInformationGame,
     PositionStatus, RandomSource, TwoPlayerZeroSumGame,
 };
-use meeple_bots_mcts_agent::{MctsAgent, MctsConfig};
+use meeple_bots_mcts_agent::{MctsAgent, MctsConfig, SearchBudget};
 use meeple_bots_simulation::SplitMix64;
 
 const CALIBRATION_PROBE_ITERATIONS: u32 = 8;
@@ -67,6 +67,8 @@ pub struct SuggestedMctsExperiment {
 pub struct SampledDecisionTiming {
     pub sampled_ply: u32,
     pub milliseconds: f64,
+    pub iterations: u64,
+    pub nodes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,6 +123,7 @@ pub enum EvaluationError {
     NoLegalActions,
     IllegalAction(IllegalAction),
     Agent(AgentError),
+    MissingSearchStats,
     InvalidTargetTime,
 }
 
@@ -135,6 +138,9 @@ impl fmt::Display for EvaluationError {
             }
             Self::IllegalAction(error) => write!(formatter, "sampled action was rejected: {error}"),
             Self::Agent(error) => write!(formatter, "MCTS calibration failed: {error}"),
+            Self::MissingSearchStats => {
+                formatter.write_str("configured MCTS agent did not report search statistics")
+            }
             Self::InvalidTargetTime => formatter.write_str("target time must be greater than zero"),
         }
     }
@@ -243,7 +249,6 @@ where
 pub fn benchmark_mcts_agent<G, A>(
     game: &G,
     agent: &mut A,
-    iterations: NonZeroU32,
     median_depth: u32,
     seed: u64,
 ) -> Result<MctsAgentBenchmark, EvaluationError>
@@ -268,9 +273,16 @@ where
         agent
             .select_action(DecisionContext::new(game, state, player), &mut rng)
             .map_err(EvaluationError::Agent)?;
+        let stats = agent.last_decision_stats();
         position_timings.push(SampledDecisionTiming {
             sampled_ply: *sampled_ply,
             milliseconds: (started.elapsed().as_secs_f64() * 1_000.0).max(f64::EPSILON),
+            iterations: stats
+                .search_iterations
+                .ok_or(EvaluationError::MissingSearchStats)?,
+            nodes: stats
+                .search_nodes
+                .ok_or(EvaluationError::MissingSearchStats)?,
         });
     }
     if position_timings.is_empty() {
@@ -296,7 +308,14 @@ where
         decision_time_max_ms: *sorted_timings
             .last()
             .expect("non-empty timings have a maximum"),
-        milliseconds_per_iteration: decision_time_mean_ms / f64::from(iterations.get()),
+        milliseconds_per_iteration: position_timings
+            .iter()
+            .map(|timing| timing.milliseconds)
+            .sum::<f64>()
+            / position_timings
+                .iter()
+                .map(|timing| timing.iterations as f64)
+                .sum::<f64>(),
         position_timings,
     })
 }
@@ -609,7 +628,7 @@ where
 {
     let iterations = NonZeroU32::new(iterations).expect("calibration count is non-zero");
     let mut agent = MctsAgent::new(MctsConfig {
-        iterations,
+        budget: SearchBudget::Iterations(iterations),
         exploration: std::f64::consts::SQRT_2,
         rollout_depth,
         ..MctsConfig::default()
@@ -741,12 +760,12 @@ mod tests {
     fn configured_agent_benchmark_times_exact_search_on_shared_positions() {
         let iterations = NonZeroU32::new(4).unwrap();
         let mut agent = MctsAgent::new(MctsConfig {
-            iterations,
+            budget: SearchBudget::Iterations(iterations),
             rollout_depth: 4,
             ..MctsConfig::default()
         });
 
-        let benchmark = benchmark_mcts_agent(&TicTacToe, &mut agent, iterations, 6, 42).unwrap();
+        let benchmark = benchmark_mcts_agent(&TicTacToe, &mut agent, 6, 42).unwrap();
 
         assert_eq!(benchmark.sampled_positions, 3);
         assert_eq!(
