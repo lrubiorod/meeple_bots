@@ -503,7 +503,7 @@ impl Game for SpiritsOfTheForest {
             return Vec::new().into_iter();
         }
 
-        let mut actions = match state.phase {
+        let actions = match state.phase {
             TurnPhase::Collect => {
                 let mut takes = self.take_actions(state);
                 if state.collected_this_turn == 1 || takes.is_empty() {
@@ -541,7 +541,6 @@ impl Game for SpiritsOfTheForest {
                 choices
             }
         };
-        actions.shrink_to_fit();
         actions.into_iter()
     }
 
