@@ -709,19 +709,93 @@ mod tests {
         }
     }
 
+    fn assert_state_invariants(game: &SpiritsOfTheForest, state: &SpiritsOfTheForestState) {
+        let collected_tiles: usize = state
+            .collections
+            .iter()
+            .map(|collection| usize::from(collection.tiles))
+            .sum();
+        assert_eq!(collected_tiles + state.remaining_tiles(), TILE_COUNT);
+
+        for player in [PlayerId::FIRST, PlayerId::SECOND] {
+            let forest_gemstones = state
+                .gemstones
+                .iter()
+                .filter(|owner| **owner == Some(player))
+                .count();
+            let pool = state.gemstone_pools[player.index()];
+            assert_eq!(forest_gemstones, usize::from(pool.placed()));
+            assert_eq!(
+                usize::from(pool.available()) + forest_gemstones + usize::from(pool.removed()),
+                usize::from(GEMSTONES_PER_PLAYER)
+            );
+        }
+
+        for (remaining, gemstone) in state.remaining.iter().zip(&state.gemstones) {
+            assert!(*remaining || gemstone.is_none());
+        }
+
+        let mut spirit_symbols = [0_u8; 9];
+        let mut power_sources = [0_u8; 3];
+        for collection in &state.collections {
+            for (total, collected) in spirit_symbols.iter_mut().zip(collection.spirit_symbols) {
+                *total += collected;
+            }
+            for (total, collected) in power_sources.iter_mut().zip(collection.power_sources) {
+                *total += collected;
+            }
+        }
+        for (index, remaining) in state.remaining.iter().enumerate() {
+            if !remaining {
+                continue;
+            }
+            let tile = game.tiles[index];
+            spirit_symbols[tile.spirit.index()] += tile.spirit_symbols;
+            if let Some(source) = tile.power_source {
+                power_sources[source.index()] += 1;
+            }
+        }
+        assert_eq!(spirit_symbols, [5, 6, 6, 7, 7, 8, 8, 8, 10]);
+        assert_eq!(power_sources, [9, 9, 9]);
+    }
+
     #[test]
-    fn supplied_tile_catalog_has_expected_totals() {
+    fn supplied_tile_catalog_has_exact_composition() {
         assert_eq!(SPIRIT_TILES.len(), 48);
         let mut spirits = [0_u8; 9];
         let mut sources = [0_u8; 3];
+        let mut composition = [[0_u8; 5]; 9];
         for tile in SPIRIT_TILES {
             spirits[tile.spirit.index()] += tile.spirit_symbols;
             if let Some(source) = tile.power_source {
                 sources[source.index()] += 1;
             }
+            let kind = match (tile.spirit_symbols, tile.power_source) {
+                (1, None) => 0,
+                (2, None) => 1,
+                (1, Some(PowerSource::Fire)) => 2,
+                (1, Some(PowerSource::Moon)) => 3,
+                (1, Some(PowerSource::Sun)) => 4,
+                _ => panic!("unsupported tile in the supplied catalog: {tile:?}"),
+            };
+            composition[tile.spirit.index()][kind] += 1;
         }
         assert_eq!(spirits, [5, 6, 6, 7, 7, 8, 8, 8, 10]);
         assert_eq!(sources, [9, 9, 9]);
+        assert_eq!(
+            composition,
+            [
+                [0, 1, 1, 1, 1],
+                [0, 2, 0, 1, 1],
+                [0, 1, 2, 1, 1],
+                [0, 2, 1, 1, 1],
+                [0, 2, 1, 1, 1],
+                [1, 2, 1, 1, 1],
+                [1, 2, 1, 1, 1],
+                [1, 2, 1, 1, 1],
+                [1, 3, 1, 1, 1],
+            ]
+        );
     }
 
     #[test]
@@ -772,6 +846,49 @@ mod tests {
             .unwrap();
         assert_eq!(state.phase(), TurnPhase::PlaceGemstone);
         assert_eq!(state.collections[0].tiles(), 2);
+    }
+
+    #[test]
+    fn second_matching_single_tile_can_come_from_another_row() {
+        let mut tiles = SPIRIT_TILES;
+        tiles[position(0, 0).index()] = single(Spirit::Leaves);
+        tiles[position(1, 0).index()] = single(Spirit::Leaves);
+        let game = SpiritsOfTheForest::from_tiles(tiles);
+        let mut state = game.initial_state();
+        state.completed_turns = 1;
+
+        game.apply_action(&mut state, &take(position(0, 0)))
+            .unwrap();
+        assert!(
+            game.legal_actions(&state)
+                .any(|action| action == take(position(1, 0)))
+        );
+        game.apply_action(&mut state, &take(position(1, 0)))
+            .unwrap();
+
+        assert_eq!(state.phase(), TurnPhase::PlaceGemstone);
+        assert_eq!(state.collections[0].tiles(), 2);
+    }
+
+    #[test]
+    fn collection_can_end_while_a_second_matching_tile_is_available() {
+        let mut tiles = SPIRIT_TILES;
+        tiles[position(0, 0).index()] = single(Spirit::Leaves);
+        tiles[position(1, 0).index()] = single(Spirit::Leaves);
+        let game = SpiritsOfTheForest::from_tiles(tiles);
+        let mut state = game.initial_state();
+        state.completed_turns = 1;
+
+        game.apply_action(&mut state, &take(position(0, 0)))
+            .unwrap();
+        let actions: Vec<_> = game.legal_actions(&state).collect();
+        assert!(actions.contains(&take(position(1, 0))));
+        assert!(actions.contains(&SpiritsOfTheForestAction::EndCollection));
+
+        game.apply_action(&mut state, &SpiritsOfTheForestAction::EndCollection)
+            .unwrap();
+        assert_eq!(state.phase(), TurnPhase::PlaceGemstone);
+        assert_eq!(state.collections[0].tiles(), 1);
     }
 
     #[test]
@@ -983,6 +1100,35 @@ mod tests {
         assert_eq!(state.remaining_tiles(), 0);
         assert_eq!(state.completed_turns(), 2);
         assert_eq!(game.legal_actions(&state).count(), 0);
+    }
+
+    #[test]
+    fn reachable_states_preserve_game_invariants() {
+        for seed in 0..128 {
+            let mut setup_rng = CounterRng(seed);
+            let game = SpiritsOfTheForest::shuffled(&mut setup_rng);
+            let mut action_rng = CounterRng(seed ^ 0xa076_1d64_78bd_642f);
+            let mut state = game.initial_state();
+
+            loop {
+                assert_state_invariants(&game, &state);
+                if matches!(game.status(&state), PositionStatus::Terminal) {
+                    assert_eq!(game.legal_actions(&state).count(), 0);
+                    break;
+                }
+
+                let actions: Vec<_> = game.legal_actions(&state).collect();
+                assert!(!actions.is_empty());
+                for action in &actions {
+                    let mut successor = state.clone();
+                    game.apply_action(&mut successor, action).unwrap();
+                    assert_state_invariants(&game, &successor);
+                }
+
+                let selected = action_rng.index(actions.len()).unwrap();
+                game.apply_action(&mut state, &actions[selected]).unwrap();
+            }
+        }
     }
 
     #[test]
