@@ -636,13 +636,21 @@ impl Game for SpiritsOfTheForest {
 
 impl HeuristicGame for SpiritsOfTheForest {
     fn heuristic_count(&self) -> u32 {
-        1
+        2
     }
 
     fn heuristic_utility(&self, index: u32, state: &Self::State, player: PlayerId) -> Option<f32> {
-        if index != 0 || player.index() >= 2 {
+        if player.index() >= 2 {
             return None;
         }
+        let gemstone_weight = match index {
+            0 => 0.5,
+            1 => {
+                let remaining_fraction = state.remaining_tiles() as f32 / TILE_COUNT as f32;
+                0.5 + 4.0 * remaining_fraction * remaining_fraction
+            }
+            _ => return None,
+        };
         if let Some(utility) = self.terminal_utility(state, player) {
             return Some(utility);
         }
@@ -651,8 +659,8 @@ impl HeuristicGame for SpiritsOfTheForest {
         let player_pool = state.gemstone_pools[player.index()];
         let opponent_pool = state.gemstone_pools[opponent.index()];
         let raw = f32::from(scores[player.index()] - scores[opponent.index()])
-            + 0.5 * f32::from(player_pool.usable())
-            - 0.5 * f32::from(opponent_pool.usable())
+            + gemstone_weight * f32::from(player_pool.usable())
+            - gemstone_weight * f32::from(opponent_pool.usable())
             + 0.25 * f32::from(player_pool.placed())
             - 0.25 * f32::from(opponent_pool.placed());
         Some((raw / 20.0).tanh())
@@ -1006,12 +1014,37 @@ mod tests {
     }
 
     #[test]
-    fn heuristic_is_bounded_and_zero_sum() {
+    fn heuristics_are_bounded_and_zero_sum() {
         let game = SpiritsOfTheForest::from_tiles(SPIRIT_TILES);
         let state = game.initial_state();
-        let first = game.heuristic_utility(0, &state, PlayerId::FIRST).unwrap();
-        let second = game.heuristic_utility(0, &state, PlayerId::SECOND).unwrap();
-        assert!((-1.0..=1.0).contains(&first));
-        assert_eq!(first, -second);
+        assert_eq!(game.heuristic_count(), 2);
+        for index in 0..game.heuristic_count() {
+            let first = game
+                .heuristic_utility(index, &state, PlayerId::FIRST)
+                .unwrap();
+            let second = game
+                .heuristic_utility(index, &state, PlayerId::SECOND)
+                .unwrap();
+            assert!((-1.0..=1.0).contains(&first));
+            assert_eq!(first, -second);
+        }
+        assert_eq!(game.heuristic_utility(2, &state, PlayerId::FIRST), None);
+    }
+
+    #[test]
+    fn conservation_heuristic_penalizes_early_gemstone_sacrifices_more() {
+        let game = SpiritsOfTheForest::from_tiles(SPIRIT_TILES);
+        let mut early = game.initial_state();
+        early.gemstone_pools[0].available = 2;
+        early.gemstone_pools[0].removed = 1;
+
+        let baseline = game.heuristic_utility(0, &early, PlayerId::FIRST).unwrap();
+        let early_conservation = game.heuristic_utility(1, &early, PlayerId::FIRST).unwrap();
+        assert!(early_conservation < baseline);
+
+        let mut late = early.clone();
+        late.remaining[..TILE_COUNT - ROWS].fill(false);
+        let late_conservation = game.heuristic_utility(1, &late, PlayerId::FIRST).unwrap();
+        assert!(early_conservation < late_conservation);
     }
 }

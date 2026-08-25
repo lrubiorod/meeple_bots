@@ -69,9 +69,17 @@ only currently legal instances of these types.
 
 ## MCTS heuristic
 
-Heuristic index `0` combines provisional score difference, remaining usable gemstones, and a small
-reservation bonus. Its result is normalized to `[-1, 1]`; terminal states always use exact match
-utility. Neutral terminal rollouts remain available by leaving `heuristic=None`.
+Two cutoff heuristics are available:
+
+- Index `0` combines provisional score difference, remaining usable gemstones, and a small
+  reservation bonus. Every usable gemstone has a constant weight of `0.5`.
+- Index `1` keeps the same score and reservation terms but values each usable gemstone according to
+  the fraction of forest tiles remaining: `0.5 + 4 * remaining_fraction^2`. A sacrificed gemstone
+  therefore costs `4.5` raw heuristic points at the start, `1.5` halfway through the forest, and
+  approaches the index `0` cost near the end.
+
+Both results are normalized to `[-1, 1]`; terminal states always use exact match utility. Neutral
+terminal rollouts remain available by leaving `heuristic=None`.
 
 ## Tournament analysis
 

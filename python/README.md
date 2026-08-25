@@ -207,7 +207,8 @@ Each seat can be human, Random, or MCTS. Before a match, the page configures pla
 budget, seed, and minimum display interval. Boop also exposes both cutoff heuristics and asks humans
 to choose a graduation or recovery when a placement has several legal resolutions.
 Spirits of the Forest presents collection and gemstone decisions as separate phases, derives its
-face-up forest from the match seed, and exposes cutoff heuristic `0`.
+face-up forest from the match seed, and exposes cutoff heuristic `0` with constant gemstone value
+and heuristic `1` with stronger early- and mid-game gemstone conservation.
 
 The server binds to `127.0.0.1:8765` by default. Use `--host`, `--port`, or `--no-browser` to change
 startup behavior, and `Ctrl+C` to stop it. Automated native matches release Python's GIL, keeping

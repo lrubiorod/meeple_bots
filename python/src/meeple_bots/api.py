@@ -1093,10 +1093,10 @@ def _validate_game_heuristic(game: Game, heuristic: int | None) -> None:
         return
     _non_negative_u32("heuristic", heuristic)
     if isinstance(game, SpiritsOfTheForest):
-        if heuristic != 0:
+        if heuristic not in (0, 1):
             raise ValueError(
                 "spotf does not provide MCTS heuristic "
-                f"{heuristic}; available indices: 0..0"
+                f"{heuristic}; available indices: 0..1"
             )
         return
     if not isinstance(game, Boop):

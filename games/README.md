@@ -71,7 +71,8 @@ manageable.
 - Python actions: `TakeSpiritTile`, `EndSpiritCollection`, `PlaceSpiritGemstone`,
   `MoveSpiritGemstone`, and `SkipSpiritGemstone`
 - Forest: 4 rows by 12 tiles
-- MCTS cutoff heuristic: index `0`
+- MCTS cutoff heuristics: index `0` for constant gemstone value and index `1` for phase-dependent
+  gemstone conservation
 
 ```bash
 meeple-bots match --game spotf --first human --second mcts \
