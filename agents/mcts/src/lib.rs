@@ -1084,6 +1084,65 @@ mod tests {
     }
 
     #[test]
+    fn epsilon_one_matches_uniform_random_mcts_search() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let budget = SearchBudget::Iterations(NonZeroU32::new(512).unwrap());
+
+        for seed in [0, 13, 42, 99] {
+            let mut uniform = MctsAgent::new(MctsConfig {
+                budget,
+                exploration: std::f64::consts::SQRT_2,
+                rollout_depth: 9,
+                rollout_policy: RolloutPolicyConfig::<FailingEvaluator>::UniformRandom,
+            });
+            let mut epsilon = MctsAgent::new(MctsConfig {
+                budget,
+                exploration: std::f64::consts::SQRT_2,
+                rollout_depth: 9,
+                rollout_policy: RolloutPolicyConfig::EpsilonGreedy {
+                    epsilon: 1.0,
+                    evaluator: FailingEvaluator,
+                },
+            });
+            let mut uniform_rng = SplitMix64::new(seed);
+            let mut epsilon_rng = SplitMix64::new(seed);
+
+            let uniform_action = uniform
+                .select_action(
+                    DecisionContext::new(&game, &state, PlayerId::FIRST),
+                    &mut uniform_rng,
+                )
+                .unwrap();
+            let epsilon_action = epsilon
+                .select_action(
+                    DecisionContext::new(&game, &state, PlayerId::FIRST),
+                    &mut epsilon_rng,
+                )
+                .unwrap();
+            let uniform_stats = uniform.last_search_stats().unwrap();
+            let epsilon_stats = epsilon.last_search_stats().unwrap();
+
+            assert_eq!(epsilon_action, uniform_action, "seed {seed}");
+            assert_eq!(
+                epsilon_stats.iterations, uniform_stats.iterations,
+                "seed {seed}"
+            );
+            assert_eq!(epsilon_stats.nodes, uniform_stats.nodes, "seed {seed}");
+            assert_eq!(
+                epsilon.decision_stats(),
+                uniform.decision_stats(),
+                "seed {seed}"
+            );
+            assert_eq!(
+                epsilon_rng.next_u64(),
+                uniform_rng.next_u64(),
+                "seed {seed}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_invalid_rollout_epsilon() {
         let game = TicTacToe;
         for epsilon in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
