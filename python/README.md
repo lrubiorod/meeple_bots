@@ -530,11 +530,15 @@ Boop additionally produces:
 SPOTF additionally produces:
 
 - `spotf_matches.csv`: final scores, tile counts, physical turns, and gemstone totals;
-- `actions.csv`: every internal ply with phase, branching, timing/search work, and surrounding state;
-- `player_turns.csv`: actions and collected tiles grouped into actual player turns;
-- `tile_takes.csv`: spirit, power source, reservation, and sacrifice for every tile;
-- `gemstone_actions.csv`: every place, move, or skip decision;
-- `categories.csv`: final counts and scoring contribution for all 12 categories and both players.
+- `actions.csv`: every internal ply with phase, branching, timing/search work, surrounding state,
+  reachable H2 progress, category viability, gemstone state, and both ply/tile progress;
+- `player_turns.csv`: actions grouped into actual player turns, including aggregate decision cost,
+  score/progress deltas, category viability, and gemstone attrition;
+- `tile_takes.csv`: spirit, power source, reservation, sacrifice, search cost, and strategic deltas
+  for every collected tile;
+- `gemstone_actions.csv`: every place, move, or skip decision with game quarter and search cost;
+- `categories.csv`: final counts, count gaps, scoring contribution, absence penalties, and lost
+  majorities for all 12 categories and both players.
 
 The SPOTF extractor rebuilds the shuffled forest from each match seed. A trace is rejected if any
 action is illegal or if its replayed winner or scores differ from the recorded result.
@@ -570,7 +574,11 @@ nested `report/` by default. Use `--output-dir PATH` or `--overwrite` to change 
 Boop and SPOTF have registered report generators. Both accept a partial extraction but label the
 result as preliminary. The SPOTF report compares competition, head-to-head results, first-player
 advantage, plies versus physical turns, scores, spirit and power-source categories, collection
-patterns, gemstone decisions, and sacrifices.
+patterns, gemstone decisions, and sacrifices. It also compares measured MCTS latency, iterations
+and nodes per second, budget utilization, search cost by phase, reachable scoring categories, and
+gemstone conservation across game quarters. Strategic quarters use collected-tile progress rather
+than internal plies. Search-specific figures are omitted when the input has no MCTS decision
+metrics.
 
 ## Study artifacts
 

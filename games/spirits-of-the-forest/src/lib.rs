@@ -371,17 +371,7 @@ impl SpiritsOfTheForest {
     }
 
     fn reachable_progress_scores(&self, state: &SpiritsOfTheForestState) -> [i16; 2] {
-        let mut remaining_spirits = [0_u8; 9];
-        let mut remaining_sources = [0_u8; 3];
-        for (tile, remaining) in self.tiles.iter().zip(state.remaining) {
-            if !remaining {
-                continue;
-            }
-            remaining_spirits[tile.spirit.index()] += tile.spirit_symbols;
-            if let Some(source) = tile.power_source {
-                remaining_sources[source.index()] += 1;
-            }
-        }
+        let (remaining_spirits, remaining_sources) = self.remaining_category_symbols(state);
 
         let mut scores = [0_i16; 2];
         for spirit in Spirit::ALL {
@@ -405,6 +395,21 @@ impl SpiritsOfTheForest {
             );
         }
         scores
+    }
+
+    fn remaining_category_symbols(&self, state: &SpiritsOfTheForestState) -> ([u8; 9], [u8; 3]) {
+        let mut remaining_spirits = [0_u8; 9];
+        let mut remaining_sources = [0_u8; 3];
+        for (tile, remaining) in self.tiles.iter().zip(state.remaining) {
+            if !remaining {
+                continue;
+            }
+            remaining_spirits[tile.spirit.index()] += tile.spirit_symbols;
+            if let Some(source) = tile.power_source {
+                remaining_sources[source.index()] += 1;
+            }
+        }
+        (remaining_spirits, remaining_sources)
     }
 
     pub fn winner(&self, state: &SpiritsOfTheForestState) -> Option<PlayerId> {

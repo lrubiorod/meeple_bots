@@ -98,5 +98,10 @@ meeple-bots report --input results/tournaments/spotf-study/data
 
 The native replay analyzer reconstructs the shuffled forest from the match seed and validates every
 recorded action. It separates engine plies from physical turns, records tile collection and gemstone
-behavior, and breaks the final score down across the nine spirits and three power sources. See the
+behavior, and breaks the final score down across the nine spirits and three power sources. State
+snapshots also track the H2 reachable-progress score, viable and led categories, and gemstone
+attrition. The report aggregates actual MCTS latency, iterations/nodes per second, budget use, and
+strategic evolution by game quarter. See the
 [Python guide](../../python/README.md#2-extract-analysis-tables) for the generated table list.
+Strategic quarters are based on the 48 collected tiles, so internal multi-action phases do not
+distort early-, middle-, and late-game comparisons.

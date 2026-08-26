@@ -13,6 +13,10 @@ pub struct SpiritsPlayerStateMetrics {
     pub power_sources: [u8; 3],
     pub tiles: u8,
     pub score: i16,
+    pub reachable_score: i16,
+    pub categories_present: u8,
+    pub categories_reachable: u8,
+    pub categories_leading: u8,
     pub gemstones_available: u8,
     pub gemstones_placed: u8,
     pub gemstones_removed: u8,
@@ -197,6 +201,8 @@ fn state_metrics(
     state: &SpiritsOfTheForestState,
 ) -> SpiritsStateMetrics {
     let scores = game.scores(state);
+    let reachable_scores = game.reachable_progress_scores(state);
+    let category_statuses = category_statuses(game, state);
     let players = std::array::from_fn(|index| {
         let collection = state.collections[index];
         let gemstones = state.gemstone_pools[index];
@@ -205,6 +211,10 @@ fn state_metrics(
             power_sources: collection.power_sources,
             tiles: collection.tiles,
             score: scores[index],
+            reachable_score: reachable_scores[index],
+            categories_present: category_statuses[index].present,
+            categories_reachable: category_statuses[index].reachable,
+            categories_leading: category_statuses[index].leading,
             gemstones_available: gemstones.available,
             gemstones_placed: gemstones.placed(),
             gemstones_removed: gemstones.removed,
@@ -214,6 +224,61 @@ fn state_metrics(
         players,
         remaining_tiles: state.remaining_tiles() as u8,
         completed_turns: state.completed_turns,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CategoryStatusMetrics {
+    present: u8,
+    reachable: u8,
+    leading: u8,
+}
+
+fn category_statuses(
+    game: &SpiritsOfTheForest,
+    state: &SpiritsOfTheForestState,
+) -> [CategoryStatusMetrics; 2] {
+    let (remaining_spirits, remaining_sources) = game.remaining_category_symbols(state);
+    let mut statuses = [CategoryStatusMetrics::default(); 2];
+    for spirit in Spirit::ALL {
+        update_category_statuses(
+            &mut statuses,
+            [
+                state.collections[0].spirit_symbols[spirit.index()],
+                state.collections[1].spirit_symbols[spirit.index()],
+            ],
+            remaining_spirits[spirit.index()],
+        );
+    }
+    for source in PowerSource::ALL {
+        update_category_statuses(
+            &mut statuses,
+            [
+                state.collections[0].power_sources[source.index()],
+                state.collections[1].power_sources[source.index()],
+            ],
+            remaining_sources[source.index()],
+        );
+    }
+    statuses
+}
+
+fn update_category_statuses(
+    statuses: &mut [CategoryStatusMetrics; 2],
+    collected: [u8; 2],
+    remaining: u8,
+) {
+    let threshold = (collected[0] + collected[1] + remaining).div_ceil(2);
+    for player in 0..2 {
+        if collected[player] > 0 {
+            statuses[player].present += 1;
+        }
+        if collected[player] + remaining >= threshold {
+            statuses[player].reachable += 1;
+        }
+        if collected[player] > 0 && collected[player] >= collected[1 - player] {
+            statuses[player].leading += 1;
+        }
     }
 }
 
@@ -331,6 +396,28 @@ mod tests {
 
         assert_eq!(analysis.categories.len(), 12);
         assert_eq!(reconstructed, analysis.final_scores);
+    }
+
+    #[test]
+    fn replay_tracks_category_viability_and_reachable_progress() {
+        let game = SpiritsOfTheForest::from_tiles(SPIRIT_TILES);
+        let analysis = analyze_replay(&game, &complete_replay(&game)).unwrap();
+        let initial = analysis.turns[0].before;
+        let final_state = analysis.turns.last().unwrap().after;
+
+        for player in 0..2 {
+            assert_eq!(initial.players[player].reachable_score, 0);
+            assert_eq!(initial.players[player].categories_present, 0);
+            assert_eq!(initial.players[player].categories_reachable, 12);
+            assert_eq!(initial.players[player].categories_leading, 0);
+            assert_eq!(
+                final_state.players[player].reachable_score,
+                final_state.players[player].score
+            );
+            assert!(final_state.players[player].categories_present <= 12);
+            assert!(final_state.players[player].categories_reachable <= 12);
+            assert!(final_state.players[player].categories_leading <= 12);
+        }
     }
 
     #[test]

@@ -116,6 +116,9 @@ def _derive_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         "game_lengths": _game_lengths(matches, tables["spotf_matches"]),
         "score_performance": _score_performance(matches, tables["spotf_matches"], agents),
         "turn_structure": _turn_structure(tables["player_turns"], tables["actions"], agents),
+        "search_performance": _search_performance(tables["actions"], tables["agents"]),
+        "search_by_phase": _search_by_phase(tables["actions"]),
+        "strategic_progress": _strategic_progress(tables["player_turns"]),
         "spirit_performance": _category_performance(
             tables["categories"], "spirit", _SPIRIT_ORDER
         ),
@@ -124,6 +127,7 @@ def _derive_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         ),
         "gemstone_strategy": _gemstone_strategy(tables["gemstone_actions"], agents),
         "sacrifice_strategy": _sacrifice_strategy(tables["tile_takes"], agents),
+        "sacrifice_timing": _sacrifice_timing(tables["tile_takes"], agents),
     }
 
 
@@ -302,6 +306,168 @@ def _turn_structure(
     return pd.DataFrame(rows)
 
 
+def _numeric(table: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
+    result = table.copy()
+    for column in columns:
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    return result
+
+
+def _search_performance(actions: pd.DataFrame, agents: pd.DataFrame) -> pd.DataFrame:
+    measured = _numeric(
+        actions,
+        ("decision_seconds", "search_iterations", "search_nodes", "legal_actions_before"),
+    )
+    measured = measured.loc[
+        measured["search_iterations"].notna() & (measured["decision_seconds"] > 0)
+    ]
+    agent_configs = agents.copy()
+    agent_configs["time_budget"] = pd.to_numeric(
+        agent_configs["time_budget"], errors="coerce"
+    )
+    rows = []
+    for config in agent_configs.itertuples(index=False):
+        selected = measured.loc[measured["agent"] == config.agent_name]
+        seconds = selected["decision_seconds"]
+        iterations = selected["search_iterations"]
+        node_rows = selected.loc[selected["search_nodes"].notna()]
+        nodes = node_rows["search_nodes"]
+        total_seconds = float(seconds.sum())
+        total_iterations = float(iterations.sum())
+        total_nodes = float(nodes.sum())
+        node_seconds = float(node_rows["decision_seconds"].sum())
+        node_iterations = float(node_rows["search_iterations"].sum())
+        budget = float(config.time_budget) if pd.notna(config.time_budget) else np.nan
+        utilization = seconds / budget if budget > 0 else pd.Series(dtype=float)
+        rows.append(
+            {
+                "agent": config.agent_name,
+                "measured_decisions": len(selected),
+                "configured_time_budget": budget,
+                "mean_decision_seconds": seconds.mean() if len(selected) else np.nan,
+                "p50_decision_seconds": seconds.median() if len(selected) else np.nan,
+                "p95_decision_seconds": (
+                    seconds.quantile(0.95) if len(selected) else np.nan
+                ),
+                "mean_iterations": iterations.mean() if len(selected) else np.nan,
+                "p50_iterations": iterations.median() if len(selected) else np.nan,
+                "p95_iterations": (
+                    iterations.quantile(0.95) if len(selected) else np.nan
+                ),
+                "iterations_per_second": (
+                    total_iterations / total_seconds if total_seconds else np.nan
+                ),
+                "mean_nodes": nodes.mean() if len(nodes) else np.nan,
+                "nodes_per_second": (
+                    total_nodes / node_seconds if node_seconds else np.nan
+                ),
+                "nodes_per_iteration": (
+                    total_nodes / node_iterations if node_iterations else np.nan
+                ),
+                "mean_legal_actions": (
+                    selected["legal_actions_before"].mean() if len(selected) else np.nan
+                ),
+                "mean_budget_utilization": (
+                    utilization.mean() if len(utilization) else np.nan
+                ),
+                "p95_budget_utilization": (
+                    utilization.quantile(0.95) if len(utilization) else np.nan
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _search_by_phase(actions: pd.DataFrame) -> pd.DataFrame:
+    columns = (
+        "agent",
+        "game_quarter",
+        "phase",
+        "decisions",
+        "mean_decision_seconds",
+        "p95_decision_seconds",
+        "mean_iterations",
+        "iterations_per_second",
+        "mean_nodes",
+        "nodes_per_second",
+        "mean_legal_actions",
+    )
+    measured = _numeric(
+        actions,
+        ("decision_seconds", "search_iterations", "search_nodes", "legal_actions_before"),
+    )
+    measured = measured.loc[
+        measured["search_iterations"].notna() & (measured["decision_seconds"] > 0)
+    ]
+    rows = []
+    for (agent, quarter, phase), selected in measured.groupby(
+        ["agent", "tile_quarter", "phase_before"], sort=True
+    ):
+        total_seconds = float(selected["decision_seconds"].sum())
+        total_iterations = float(selected["search_iterations"].sum())
+        node_rows = selected.loc[selected["search_nodes"].notna()]
+        nodes = node_rows["search_nodes"]
+        node_seconds = float(node_rows["decision_seconds"].sum())
+        rows.append(
+            {
+                "agent": agent,
+                "game_quarter": quarter,
+                "phase": phase,
+                "decisions": len(selected),
+                "mean_decision_seconds": selected["decision_seconds"].mean(),
+                "p95_decision_seconds": selected["decision_seconds"].quantile(0.95),
+                "mean_iterations": selected["search_iterations"].mean(),
+                "iterations_per_second": (
+                    total_iterations / total_seconds if total_seconds else np.nan
+                ),
+                "mean_nodes": nodes.mean() if len(nodes) else np.nan,
+                "nodes_per_second": (
+                    float(nodes.sum()) / node_seconds if node_seconds else np.nan
+                ),
+                "mean_legal_actions": selected["legal_actions_before"].mean(),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _strategic_progress(player_turns: pd.DataFrame) -> pd.DataFrame:
+    turns = _numeric(
+        player_turns,
+        (
+            "score_delta",
+            "reachable_score_after",
+            "reachable_score_delta",
+            "categories_present_after",
+            "categories_reachable_after",
+            "categories_leading_after",
+            "gemstones_removed_delta",
+            "gemstones_removed_after",
+            "gemstones_usable_after",
+            "tiles_collected",
+        ),
+    )
+    turns["removed_gemstone"] = turns["gemstones_removed_delta"] > 0
+    turns["two_tile_turn"] = turns["tiles_collected"] == 2
+    return (
+        turns.groupby(["agent", "tile_quarter"], sort=True)
+        .agg(
+            turns=("match_number", "size"),
+            mean_score_delta=("score_delta", "mean"),
+            mean_reachable_score=("reachable_score_after", "mean"),
+            mean_reachable_score_delta=("reachable_score_delta", "mean"),
+            mean_categories_present=("categories_present_after", "mean"),
+            mean_categories_reachable=("categories_reachable_after", "mean"),
+            mean_categories_leading=("categories_leading_after", "mean"),
+            mean_gemstones_usable=("gemstones_usable_after", "mean"),
+            mean_gemstones_removed=("gemstones_removed_after", "mean"),
+            gemstone_removal_rate=("removed_gemstone", "mean"),
+            two_tile_turn_rate=("two_tile_turn", "mean"),
+        )
+        .reset_index()
+        .rename(columns={"tile_quarter": "game_quarter"})
+    )
+
+
 def _category_performance(
     categories: pd.DataFrame,
     category_type: str,
@@ -309,13 +475,18 @@ def _category_performance(
 ) -> pd.DataFrame:
     selected = categories.loc[categories["category_type"] == category_type].copy()
     selected["won_or_tied_majority"] = _boolean(selected["won_or_tied_majority"])
+    selected["absent_penalty"] = _boolean(selected["absent_penalty"])
+    selected["lost_majority"] = _boolean(selected["lost_majority"])
     result = (
         selected.groupby(["agent", "category"], sort=False)
         .agg(
             games=("match_number", "size"),
             mean_count=("count", "mean"),
             mean_points=("points", "mean"),
+            mean_count_gap=("count_gap", "mean"),
             majority_rate=("won_or_tied_majority", "mean"),
+            absence_rate=("absent_penalty", "mean"),
+            lost_majority_rate=("lost_majority", "mean"),
         )
         .reset_index()
     )
@@ -360,6 +531,32 @@ def _sacrifice_strategy(tile_takes: pd.DataFrame, agents: list[str]) -> pd.DataF
                 "forest_sacrifices": int((takes["sacrifice"] == "forest").sum()),
             }
         )
+    return pd.DataFrame(rows)
+
+
+def _sacrifice_timing(tile_takes: pd.DataFrame, agents: list[str]) -> pd.DataFrame:
+    rows = []
+    for agent in agents:
+        agent_takes = tile_takes.loc[tile_takes["agent"] == agent]
+        for quarter in ("q1", "q2", "q3", "q4"):
+            takes = agent_takes.loc[agent_takes["tile_quarter"] == quarter]
+            reservations = takes.loc[takes["reservation_relation"] == "opponent"]
+            sacrifices = takes["sacrifice"] != "none"
+            rows.append(
+                {
+                    "agent": agent,
+                    "game_quarter": quarter,
+                    "tiles_taken": len(takes),
+                    "opponent_reservations_taken": len(reservations),
+                    "sacrifices": int(sacrifices.sum()),
+                    "sacrifice_rate": sacrifices.mean() if len(takes) else 0.0,
+                    "available_sacrifices": int((takes["sacrifice"] == "available").sum()),
+                    "forest_sacrifices": int((takes["sacrifice"] == "forest").sum()),
+                    "second_tile_rate": (
+                        _boolean(takes["second_tile"]).mean() if len(takes) else 0.0
+                    ),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -469,6 +666,100 @@ def _generate_figures(
     descriptions["sacrifices.png"] = "Supply and forest gems sacrificed by each agent."
     _save_figure(figure, figures_dir / "sacrifices.png")
 
+    search = derived["search_performance"].loc[
+        derived["search_performance"]["measured_decisions"] > 0
+    ].sort_values("iterations_per_second")
+    if not search.empty:
+        figure, axes = plt.subplots(1, 2, figsize=(14, max(4, 0.5 * len(search))))
+        axes[0].barh(search["agent"], search["iterations_per_second"])
+        axes[0].set(title="Search throughput", xlabel="Iterations / second", ylabel="Agent")
+        axes[1].barh(search["agent"], search["nodes_per_second"])
+        axes[1].set(title="Tree growth throughput", xlabel="Nodes / second")
+        descriptions["search_efficiency.png"] = (
+            "Measured MCTS iteration and node throughput for each agent configuration."
+        )
+        _save_figure(figure, figures_dir / "search_efficiency.png")
+
+        measured_actions = _numeric(
+            tables["actions"],
+            ("decision_seconds", "search_iterations"),
+        )
+        measured_actions = measured_actions.loc[
+            measured_actions["search_iterations"].notna()
+            & (measured_actions["decision_seconds"] > 0)
+        ]
+        figure, axes = plt.subplots(1, 2, figsize=(15, 5))
+        sns.lineplot(
+            data=measured_actions,
+            x="tile_quarter",
+            y="search_iterations",
+            hue="agent",
+            marker="o",
+            ax=axes[0],
+        )
+        axes[0].set(title="Iterations reached by game quarter", xlabel="Game quarter")
+        sns.lineplot(
+            data=measured_actions,
+            x="tile_quarter",
+            y="decision_seconds",
+            hue="agent",
+            marker="o",
+            legend=False,
+            ax=axes[1],
+        )
+        axes[1].set(title="Decision time by game quarter", xlabel="Game quarter")
+        descriptions["search_timing.png"] = (
+            "Mean iterations and decision time as the game state becomes cheaper to search."
+        )
+        _save_figure(figure, figures_dir / "search_timing.png")
+
+    progress = derived["strategic_progress"]
+    figure, axes = plt.subplots(1, 2, figsize=(15, 5))
+    sns.lineplot(
+        data=progress,
+        x="game_quarter",
+        y="mean_categories_reachable",
+        hue="agent",
+        marker="o",
+        ax=axes[0],
+    )
+    axes[0].set(title="Still-reachable scoring categories", xlabel="Game quarter")
+    sns.lineplot(
+        data=progress,
+        x="game_quarter",
+        y="mean_gemstones_usable",
+        hue="agent",
+        marker="o",
+        legend=False,
+        ax=axes[1],
+    )
+    axes[1].set(title="Usable gemstones retained", xlabel="Game quarter")
+    descriptions["strategic_progress.png"] = (
+        "Evolution of scoring-category viability and gemstone conservation by agent."
+    )
+    _save_figure(figure, figures_dir / "strategic_progress.png")
+
+    sacrifice_timing = derived["sacrifice_timing"].pivot(
+        index="agent", columns="game_quarter", values="sacrifice_rate"
+    )
+    figure, axis = plt.subplots(
+        figsize=(8, max(4, 0.55 * len(sacrifice_timing)))
+    )
+    sns.heatmap(
+        sacrifice_timing.reindex(columns=["q1", "q2", "q3", "q4"]),
+        annot=True,
+        fmt=".2f",
+        vmin=0,
+        vmax=1,
+        cmap="YlOrRd",
+        ax=axis,
+    )
+    axis.set(title="Gemstone sacrifice timing", xlabel="Game quarter", ylabel="Agent")
+    descriptions["sacrifice_timing.png"] = (
+        "Share of collected tiles that required a gemstone sacrifice in each game quarter."
+    )
+    _save_figure(figure, figures_dir / "sacrifice_timing.png")
+
     return descriptions
 
 
@@ -500,6 +791,9 @@ def _summary(
 ) -> dict[str, object]:
     first = derived["first_player_advantage"].iloc[0]
     lengths = derived["game_lengths"]
+    measured_search = derived["search_performance"].loc[
+        derived["search_performance"]["measured_decisions"] > 0
+    ]
     return {
         "game": "spotf",
         "complete": bool(manifest.get("complete", False)),
@@ -512,6 +806,8 @@ def _summary(
         "mean_actions_per_turn": float(lengths["actions_per_turn"].mean()),
         "mean_score_margin": float(lengths["score_margin"].mean()),
         "player_0_win_rate": float(first["player_0_win_rate"]),
+        "search_data_available": not measured_search.empty,
+        "search_agents": int(len(measured_search)),
         "agent_performance": derived["agent_performance"].to_dict(orient="records"),
     }
 

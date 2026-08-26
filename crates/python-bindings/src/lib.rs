@@ -1436,6 +1436,10 @@ fn serialize_spirits_state_metrics(
         item.set_item("power_sources", player.power_sources)?;
         item.set_item("tiles", player.tiles)?;
         item.set_item("score", player.score)?;
+        item.set_item("reachable_score", player.reachable_score)?;
+        item.set_item("categories_present", player.categories_present)?;
+        item.set_item("categories_reachable", player.categories_reachable)?;
+        item.set_item("categories_leading", player.categories_leading)?;
         item.set_item("gemstones_available", player.gemstones_available)?;
         item.set_item("gemstones_placed", player.gemstones_placed)?;
         item.set_item("gemstones_removed", player.gemstones_removed)?;

@@ -55,6 +55,8 @@ _SPOTF_OUTPUT_FILES = {
     "categories": "categories.csv",
 }
 
+_SPOTF_TILE_COUNT = 48
+
 _AGENT_FIELDS = (
     "agent_name",
     "kind",
@@ -266,6 +268,8 @@ _SPOTF_ACTION_BASE_FIELDS = (
     "search_nodes",
     "progress_fraction",
     "game_quarter",
+    "tile_progress_fraction",
+    "tile_quarter",
     "phase_before",
     "phase_after",
     "action_kind",
@@ -285,6 +289,10 @@ _SPOTF_ACTION_STATE_FIELDS = tuple(
             for player in (0, 1)
             for metric in (
                 f"p{player}_score_{stage}",
+                f"p{player}_reachable_score_{stage}",
+                f"p{player}_categories_present_{stage}",
+                f"p{player}_categories_reachable_{stage}",
+                f"p{player}_categories_leading_{stage}",
                 f"p{player}_tiles_{stage}",
                 f"p{player}_gemstones_available_{stage}",
                 f"p{player}_gemstones_placed_{stage}",
@@ -302,13 +310,37 @@ _PLAYER_TURN_FIELDS = (
     "player",
     "agent",
     "outcome",
+    "progress_fraction",
+    "game_quarter",
+    "tile_progress_fraction",
+    "tile_quarter",
     "actions",
+    "decision_seconds",
+    "search_decisions",
+    "search_iterations",
+    "search_nodes",
     "tiles_collected",
     "symbols_collected",
     "used_end_collection",
     "gemstone_action",
     "remaining_tiles_after",
+    "score_before",
     "score_after",
+    "score_delta",
+    "reachable_score_before",
+    "reachable_score_after",
+    "reachable_score_delta",
+    "categories_present_after",
+    "categories_reachable_after",
+    "categories_leading_after",
+    "gemstones_available_before",
+    "gemstones_available_after",
+    "gemstones_placed_before",
+    "gemstones_placed_after",
+    "gemstones_removed_before",
+    "gemstones_removed_after",
+    "gemstones_removed_delta",
+    "gemstones_usable_after",
 )
 
 _TILE_TAKE_FIELDS = (
@@ -319,6 +351,14 @@ _TILE_TAKE_FIELDS = (
     "player",
     "agent",
     "outcome",
+    "progress_fraction",
+    "game_quarter",
+    "tile_progress_fraction",
+    "tile_quarter",
+    "decision_seconds",
+    "search_iterations",
+    "search_nodes",
+    "second_tile",
     "row",
     "column",
     "spirit",
@@ -331,6 +371,10 @@ _TILE_TAKE_FIELDS = (
     "sacrifice_row",
     "sacrifice_column",
     "score_delta",
+    "reachable_score_delta",
+    "categories_reachable_delta",
+    "categories_leading_delta",
+    "gemstones_removed_delta",
 )
 
 _GEMSTONE_ACTION_FIELDS = (
@@ -340,6 +384,13 @@ _GEMSTONE_ACTION_FIELDS = (
     "player",
     "agent",
     "outcome",
+    "progress_fraction",
+    "game_quarter",
+    "tile_progress_fraction",
+    "tile_quarter",
+    "decision_seconds",
+    "search_iterations",
+    "search_nodes",
     "action",
     "source_row",
     "source_column",
@@ -362,8 +413,11 @@ _CATEGORY_FIELDS = (
     "category",
     "count",
     "opponent_count",
+    "count_gap",
     "points",
     "won_or_tied_majority",
+    "absent_penalty",
+    "lost_majority",
 )
 
 
@@ -741,7 +795,7 @@ def extract_tournament(
             "output_dir": str(output_dir),
             "game": game_name,
             "tournament_schema_version": 1,
-            "analysis_schema_version": 3,
+            "analysis_schema_version": 4,
             "declared_matches": declared_matches,
             "processed_matches": processed_matches,
             "complete": complete,
@@ -1033,9 +1087,14 @@ def _extract_spotf_match(
                     "category": category["category"],
                     "count": counts[player],
                     "opponent_count": counts[1 - player],
+                    "count_gap": counts[player] - counts[1 - player],
                     "points": points[player],
                     "won_or_tied_majority": (
                         counts[player] > 0 and counts[player] >= counts[1 - player]
+                    ),
+                    "absent_penalty": counts[player] == 0,
+                    "lost_majority": (
+                        counts[player] > 0 and counts[player] < counts[1 - player]
                     ),
                 }
             )
@@ -1067,7 +1126,9 @@ def _write_spotf_action(
             "search_iterations": move.search_iterations,
             "search_nodes": move.search_nodes,
             "progress_fraction": turn["ply"] / context.plies,
-            "game_quarter": f"q{min(3, ((turn['ply'] - 1) * 4) // context.plies) + 1}",
+            "game_quarter": _game_quarter(turn["ply"], context.plies),
+            "tile_progress_fraction": _tile_progress(turn["before"]),
+            "tile_quarter": _tile_quarter(turn["before"]),
             "phase_before": turn["phase_before"],
             "phase_after": turn["phase_after"],
             "action_kind": _spotf_action_kind(move.action),
@@ -1095,6 +1156,14 @@ def _write_spotf_action(
                 "player": move.player,
                 "agent": context.players[move.player],
                 "outcome": _player_outcome(move.player, context.winner_player),
+                "progress_fraction": turn["ply"] / context.plies,
+                "game_quarter": _game_quarter(turn["ply"], context.plies),
+                "tile_progress_fraction": _tile_progress(turn["before"]),
+                "tile_quarter": _tile_quarter(turn["before"]),
+                "decision_seconds": move.decision_seconds,
+                "search_iterations": move.search_iterations,
+                "search_nodes": move.search_nodes,
+                "second_tile": turn["action_in_turn"] > 1,
                 "row": tile_take["row"],
                 "column": tile_take["column"],
                 "spirit": tile_take["spirit"],
@@ -1121,6 +1190,21 @@ def _write_spotf_action(
                     "" if sacrifice is None else sacrifice.get("column", "")
                 ),
                 "score_delta": after_player["score"] - before_player["score"],
+                "reachable_score_delta": (
+                    after_player["reachable_score"] - before_player["reachable_score"]
+                ),
+                "categories_reachable_delta": (
+                    after_player["categories_reachable"]
+                    - before_player["categories_reachable"]
+                ),
+                "categories_leading_delta": (
+                    after_player["categories_leading"]
+                    - before_player["categories_leading"]
+                ),
+                "gemstones_removed_delta": (
+                    after_player["gemstones_removed"]
+                    - before_player["gemstones_removed"]
+                ),
             }
         )
         row_counts["tile_takes"] += 1
@@ -1156,6 +1240,13 @@ def _write_gemstone_action(
             "player": move.player,
             "agent": context.players[move.player],
             "outcome": _player_outcome(move.player, context.winner_player),
+            "progress_fraction": turn["ply"] / context.plies,
+            "game_quarter": _game_quarter(turn["ply"], context.plies),
+            "tile_progress_fraction": _tile_progress(turn["before"]),
+            "tile_quarter": _tile_quarter(turn["before"]),
+            "decision_seconds": move.decision_seconds,
+            "search_iterations": move.search_iterations,
+            "search_nodes": move.search_nodes,
             "action": _spotf_action_kind(action),
             "source_row": "" if source is None else source.row,
             "source_column": "" if source is None else source.column,
@@ -1188,6 +1279,18 @@ def _write_spotf_player_turn(
         )
     ]
     final_turn = actions[-1][1]
+    first_turn = actions[0][1]
+    before = first_turn["before"]["players"][player]
+    after = final_turn["after"]["players"][player]
+    decision_seconds = [
+        move.decision_seconds for move, _ in actions if move.decision_seconds is not None
+    ]
+    search_iterations = [
+        move.search_iterations for move, _ in actions if move.search_iterations is not None
+    ]
+    search_nodes = [
+        move.search_nodes for move, _ in actions if move.search_nodes is not None
+    ]
     writers["player_turns"].writerow(
         {
             "match_number": context.match_number,
@@ -1195,7 +1298,15 @@ def _write_spotf_player_turn(
             "player": player,
             "agent": context.players[player],
             "outcome": _player_outcome(player, context.winner_player),
+            "progress_fraction": final_turn["ply"] / context.plies,
+            "game_quarter": _game_quarter(final_turn["ply"], context.plies),
+            "tile_progress_fraction": _tile_progress(final_turn["after"]),
+            "tile_quarter": _tile_quarter(final_turn["after"]),
             "actions": len(actions),
+            "decision_seconds": sum(decision_seconds),
+            "search_decisions": len(search_iterations),
+            "search_iterations": sum(search_iterations) if search_iterations else "",
+            "search_nodes": sum(search_nodes) if search_nodes else "",
             "tiles_collected": len(takes),
             "symbols_collected": sum(take["spirit_symbols"] for take in takes),
             "used_end_collection": any(
@@ -1203,7 +1314,29 @@ def _write_spotf_player_turn(
             ),
             "gemstone_action": gemstone_actions[-1] if gemstone_actions else "terminal",
             "remaining_tiles_after": final_turn["after"]["remaining_tiles"],
-            "score_after": final_turn["after"]["players"][player]["score"],
+            "score_before": before["score"],
+            "score_after": after["score"],
+            "score_delta": after["score"] - before["score"],
+            "reachable_score_before": before["reachable_score"],
+            "reachable_score_after": after["reachable_score"],
+            "reachable_score_delta": (
+                after["reachable_score"] - before["reachable_score"]
+            ),
+            "categories_present_after": after["categories_present"],
+            "categories_reachable_after": after["categories_reachable"],
+            "categories_leading_after": after["categories_leading"],
+            "gemstones_available_before": before["gemstones_available"],
+            "gemstones_available_after": after["gemstones_available"],
+            "gemstones_placed_before": before["gemstones_placed"],
+            "gemstones_placed_after": after["gemstones_placed"],
+            "gemstones_removed_before": before["gemstones_removed"],
+            "gemstones_removed_after": after["gemstones_removed"],
+            "gemstones_removed_delta": (
+                after["gemstones_removed"] - before["gemstones_removed"]
+            ),
+            "gemstones_usable_after": (
+                after["gemstones_available"] + after["gemstones_placed"]
+            ),
         }
     )
     row_counts["player_turns"] += 1
@@ -1217,6 +1350,10 @@ def _flatten_spotf_state(stage: str, state: dict[str, object]) -> dict[str, obje
     for player, metrics in enumerate(state["players"]):
         for metric in (
             "score",
+            "reachable_score",
+            "categories_present",
+            "categories_reachable",
+            "categories_leading",
             "tiles",
             "gemstones_available",
             "gemstones_placed",
@@ -1224,6 +1361,19 @@ def _flatten_spotf_state(stage: str, state: dict[str, object]) -> dict[str, obje
         ):
             result[f"p{player}_{metric}_{stage}"] = metrics[metric]
     return result
+
+
+def _game_quarter(ply: int, total_plies: int) -> str:
+    return f"q{min(3, ((ply - 1) * 4) // total_plies) + 1}"
+
+
+def _tile_progress(state: dict[str, object]) -> float:
+    return (_SPOTF_TILE_COUNT - int(state["remaining_tiles"])) / _SPOTF_TILE_COUNT
+
+
+def _tile_quarter(state: dict[str, object]) -> str:
+    collected = _SPOTF_TILE_COUNT - int(state["remaining_tiles"])
+    return f"q{min(3, collected * 4 // _SPOTF_TILE_COUNT) + 1}"
 
 
 def _player_outcome(player: int, winner_player: int | None) -> str:

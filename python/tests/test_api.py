@@ -2074,7 +2074,18 @@ class MatchApiTests(unittest.TestCase):
             self.assertIn("decision_seconds", actions[0])
             self.assertIn("search_iterations", actions[0])
             self.assertIn("search_nodes", actions[0])
+            self.assertIn("p0_reachable_score_after", actions[0])
+            self.assertIn("p0_categories_reachable_after", actions[0])
+            self.assertIn("tile_progress_fraction", actions[0])
+            self.assertIn("tile_quarter", actions[0])
             self.assertGreater(float(actions[0]["decision_seconds"]), 0.0)
+            self.assertIn("search_iterations", player_turns[0])
+            self.assertIn("reachable_score_delta", player_turns[0])
+            self.assertIn("gemstones_removed_delta", player_turns[0])
+            self.assertIn("game_quarter", tile_takes[0])
+            self.assertIn("categories_reachable_delta", tile_takes[0])
+            self.assertIn("absent_penalty", categories[0])
+            self.assertIn("lost_majority", categories[0])
             self.assertEqual(
                 int(actions[-1]["physical_turn"]),
                 int(spotf_matches[0]["physical_turns"]),
@@ -2149,7 +2160,7 @@ class MatchApiTests(unittest.TestCase):
             )
             self.assertIsNone(manifest["source"])
             self.assertEqual(len(manifest["sources"]), 2)
-            self.assertEqual(manifest["analysis_schema_version"], 3)
+            self.assertEqual(manifest["analysis_schema_version"], 4)
             self.assertEqual(manifest["row_counts"]["studies"], 2)
 
     def test_cli_extract_rejects_conflicting_agent_names_before_writing(self) -> None:
@@ -2338,16 +2349,68 @@ class MatchApiTests(unittest.TestCase):
 
             summary = json.loads(output.getvalue())
             report = study / "report"
+            report_summary = json.loads((report / "summary.json").read_text())
             self.assertEqual(exit_code, 0)
             self.assertEqual(summary["game"], "spotf")
-            self.assertEqual(summary["figures"], 10)
-            self.assertEqual(summary["tables"], 10)
-            self.assertEqual(len(list((report / "figures").glob("*.png"))), 10)
-            self.assertEqual(len(list((report / "tables").glob("*.csv"))), 10)
+            self.assertFalse(report_summary["search_data_available"])
+            self.assertEqual(summary["figures"], 12)
+            self.assertEqual(summary["tables"], 14)
+            self.assertEqual(len(list((report / "figures").glob("*.png"))), 12)
+            self.assertEqual(len(list((report / "tables").glob("*.csv"))), 14)
+            self.assertTrue((report / "tables" / "search_performance.csv").is_file())
+            self.assertTrue((report / "tables" / "strategic_progress.csv").is_file())
             self.assertIn(
                 "Spirits of the Forest tournament report",
                 (report / "index.html").read_text(),
             )
+
+    @unittest.skipUnless(
+        REPORT_DEPENDENCIES_AVAILABLE,
+        "optional report dependencies are not installed",
+    )
+    def test_spotf_search_analytics_compare_actual_compute_cost(self) -> None:
+        import pandas as pd
+
+        from meeple_bots.games.spirits_of_the_forest.reporting import (
+            _search_by_phase,
+            _search_performance,
+        )
+
+        actions = pd.DataFrame(
+            [
+                {
+                    "agent": "timed",
+                    "decision_seconds": 0.5,
+                    "search_iterations": 100,
+                    "search_nodes": 40,
+                    "legal_actions_before": 5,
+                    "game_quarter": "q1",
+                    "tile_quarter": "q1",
+                    "phase_before": "collect",
+                },
+                {
+                    "agent": "timed",
+                    "decision_seconds": 0.5,
+                    "search_iterations": 200,
+                    "search_nodes": 80,
+                    "legal_actions_before": 3,
+                    "game_quarter": "q4",
+                    "tile_quarter": "q4",
+                    "phase_before": "collect",
+                },
+            ]
+        )
+        agents = pd.DataFrame(
+            [{"agent_name": "timed", "time_budget": 0.5}]
+        )
+
+        performance = _search_performance(actions, agents).iloc[0]
+        by_phase = _search_by_phase(actions)
+        self.assertEqual(performance["measured_decisions"], 2)
+        self.assertAlmostEqual(performance["iterations_per_second"], 300.0)
+        self.assertAlmostEqual(performance["nodes_per_iteration"], 0.4)
+        self.assertAlmostEqual(performance["mean_budget_utilization"], 1.0)
+        self.assertEqual(set(by_phase["game_quarter"]), {"q1", "q4"})
 
     @unittest.skipUnless(
         REPORT_DEPENDENCIES_AVAILABLE,
