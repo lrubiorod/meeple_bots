@@ -622,10 +622,14 @@ impl<C, P, B> MctsAgent<C, P, B> {
             ));
         }
 
-        let root_actions: Vec<_> = game.legal_actions(root_state).collect();
-        if root_actions.is_empty() {
+        let root = Node::new(None, 0.0, game.legal_actions(root_state));
+        if root.unexpanded.is_empty() {
             return Err(AgentError::NoLegalActions);
         }
+        let root_action_count = u32::try_from(root.unexpanded.len())
+            .map_err(|_| AgentError::message("MCTS root has too many legal actions"))?;
+        let mut root_unexpanded_action_indices: Vec<_> = (0..root_action_count).collect();
+        let mut root_child_action_indices = Vec::with_capacity(root.unexpanded.len());
         let bias_weight = self.selection_bias.weight();
         if !bias_weight.is_finite() || bias_weight < 0.0 {
             return Err(AgentError::message(
@@ -633,10 +637,11 @@ impl<C, P, B> MctsAgent<C, P, B> {
             ));
         }
         let bias_enabled = bias_weight > 0.0;
-        let mut nodes = vec![Node::new(None, None, None, root_actions)];
+        let mut nodes = vec![root];
 
         let search_started = Instant::now();
         let mut completed_iterations = 0_u64;
+        let mut path = Vec::new();
         loop {
             let budget_exhausted = match self.config.budget {
                 SearchBudget::Iterations(iterations) => {
@@ -652,7 +657,8 @@ impl<C, P, B> MctsAgent<C, P, B> {
 
             let mut state = root_state.clone();
             let mut node_index = 0;
-            let mut path = vec![0];
+            path.clear();
+            path.push(0);
 
             loop {
                 let status = game.status(&state);
@@ -676,38 +682,37 @@ impl<C, P, B> MctsAgent<C, P, B> {
                         && self
                             .selection_bias
                             .applies(game, &state, active_player, root_player);
-                    let action_index = rng
+                    let unexpanded_slot = rng
                         .index(nodes[node_index].unexpanded.len())
                         .expect("non-empty actions");
-                    let unexpanded = nodes[node_index].unexpanded.swap_remove(action_index);
-                    game.apply_action(&mut state, &unexpanded.action)
+                    let unexpanded = nodes[node_index].unexpanded.swap_remove(unexpanded_slot);
+                    let root_action_index = (node_index == 0)
+                        .then(|| root_unexpanded_action_indices.swap_remove(unexpanded_slot));
+                    game.apply_action(&mut state, &unexpanded)
                         .map_err(|error| AgentError::message(error.to_string()))?;
 
                     let heuristic_value = if bias_applies {
-                        Some(
-                            self.selection_bias
-                                .evaluate_child(game, &state, root_player)?,
-                        )
-                    } else if bias_enabled {
-                        Some(0.0)
+                        self.selection_bias
+                            .evaluate_child(game, &state, root_player)?
                     } else {
-                        None
+                        0.0
                     };
 
-                    let child_actions =
-                        if matches!(game.status(&state), PositionStatus::PlayerTurn(_)) {
-                            game.legal_actions(&state).collect()
-                        } else {
-                            Vec::new()
-                        };
                     let child_index = nodes.len();
-                    nodes.push(Node::new(
-                        Some(unexpanded.action),
-                        Some(unexpanded.index),
-                        heuristic_value,
-                        child_actions,
-                    ));
+                    let child = if matches!(game.status(&state), PositionStatus::PlayerTurn(_)) {
+                        Node::new(
+                            Some(unexpanded),
+                            heuristic_value,
+                            game.legal_actions(&state),
+                        )
+                    } else {
+                        Node::new(Some(unexpanded), heuristic_value, std::iter::empty())
+                    };
+                    nodes.push(child);
                     nodes[node_index].children.push(child_index);
+                    if let Some(action_index) = root_action_index {
+                        root_child_action_indices.push(action_index);
+                    }
                     node_index = child_index;
                     path.push(node_index);
                     break;
@@ -747,7 +752,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 &self.cutoff_evaluator,
                 rng,
             )?;
-            for visited in path {
+            for &visited in &path {
                 nodes[visited].visits += 1;
                 nodes[visited].total_utility += utility;
             }
@@ -775,15 +780,14 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 .children
                 .iter()
                 .copied()
-                .map(|child_index| {
+                .zip(root_child_action_indices.iter().copied())
+                .map(|(child_index, action_index)| {
                     let child = &nodes[child_index];
                     RootActionStats {
-                        action_index: child
-                            .action_index
-                            .expect("root child has a parent-relative action index"),
+                        action_index,
                         visits: child.visits,
                         mean_utility: child.mean_utility(),
-                        heuristic_value: child.heuristic_value,
+                        heuristic_value: bias_enabled.then_some(child.heuristic_value),
                         progressive_bias: bias_enabled
                             .then(|| progressive_bias_term(child, true, bias_weight)),
                         selected: child_index == selected_index,
@@ -808,34 +812,23 @@ impl<C, P, B> MctsAgent<C, P, B> {
 
 struct Node<A> {
     action: Option<A>,
-    action_index: Option<u32>,
-    heuristic_value: Option<f64>,
+    heuristic_value: f64,
     children: Vec<usize>,
-    unexpanded: Vec<IndexedAction<A>>,
+    unexpanded: Vec<A>,
     visits: u32,
     total_utility: f64,
 }
 
 impl<A> Node<A> {
-    fn new(
-        action: Option<A>,
-        action_index: Option<u32>,
-        heuristic_value: Option<f64>,
-        unexpanded: Vec<A>,
-    ) -> Self {
+    fn new<I>(action: Option<A>, heuristic_value: f64, unexpanded: I) -> Self
+    where
+        I: IntoIterator<Item = A>,
+    {
         Self {
             action,
-            action_index,
             heuristic_value,
             children: Vec::new(),
-            unexpanded: unexpanded
-                .into_iter()
-                .enumerate()
-                .map(|(index, action)| IndexedAction {
-                    action,
-                    index: index as u32,
-                })
-                .collect(),
+            unexpanded: unexpanded.into_iter().collect(),
             visits: 0,
             total_utility: 0.0,
         }
@@ -848,11 +841,6 @@ impl<A> Node<A> {
             self.total_utility / f64::from(self.visits)
         }
     }
-}
-
-struct IndexedAction<A> {
-    action: A,
-    index: u32,
 }
 
 impl<G, C, P, B> Agent<G> for MctsAgent<C, P, B>
@@ -924,8 +912,11 @@ fn selection_score<A>(
 }
 
 fn progressive_bias_term<A>(node: &Node<A>, maximizing: bool, weight: f64) -> f64 {
-    let heuristic = node.heuristic_value.unwrap_or(0.0);
-    let signed_heuristic = if maximizing { heuristic } else { -heuristic };
+    let signed_heuristic = if maximizing {
+        node.heuristic_value
+    } else {
+        -node.heuristic_value
+    };
     weight * signed_heuristic / (f64::from(node.visits) + 1.0)
 }
 
@@ -1809,10 +1800,45 @@ mod tests {
     }
 
     #[test]
+    fn root_diagnostics_preserve_original_action_indices() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let mut agent = MctsAgent::new(MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(9).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 1,
+            rollout_policy: UniformRandom,
+        })
+        .with_root_diagnostics(true);
+
+        let selected = agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut SplitMix64::new(5),
+            )
+            .unwrap();
+        let stats = agent.decision_stats();
+        let selected_stats = stats
+            .root_actions
+            .iter()
+            .find(|action| action.selected)
+            .expect("one root action is selected");
+        let mut action_indices: Vec<_> = stats
+            .root_actions
+            .iter()
+            .map(|action| action.action_index)
+            .collect();
+        action_indices.sort_unstable();
+
+        assert_eq!(action_indices, (0..9).collect::<Vec<_>>());
+        assert_eq!(selected, action(selected_stats.action_index as u8));
+    }
+
+    #[test]
     fn progressive_bias_favors_better_equal_statistics_and_decays() {
-        let mut lower = Node::new(Some(0_u8), Some(0), Some(-0.5), Vec::new());
+        let mut lower = Node::new(Some(0_u8), -0.5, Vec::new());
         lower.visits = 4;
-        let mut higher = Node::new(Some(1_u8), Some(1), Some(0.5), Vec::new());
+        let mut higher = Node::new(Some(1_u8), 0.5, Vec::new());
         higher.visits = 4;
         assert!(
             selection_score(&higher, 20.0, true, 0.0, 1.0)
@@ -1851,12 +1877,12 @@ mod tests {
 
     #[test]
     fn progressive_bias_sign_follows_active_player_perspective() {
-        let mut parent = Node::new(None, None, None, Vec::<u8>::new());
+        let mut parent = Node::new(None, 0.0, Vec::<u8>::new());
         parent.visits = 20;
         parent.children = vec![1, 2];
-        let mut lower = Node::new(Some(0), Some(0), Some(-0.5), Vec::new());
+        let mut lower = Node::new(Some(0), -0.5, Vec::new());
         lower.visits = 4;
-        let mut higher = Node::new(Some(1), Some(1), Some(0.5), Vec::new());
+        let mut higher = Node::new(Some(1), 0.5, Vec::new());
         higher.visits = 4;
         let nodes = vec![parent, lower, higher];
 
