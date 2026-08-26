@@ -10,4 +10,7 @@ rollout_policy = { kind = "uniform_random" }
 # Informed-rollout example, independent from cutoff evaluation:
 # rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 0 } }
 
+# SPOTF phase-scoped example: informed during Collect, uniform during gemstone placement:
+# rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "collect" }, primary = { kind = "epsilon_greedy", epsilon = 0.25, evaluator = { kind = "game_heuristic", index = 2 } }, fallback = { kind = "uniform_random" } }
+
 # Legacy profiles using use_heuristic/heuristic_index and flat rollout fields remain supported.

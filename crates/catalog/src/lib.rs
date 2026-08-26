@@ -17,7 +17,9 @@ pub use meeple_bots_evaluation::{
 use meeple_bots_evaluation::{
     benchmark_mcts_agent as benchmark_typed_mcts_agent, evaluate_game as evaluate_typed_game,
 };
-use meeple_bots_mcts_agent::{GameHeuristic, MctsAgent, StateEvaluator};
+use meeple_bots_mcts_agent::{
+    ConditionalRollout, GameHeuristic, MctsAgent, RolloutCondition, RolloutPolicy, StateEvaluator,
+};
 pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, SearchBudget, UniformRandom};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{
@@ -27,7 +29,8 @@ use meeple_bots_simulation::{
 pub use meeple_bots_simulation::{MatchConfig, MatchResult};
 use meeple_bots_spirits_of_the_forest::{
     ForestPosition, GemstoneSacrifice, PowerSource, Spirit, SpiritsOfTheForest,
-    SpiritsOfTheForestAction, SpiritsReplayAnalysis, analyze_replay as analyze_spirits_replay,
+    SpiritsOfTheForestAction, SpiritsReplayAnalysis, TurnPhase,
+    analyze_replay as analyze_spirits_replay,
 };
 use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
@@ -47,8 +50,35 @@ pub enum AgentConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MctsAgentConfig {
-    pub search: MctsConfig<RolloutPolicyConfig<EvaluatorConfig>>,
+    pub search: MctsConfig<ConfiguredRolloutPolicy>,
     pub cutoff_evaluator: EvaluatorConfig,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RolloutConditionConfig {
+    TurnPhase(CatalogTurnPhase),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConfiguredRolloutPolicy {
+    Standard(RolloutPolicyConfig<EvaluatorConfig>),
+    Conditional {
+        condition: RolloutConditionConfig,
+        primary: RolloutPolicyConfig<EvaluatorConfig>,
+        fallback: RolloutPolicyConfig<EvaluatorConfig>,
+    },
+}
+
+impl Default for ConfiguredRolloutPolicy {
+    fn default() -> Self {
+        Self::Standard(RolloutPolicyConfig::UniformRandom)
+    }
+}
+
+impl From<RolloutPolicyConfig<EvaluatorConfig>> for ConfiguredRolloutPolicy {
+    fn from(policy: RolloutPolicyConfig<EvaluatorConfig>) -> Self {
+        Self::Standard(policy)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -478,8 +508,49 @@ fn catalog_boop_action(action: &CatalogAction) -> Result<BoopAction, &'static st
 }
 
 pub type BoopMctsAgent = MctsAgent<EvaluatorConfig, RolloutPolicyConfig<EvaluatorConfig>>;
-pub type SpiritsOfTheForestMctsAgent =
-    MctsAgent<EvaluatorConfig, RolloutPolicyConfig<EvaluatorConfig>>;
+pub type SpiritsOfTheForestMctsAgent = MctsAgent<EvaluatorConfig, ConfiguredRolloutPolicy>;
+
+#[derive(Clone, Copy, Debug)]
+struct SpiritsTurnPhaseCondition(CatalogTurnPhase);
+
+impl RolloutCondition<SpiritsOfTheForest> for SpiritsTurnPhaseCondition {
+    fn matches(
+        &self,
+        _game: &SpiritsOfTheForest,
+        state: &<SpiritsOfTheForest as Game>::State,
+        _active_player: PlayerId,
+        _root_player: PlayerId,
+    ) -> bool {
+        matches!(
+            (self.0, state.phase()),
+            (CatalogTurnPhase::Collect, TurnPhase::Collect)
+                | (CatalogTurnPhase::PlaceGemstone, TurnPhase::PlaceGemstone)
+        )
+    }
+}
+
+impl RolloutPolicy<SpiritsOfTheForest> for ConfiguredRolloutPolicy {
+    fn select_action<R: RandomSource + ?Sized>(
+        &self,
+        game: &SpiritsOfTheForest,
+        state: &<SpiritsOfTheForest as Game>::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+        rng: &mut R,
+    ) -> Result<SpiritsOfTheForestAction, AgentError> {
+        match self {
+            Self::Standard(policy) => {
+                policy.select_action(game, state, active_player, root_player, rng)
+            }
+            Self::Conditional {
+                condition: RolloutConditionConfig::TurnPhase(phase),
+                primary,
+                fallback,
+            } => ConditionalRollout::new(SpiritsTurnPhaseCondition(*phase), *primary, *fallback)
+                .select_action(game, state, active_player, root_player, rng),
+        }
+    }
+}
 
 impl<G> StateEvaluator<G> for EvaluatorConfig
 where
@@ -503,7 +574,7 @@ where
 pub fn configured_boop_mcts(config: MctsAgentConfig) -> Result<BoopMctsAgent, CatalogError> {
     validate_agent_evaluators(GameId::Boop, &Boop, &config)?;
     Ok(MctsAgent::with_cutoff_evaluator(
-        config.search,
+        standard_search_config(config.search)?,
         config.cutoff_evaluator,
     ))
 }
@@ -541,20 +612,51 @@ fn validate_agent_evaluators<G: HeuristicGame>(
     validate_search_config(&config.search)?;
     validate_evaluator(game_id, game, config.cutoff_evaluator)?;
     match config.search.rollout_policy {
-        RolloutPolicyConfig::UniformRandom => {}
-        RolloutPolicyConfig::Greedy { evaluator } => {
-            validate_evaluator(game_id, game, evaluator)?;
+        ConfiguredRolloutPolicy::Standard(policy) => {
+            validate_base_rollout_policy(game_id, game, policy)?;
         }
+        ConfiguredRolloutPolicy::Conditional {
+            condition,
+            primary,
+            fallback,
+        } => {
+            validate_rollout_condition(game_id, condition)?;
+            validate_base_rollout_policy(game_id, game, primary)?;
+            validate_base_rollout_policy(game_id, game, fallback)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_base_rollout_policy<G: HeuristicGame>(
+    game_id: GameId,
+    game: &G,
+    policy: RolloutPolicyConfig<EvaluatorConfig>,
+) -> Result<(), CatalogError> {
+    match policy {
+        RolloutPolicyConfig::UniformRandom => Ok(()),
+        RolloutPolicyConfig::Greedy { evaluator } => validate_evaluator(game_id, game, evaluator),
         RolloutPolicyConfig::EpsilonGreedy { epsilon, evaluator } => {
             if !epsilon.is_finite() || !(0.0..=1.0).contains(&epsilon) {
                 return Err(CatalogError::InvalidMctsConfig(
                     "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
                 ));
             }
-            validate_evaluator(game_id, game, evaluator)?;
+            validate_evaluator(game_id, game, evaluator)
         }
     }
-    Ok(())
+}
+
+fn validate_rollout_condition(
+    game: GameId,
+    condition: RolloutConditionConfig,
+) -> Result<(), CatalogError> {
+    match (game, condition) {
+        (GameId::SpiritsOfTheForest, RolloutConditionConfig::TurnPhase(_)) => Ok(()),
+        (_, RolloutConditionConfig::TurnPhase(_)) => Err(CatalogError::InvalidMctsConfig(
+            "turn-phase rollout conditions are only supported by spotf",
+        )),
+    }
 }
 
 fn validate_evaluator<G: HeuristicGame>(
@@ -575,7 +677,7 @@ fn validate_uninformed_agent(game: GameId, config: &MctsAgentConfig) -> Result<(
     }
     if !matches!(
         config.search.rollout_policy,
-        RolloutPolicyConfig::UniformRandom
+        ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::UniformRandom)
     ) {
         return Err(CatalogError::InvalidMctsConfig(
             "informed rollout requires a game with MCTS evaluators",
@@ -593,15 +695,29 @@ fn validate_search_config<P>(config: &MctsConfig<P>) -> Result<(), CatalogError>
     Ok(())
 }
 
-fn uniform_search_config(
-    config: MctsConfig<RolloutPolicyConfig<EvaluatorConfig>>,
-) -> MctsConfig<UniformRandom> {
+fn uniform_search_config(config: MctsConfig<ConfiguredRolloutPolicy>) -> MctsConfig<UniformRandom> {
     MctsConfig {
         budget: config.budget,
         exploration: config.exploration,
         rollout_depth: config.rollout_depth,
         rollout_policy: UniformRandom,
     }
+}
+
+fn standard_search_config(
+    config: MctsConfig<ConfiguredRolloutPolicy>,
+) -> Result<MctsConfig<RolloutPolicyConfig<EvaluatorConfig>>, CatalogError> {
+    let ConfiguredRolloutPolicy::Standard(rollout_policy) = config.rollout_policy else {
+        return Err(CatalogError::InvalidMctsConfig(
+            "conditional rollout is not supported by this game",
+        ));
+    };
+    Ok(MctsConfig {
+        budget: config.budget,
+        exploration: config.exploration,
+        rollout_depth: config.rollout_depth,
+        rollout_policy,
+    })
 }
 
 fn validate_heuristic<G: HeuristicGame>(
@@ -1441,7 +1557,7 @@ mod tests {
                 budget: SearchBudget::Iterations(NonZeroU32::new(4).unwrap()),
                 exploration: std::f64::consts::SQRT_2,
                 rollout_depth: 1,
-                rollout_policy: RolloutPolicyConfig::UniformRandom,
+                rollout_policy: RolloutPolicyConfig::UniformRandom.into(),
             },
             cutoff_evaluator: heuristic.map_or(EvaluatorConfig::Neutral, |index| {
                 EvaluatorConfig::GameHeuristic { index }
@@ -1504,7 +1620,8 @@ mod tests {
             RolloutPolicyConfig::EpsilonGreedy {
                 epsilon: 0.1,
                 evaluator: EvaluatorConfig::GameHeuristic { index: 0 },
-            };
+            }
+            .into();
         configured_boop_mcts(informed_without_cutoff_heuristic).unwrap();
 
         let AgentConfig::Mcts(mut invalid_rollout_heuristic) = mcts(None) else {
@@ -1512,7 +1629,8 @@ mod tests {
         };
         invalid_rollout_heuristic.search.rollout_policy = RolloutPolicyConfig::Greedy {
             evaluator: EvaluatorConfig::GameHeuristic { index: 2 },
-        };
+        }
+        .into();
         let error = configured_boop_mcts(invalid_rollout_heuristic).unwrap_err();
         assert!(error.to_string().contains("available indices: 0..1"));
 
@@ -1526,6 +1644,125 @@ mod tests {
         };
         let error = configured_spirits_of_the_forest_mcts(spirits_h3).unwrap_err();
         assert!(error.to_string().contains("available indices: 0..2"));
+    }
+
+    #[test]
+    fn spotf_conditional_rollout_only_uses_its_primary_in_the_matching_phase() {
+        let game = spirits_of_the_forest_game(7);
+        let mut state = game.initial_state();
+        let policy = ConfiguredRolloutPolicy::Conditional {
+            condition: RolloutConditionConfig::TurnPhase(CatalogTurnPhase::Collect),
+            primary: RolloutPolicyConfig::EpsilonGreedy {
+                epsilon: 0.0,
+                evaluator: EvaluatorConfig::GameHeuristic { index: 99 },
+            },
+            fallback: RolloutPolicyConfig::UniformRandom,
+        };
+
+        let collect_error = policy
+            .select_action(
+                &game,
+                &state,
+                PlayerId::FIRST,
+                PlayerId::FIRST,
+                &mut SplitMix64::new(11),
+            )
+            .unwrap_err();
+        assert!(collect_error.to_string().contains("heuristic index 99"));
+
+        let take = game
+            .legal_actions(&state)
+            .next()
+            .expect("the initial forest has a tile to take");
+        game.apply_action(&mut state, &take).unwrap();
+        assert_eq!(state.phase(), TurnPhase::PlaceGemstone);
+        let mut conditional_rng = SplitMix64::new(13);
+        let mut uniform_rng = SplitMix64::new(13);
+        let conditional_action = policy
+            .select_action(
+                &game,
+                &state,
+                PlayerId::FIRST,
+                PlayerId::FIRST,
+                &mut conditional_rng,
+            )
+            .unwrap();
+        let uniform_action = RolloutPolicyConfig::<EvaluatorConfig>::UniformRandom
+            .select_action(
+                &game,
+                &state,
+                PlayerId::FIRST,
+                PlayerId::FIRST,
+                &mut uniform_rng,
+            )
+            .unwrap();
+
+        assert_eq!(conditional_action, uniform_action);
+        assert_eq!(conditional_rng.next_u64(), uniform_rng.next_u64());
+    }
+
+    #[test]
+    fn spotf_conditional_epsilon_one_matches_uniform_random_search() {
+        let game = spirits_of_the_forest_game(17);
+        let state = game.initial_state();
+        let base = MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(128).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 32,
+            rollout_policy: ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::UniformRandom),
+        };
+        let mut uniform = MctsAgent::with_cutoff_evaluator(base, EvaluatorConfig::Neutral);
+        let mut conditional = MctsAgent::with_cutoff_evaluator(
+            MctsConfig {
+                rollout_policy: ConfiguredRolloutPolicy::Conditional {
+                    condition: RolloutConditionConfig::TurnPhase(CatalogTurnPhase::Collect),
+                    primary: RolloutPolicyConfig::EpsilonGreedy {
+                        epsilon: 1.0,
+                        evaluator: EvaluatorConfig::GameHeuristic { index: 2 },
+                    },
+                    fallback: RolloutPolicyConfig::UniformRandom,
+                },
+                ..base
+            },
+            EvaluatorConfig::Neutral,
+        );
+        let mut uniform_rng = SplitMix64::new(23);
+        let mut conditional_rng = SplitMix64::new(23);
+
+        let uniform_action = uniform
+            .select_action(
+                meeple_bots_core::DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut uniform_rng,
+            )
+            .unwrap();
+        let conditional_action = conditional
+            .select_action(
+                meeple_bots_core::DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut conditional_rng,
+            )
+            .unwrap();
+
+        assert_eq!(conditional_action, uniform_action);
+        assert_eq!(conditional.decision_stats(), uniform.decision_stats());
+        assert_eq!(conditional_rng.next_u64(), uniform_rng.next_u64());
+    }
+
+    #[test]
+    fn turn_phase_rollout_condition_is_rejected_for_other_games() {
+        let AgentConfig::Mcts(mut config) = mcts(None) else {
+            unreachable!();
+        };
+        config.search.rollout_policy = ConfiguredRolloutPolicy::Conditional {
+            condition: RolloutConditionConfig::TurnPhase(CatalogTurnPhase::Collect),
+            primary: RolloutPolicyConfig::UniformRandom,
+            fallback: RolloutPolicyConfig::UniformRandom,
+        };
+
+        let error = configured_boop_mcts(config).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "turn-phase rollout conditions are only supported by spotf"
+        );
     }
 
     #[test]

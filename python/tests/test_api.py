@@ -19,6 +19,7 @@ from meeple_bots import (
     BoopPieceKind,
     ConnectFour,
     ConnectFourAction,
+    ConditionalRollout,
     EpsilonGreedy,
     GameHeuristic,
     Greedy,
@@ -34,16 +35,20 @@ from meeple_bots import (
     TakeSpiritTile,
     TicTacToe,
     TicTacToeAction,
+    TurnPhaseIs,
     UniformRandom,
     benchmark_mcts_agent,
     evaluate_game,
 )
 from meeple_bots.cli import (
+    _batch_agent_dict,
     _load_tournament_config,
     _parse_inline_mcts_profile,
+    _serialized_rollout_policy_description,
     build_parser,
     main,
 )
+from meeple_bots.extraction import _agent_row
 from meeple_bots._concurrency import ordered_parallel_map, resolve_workers
 from meeple_bots.games.boop.gui import BoopGui
 from meeple_bots.games.connect_four.gui import ConnectFourGui
@@ -474,6 +479,73 @@ class MatchApiTests(unittest.TestCase):
 
         self.assertGreater(result.plies, 0)
 
+    def test_conditional_rollout_runs_on_spotf_and_is_rejected_elsewhere(self) -> None:
+        policy = ConditionalRollout(
+            condition=TurnPhaseIs("collect"),
+            primary=EpsilonGreedy(0.25, GameHeuristic(2)),
+            fallback=UniformRandom(),
+        )
+        result = Match(
+            game=SpiritsOfTheForest(),
+            first=MctsAgent(iterations=2, rollout_depth=2, rollout_policy=policy),
+            second=RandomAgent(),
+            seed=19,
+        ).run()
+
+        self.assertGreater(result.plies, 0)
+        with self.assertRaisesRegex(ValueError, "only supported by spotf"):
+            Match(game=Boop(), first=MctsAgent(rollout_policy=policy))
+
+    def test_conditional_rollout_is_preserved_in_extracted_agent_metadata(self) -> None:
+        policy = ConditionalRollout(
+            TurnPhaseIs("collect"),
+            EpsilonGreedy(0.25, GameHeuristic(2)),
+            UniformRandom(),
+        )
+
+        row = _agent_row(
+            _batch_agent_dict(
+                "collect-h2",
+                MctsAgent(iterations=5, rollout_depth=2, rollout_policy=policy),
+            )
+        )
+
+        self.assertEqual(row["rollout_policy"], "conditional")
+        self.assertEqual(row["rollout_condition"], "turn_phase")
+        self.assertEqual(row["rollout_condition_phase"], "collect")
+        self.assertEqual(row["rollout_primary_policy"], "epsilon_greedy")
+        self.assertEqual(row["rollout_epsilon"], 0.25)
+        self.assertEqual(row["rollout_fallback_policy"], "uniform_random")
+        description = _serialized_rollout_policy_description(
+            _batch_agent_dict(
+                "collect-h2",
+                MctsAgent(iterations=5, rollout_depth=2, rollout_policy=policy),
+            )
+        )
+        self.assertEqual(
+            description,
+            "conditional(collect ? epsilon_greedy(epsilon=0.25), "
+            "evaluator=game_heuristic(2) : uniform_random)",
+        )
+
+    def test_conditional_rollout_can_be_benchmarked_by_analyze(self) -> None:
+        agent = MctsAgent(
+            iterations=1,
+            rollout_depth=2,
+            rollout_policy=ConditionalRollout(
+                TurnPhaseIs("collect"),
+                EpsilonGreedy(0.25, GameHeuristic(2)),
+                UniformRandom(),
+            ),
+        )
+
+        benchmark = benchmark_mcts_agent(
+            SpiritsOfTheForest(), agent, median_depth=3, seed=7
+        )
+
+        self.assertEqual(benchmark.agent, agent)
+        self.assertGreater(benchmark.milliseconds_per_iteration, 0.0)
+
     def test_boop_match_accepts_both_heuristics(self) -> None:
         for heuristic in (0, 1):
             result = Match(
@@ -625,6 +697,21 @@ class MatchApiTests(unittest.TestCase):
             profile.agent.rollout_policy,
             EpsilonGreedy(0.25, GameHeuristic(1)),
         )
+
+    def test_inline_mcts_profile_accepts_collect_scoped_rollout(self) -> None:
+        profile = _parse_inline_mcts_profile(
+            "i=5000,d=32,h=2,p=epsilon,rh=2,e=0.25,phase=collect"
+        )
+
+        self.assertEqual(
+            profile.agent.rollout_policy,
+            ConditionalRollout(
+                TurnPhaseIs("collect"),
+                EpsilonGreedy(0.25, GameHeuristic(2)),
+                UniformRandom(),
+            ),
+        )
+        self.assertIn("phase-collect", profile.name)
 
     def test_inline_mcts_profile_accepts_time_budget(self) -> None:
         profile = _parse_inline_mcts_profile("t=0.25,d=32")
@@ -1923,6 +2010,51 @@ class MatchApiTests(unittest.TestCase):
             [0.0, 0.2, 0.0, 0.2, 0.0, 0.2, 0.0, 0.2],
         )
 
+    def test_tournament_conditional_grid_expands_primary_epsilon(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "conditional-grid.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "spotf"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "random"',
+                        'kind = "random"',
+                        "[[agents]]",
+                        'name = "collect"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        'cutoff_evaluator = { kind = "game_heuristic", index = 2 }',
+                        'rollout_policy = { kind = "conditional", condition = { '
+                        'kind = "turn_phase", phase = "collect" }, primary = { '
+                        'kind = "epsilon_greedy", epsilon = [0.0, 0.25], evaluator = { '
+                        'kind = "game_heuristic", index = 2 } }, fallback = { '
+                        'kind = "uniform_random" } }',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+
+        self.assertEqual(
+            [entry.name for entry in config.agents],
+            ["random", "collect-e0.0", "collect-e0.25"],
+        )
+        policies = [entry.agent.rollout_policy for entry in config.agents[1:]]
+        self.assertTrue(
+            all(isinstance(policy, ConditionalRollout) for policy in policies)
+        )
+        self.assertEqual(
+            [policy.primary.epsilon for policy in policies],
+            [0.0, 0.25],
+        )
+        self.assertTrue(
+            all(isinstance(policy.fallback, UniformRandom) for policy in policies)
+        )
+
     def test_tournament_agent_grid_rejects_duplicate_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory, "grid.toml")
@@ -2408,9 +2540,13 @@ class MatchApiTests(unittest.TestCase):
         by_phase = _search_by_phase(actions)
         self.assertEqual(performance["measured_decisions"], 2)
         self.assertAlmostEqual(performance["iterations_per_second"], 300.0)
+        self.assertAlmostEqual(
+            performance["milliseconds_per_iteration"], 10.0 / 3.0
+        )
         self.assertAlmostEqual(performance["nodes_per_iteration"], 0.4)
         self.assertAlmostEqual(performance["mean_budget_utilization"], 1.0)
         self.assertEqual(set(by_phase["game_quarter"]), {"q1", "q4"})
+        self.assertTrue((by_phase["milliseconds_per_iteration"] > 0).all())
 
     @unittest.skipUnless(
         REPORT_DEPENDENCIES_AVAILABLE,

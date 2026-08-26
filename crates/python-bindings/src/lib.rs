@@ -9,8 +9,9 @@ use meeple_bots_boop::{
 use meeple_bots_catalog::{
     AgentConfig, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution, CatalogError,
     CatalogGemstoneSacrifice, CatalogMatchReport, CatalogPieceKind, CatalogPowerSource,
-    CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, EvaluationConfig, EvaluatorConfig,
-    GameId, MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, RolloutPolicyConfig,
+    CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, CatalogTurnPhase,
+    ConfiguredRolloutPolicy, EvaluationConfig, EvaluatorConfig, GameId, MatchConfig,
+    MctsAgentConfig, MctsConfig, RecordedMove, RolloutConditionConfig, RolloutPolicyConfig,
     SearchBudget, analyze_seeded_trace, analyze_trace, benchmark_mcts_agent, configured_boop_mcts,
     configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
     configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
@@ -71,6 +72,11 @@ impl PyAgentConfig {
         rollout_heuristic=None,
         rollout_epsilon=None,
         time_budget=None,
+        rollout_condition_phase=None,
+        fallback_rollout_policy=None,
+        fallback_rollout_evaluator=None,
+        fallback_rollout_heuristic=None,
+        fallback_rollout_epsilon=None,
     ))]
     fn mcts(
         iterations: Option<u32>,
@@ -83,6 +89,11 @@ impl PyAgentConfig {
         rollout_heuristic: Option<u32>,
         rollout_epsilon: Option<f64>,
         time_budget: Option<f64>,
+        rollout_condition_phase: Option<&str>,
+        fallback_rollout_policy: Option<&str>,
+        fallback_rollout_evaluator: Option<&str>,
+        fallback_rollout_heuristic: Option<u32>,
+        fallback_rollout_epsilon: Option<f64>,
     ) -> PyResult<Self> {
         if !exploration.is_finite() || exploration < 0.0 {
             return Err(PyValueError::new_err(
@@ -101,11 +112,16 @@ impl PyAgentConfig {
                     budget: parse_search_budget(iterations, time_budget)?,
                     exploration,
                     rollout_depth,
-                    rollout_policy: parse_rollout_policy(
+                    rollout_policy: parse_configured_rollout_policy(
                         rollout_policy,
                         rollout_evaluator,
                         rollout_heuristic,
                         rollout_epsilon,
+                        rollout_condition_phase,
+                        fallback_rollout_policy,
+                        fallback_rollout_evaluator,
+                        fallback_rollout_heuristic,
+                        fallback_rollout_epsilon,
                     )?,
                 },
                 cutoff_evaluator: parse_evaluator(cutoff_evaluator, cutoff_heuristic)?,
@@ -562,6 +578,11 @@ fn py_evaluate_game(
     rollout_epsilon,
     median_depth,
     seed=0,
+    rollout_condition_phase=None,
+    fallback_rollout_policy=None,
+    fallback_rollout_evaluator=None,
+    fallback_rollout_heuristic=None,
+    fallback_rollout_epsilon=None,
 ))]
 fn py_benchmark_mcts_agent(
     py: Python<'_>,
@@ -578,6 +599,11 @@ fn py_benchmark_mcts_agent(
     rollout_epsilon: Option<f64>,
     median_depth: u32,
     seed: u64,
+    rollout_condition_phase: Option<&str>,
+    fallback_rollout_policy: Option<&str>,
+    fallback_rollout_evaluator: Option<&str>,
+    fallback_rollout_heuristic: Option<u32>,
+    fallback_rollout_epsilon: Option<f64>,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     if !exploration.is_finite() || exploration < 0.0 {
@@ -597,11 +623,16 @@ fn py_benchmark_mcts_agent(
                 budget: parse_search_budget(iterations, time_budget)?,
                 exploration,
                 rollout_depth,
-                rollout_policy: parse_rollout_policy(
+                rollout_policy: parse_configured_rollout_policy(
                     rollout_policy,
                     rollout_evaluator,
                     rollout_heuristic,
                     rollout_epsilon,
+                    rollout_condition_phase,
+                    fallback_rollout_policy,
+                    fallback_rollout_evaluator,
+                    fallback_rollout_heuristic,
+                    fallback_rollout_epsilon,
                 )?,
             },
             cutoff_evaluator: parse_evaluator(cutoff_evaluator, cutoff_heuristic)?,
@@ -678,6 +709,55 @@ fn parse_evaluator(kind: &str, heuristic: Option<u32>) -> PyResult<EvaluatorConf
             "unknown evaluator {kind}; expected neutral or game_heuristic"
         ))),
     }
+}
+
+fn parse_configured_rollout_policy(
+    policy: &str,
+    evaluator: Option<&str>,
+    heuristic: Option<u32>,
+    epsilon: Option<f64>,
+    condition_phase: Option<&str>,
+    fallback_policy: Option<&str>,
+    fallback_evaluator: Option<&str>,
+    fallback_heuristic: Option<u32>,
+    fallback_epsilon: Option<f64>,
+) -> PyResult<ConfiguredRolloutPolicy> {
+    let primary = parse_rollout_policy(policy, evaluator, heuristic, epsilon)?;
+    let Some(phase) = condition_phase else {
+        if fallback_policy.is_some()
+            || fallback_evaluator.is_some()
+            || fallback_heuristic.is_some()
+            || fallback_epsilon.is_some()
+        {
+            return Err(PyValueError::new_err(
+                "fallback rollout fields require a rollout condition",
+            ));
+        }
+        return Ok(ConfiguredRolloutPolicy::Standard(primary));
+    };
+    let phase = match phase {
+        "collect" => CatalogTurnPhase::Collect,
+        "place_gemstone" | "gemstones" => CatalogTurnPhase::PlaceGemstone,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "unknown rollout turn phase {phase}; expected collect or place_gemstone"
+            )));
+        }
+    };
+    let fallback_policy = fallback_policy.ok_or_else(|| {
+        PyValueError::new_err("conditional rollout requires a fallback rollout policy")
+    })?;
+    let fallback = parse_rollout_policy(
+        fallback_policy,
+        fallback_evaluator,
+        fallback_heuristic,
+        fallback_epsilon,
+    )?;
+    Ok(ConfiguredRolloutPolicy::Conditional {
+        condition: RolloutConditionConfig::TurnPhase(phase),
+        primary,
+        fallback,
+    })
 }
 
 fn parse_rollout_policy(

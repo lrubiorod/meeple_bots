@@ -25,6 +25,7 @@ from .api import (
     BoopRecoverPiece,
     ConnectFour,
     ConnectFourAction,
+    ConditionalRollout,
     EndSpiritCollection,
     EpsilonGreedy,
     GameEvaluationReport,
@@ -46,6 +47,7 @@ from .api import (
     TakeSpiritTile,
     TicTacToe,
     TicTacToeAction,
+    TurnPhaseIs,
     UniformRandom,
     benchmark_mcts_agent,
     evaluate_game,
@@ -65,8 +67,10 @@ _TOURNAMENT_GRID_FIELDS = (
     (("cutoff_evaluator", "index"), "h"),
     (("rollout_heuristic_index",), "rh"),
     (("rollout_policy", "evaluator", "index"), "rh"),
+    (("rollout_policy", "primary", "evaluator", "index"), "rh"),
     (("rollout_epsilon",), "e"),
     (("rollout_policy", "epsilon"), "e"),
+    (("rollout_policy", "primary", "epsilon"), "e"),
 )
 _MAX_AGENTS_PER_TOURNAMENT_GRID = 256
 _MISSING_GRID_VALUE = object()
@@ -1321,6 +1325,9 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         "rh": "rollout_heuristic",
         "rollout_h": "rollout_heuristic",
         "rollout_heuristic": "rollout_heuristic",
+        "phase": "rollout_phase",
+        "scope": "rollout_phase",
+        "rollout_phase": "rollout_phase",
     }
     if spec.strip():
         for raw_field in spec.split(","):
@@ -1387,16 +1394,23 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
             values["rollout_heuristic"],
             "rollout heuristic",
         )
+    rollout_policy = _configured_rollout_policy(
+        policy_values,
+        "inline analyze agent",
+    )
+    if "rollout_phase" in values:
+        rollout_policy = ConditionalRollout(
+            condition=TurnPhaseIs(values["rollout_phase"]),
+            primary=rollout_policy,
+            fallback=UniformRandom(),
+        )
     agent = MctsAgent(
         iterations=iterations,
         time_budget=time_budget,
         exploration=exploration,
         rollout_depth=rollout_depth,
         cutoff_evaluator=cutoff_evaluator,
-        rollout_policy=_configured_rollout_policy(
-            policy_values,
-            "inline analyze agent",
-        ),
+        rollout_policy=rollout_policy,
     )
     name = values.get("name")
     if name is not None and not name.strip():
@@ -1438,10 +1452,17 @@ def _inline_agent_name(agent: MctsAgent) -> str:
     rollout_heuristic = _evaluator_heuristic_index(
         _rollout_policy_evaluator(agent.rollout_policy)
     )
-    if isinstance(agent.rollout_policy, EpsilonGreedy):
-        parts.extend(("p-epsilon-greedy", f"e{agent.rollout_policy.epsilon}"))
-    elif isinstance(agent.rollout_policy, Greedy):
+    primary_policy = (
+        agent.rollout_policy.primary
+        if isinstance(agent.rollout_policy, ConditionalRollout)
+        else agent.rollout_policy
+    )
+    if isinstance(primary_policy, EpsilonGreedy):
+        parts.extend(("p-epsilon-greedy", f"e{primary_policy.epsilon}"))
+    elif isinstance(primary_policy, Greedy):
         parts.append("p-greedy")
+    if isinstance(agent.rollout_policy, ConditionalRollout):
+        parts.append(f"phase-{agent.rollout_policy.condition.phase}")
     if rollout_heuristic is not None:
         parts.append(f"rh{rollout_heuristic}")
     return "-".join(parts)
@@ -1525,11 +1546,8 @@ def _batch_agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, ob
         "rollout_evaluator": _evaluator_dict(
             _rollout_policy_evaluator(agent.rollout_policy)
         ),
-        "rollout_epsilon": (
-            agent.rollout_policy.epsilon
-            if isinstance(agent.rollout_policy, EpsilonGreedy)
-            else None
-        ),
+        "rollout_epsilon": _rollout_policy_epsilon(agent.rollout_policy),
+        **_conditional_rollout_fields(agent.rollout_policy),
     }
 
 
@@ -1725,10 +1743,14 @@ def _agent_dict(name: str, agent) -> dict[str, object]:
         ),
         "rollout_evaluator": _evaluator_dict(rollout_evaluator),
         "rollout_epsilon": (
-            agent.rollout_policy.epsilon
+            _rollout_policy_epsilon(agent.rollout_policy)
             if isinstance(agent, MctsAgent)
-            and isinstance(agent.rollout_policy, EpsilonGreedy)
             else None
+        ),
+        **(
+            _conditional_rollout_fields(agent.rollout_policy)
+            if isinstance(agent, MctsAgent)
+            else {}
         ),
     }
 
@@ -1793,12 +1815,9 @@ def _configured_evaluator(
 def _configured_rollout_policy(
     values: dict[str, object],
     context: str,
-) -> UniformRandom | Greedy | EpsilonGreedy:
+) -> UniformRandom | Greedy | EpsilonGreedy | ConditionalRollout:
     policy = values.get("rollout_policy", "uniform_random")
     if isinstance(policy, dict):
-        unknown = sorted(policy.keys() - {"kind", "epsilon", "evaluator"})
-        if unknown:
-            raise ValueError(f"unknown {context} rollout policy fields: {', '.join(unknown)}")
         kind = policy.get("kind")
         if not isinstance(kind, str):
             raise TypeError(f"{context} rollout policy kind must be a string")
@@ -1813,6 +1832,57 @@ def _configured_rollout_policy(
                 f"{context} structured rollout_policy cannot use flat rollout evaluator fields"
             )
         normalized_policy = kind.strip().lower().replace("-", "_")
+        if normalized_policy == "conditional":
+            unknown = sorted(
+                policy.keys() - {"kind", "condition", "primary", "fallback"}
+            )
+            if unknown:
+                raise ValueError(
+                    f"unknown {context} conditional rollout fields: {', '.join(unknown)}"
+                )
+            condition = policy.get("condition")
+            if not isinstance(condition, dict):
+                raise TypeError(f"{context} conditional rollout condition must be a table")
+            condition_unknown = sorted(condition.keys() - {"kind", "phase"})
+            if condition_unknown:
+                raise ValueError(
+                    f"unknown {context} rollout condition fields: "
+                    + ", ".join(condition_unknown)
+                )
+            condition_kind = condition.get("kind")
+            if not isinstance(condition_kind, str):
+                raise TypeError(f"{context} rollout condition kind must be a string")
+            if condition_kind.strip().lower().replace("-", "_") != "turn_phase":
+                raise ValueError(
+                    f"{context} rollout condition kind must be turn_phase"
+                )
+            phase = condition.get("phase")
+            if not isinstance(phase, str):
+                raise TypeError(f"{context} rollout condition phase must be a string")
+            primary = policy.get("primary")
+            fallback = policy.get("fallback")
+            if not isinstance(primary, dict) or not isinstance(fallback, dict):
+                raise TypeError(
+                    f"{context} conditional rollout primary and fallback must be tables"
+                )
+            primary_policy = _configured_rollout_policy(
+                {"rollout_policy": primary}, f"{context} primary"
+            )
+            fallback_policy = _configured_rollout_policy(
+                {"rollout_policy": fallback}, f"{context} fallback"
+            )
+            if isinstance(primary_policy, ConditionalRollout) or isinstance(
+                fallback_policy, ConditionalRollout
+            ):
+                raise ValueError(f"{context} conditional rollout branches cannot be conditional")
+            return ConditionalRollout(
+                condition=TurnPhaseIs(phase),
+                primary=primary_policy,
+                fallback=fallback_policy,
+            )
+        unknown = sorted(policy.keys() - {"kind", "epsilon", "evaluator"})
+        if unknown:
+            raise ValueError(f"unknown {context} rollout policy fields: {', '.join(unknown)}")
         evaluator = (
             _configured_evaluator(policy["evaluator"], f"{context} rollout")
             if "evaluator" in policy
@@ -1890,17 +1960,60 @@ def _configured_legacy_rollout_evaluator(
 
 
 def _rollout_policy_name(agent: MctsAgent) -> str:
-    if isinstance(agent.rollout_policy, EpsilonGreedy):
+    if isinstance(agent.rollout_policy, ConditionalRollout):
+        return "conditional"
+    return _base_rollout_policy_name(agent.rollout_policy)
+
+
+def _base_rollout_policy_name(
+    policy: UniformRandom | Greedy | EpsilonGreedy,
+) -> str:
+    if isinstance(policy, EpsilonGreedy):
         return "epsilon_greedy"
-    if isinstance(agent.rollout_policy, Greedy):
+    if isinstance(policy, Greedy):
         return "greedy"
     return "uniform_random"
 
 
 def _rollout_policy_evaluator(
-    policy: UniformRandom | Greedy | EpsilonGreedy,
+    policy: UniformRandom | Greedy | EpsilonGreedy | ConditionalRollout,
 ) -> NeutralEvaluator | GameHeuristic | None:
+    if isinstance(policy, ConditionalRollout):
+        return _rollout_policy_evaluator(policy.primary)
     return None if isinstance(policy, UniformRandom) else policy.evaluator
+
+
+def _rollout_policy_epsilon(
+    policy: UniformRandom | Greedy | EpsilonGreedy | ConditionalRollout,
+) -> float | None:
+    if isinstance(policy, ConditionalRollout):
+        return _rollout_policy_epsilon(policy.primary)
+    return policy.epsilon if isinstance(policy, EpsilonGreedy) else None
+
+
+def _conditional_rollout_fields(
+    policy: UniformRandom | Greedy | EpsilonGreedy | ConditionalRollout,
+) -> dict[str, object]:
+    if not isinstance(policy, ConditionalRollout):
+        return {
+            "rollout_condition": None,
+            "rollout_primary_policy": None,
+            "rollout_fallback_policy": None,
+            "rollout_fallback_evaluator": None,
+            "rollout_fallback_epsilon": None,
+        }
+    return {
+        "rollout_condition": {
+            "kind": "turn_phase",
+            "phase": policy.condition.phase,
+        },
+        "rollout_primary_policy": _base_rollout_policy_name(policy.primary),
+        "rollout_fallback_policy": _base_rollout_policy_name(policy.fallback),
+        "rollout_fallback_evaluator": _evaluator_dict(
+            _rollout_policy_evaluator(policy.fallback)
+        ),
+        "rollout_fallback_epsilon": _rollout_policy_epsilon(policy.fallback),
+    }
 
 
 def _evaluator_heuristic_index(
@@ -1936,13 +2049,56 @@ def _serialized_evaluator_name(evaluator: object) -> str:
     return str(kind)
 
 
+def _serialized_rollout_policy_description(fields: dict[str, object]) -> str:
+    if fields["rollout_policy"] != "conditional":
+        policy = str(fields["rollout_policy"])
+        if fields["rollout_epsilon"] is not None:
+            policy += f"(epsilon={fields['rollout_epsilon']})"
+        evaluator = _serialized_evaluator_name(fields["rollout_evaluator"])
+        return policy if evaluator == "none" else f"{policy}, evaluator={evaluator}"
+
+    condition = fields["rollout_condition"]
+    if not isinstance(condition, dict):
+        raise TypeError("serialized conditional rollout requires a condition")
+    primary = str(fields["rollout_primary_policy"])
+    if fields["rollout_epsilon"] is not None:
+        primary += f"(epsilon={fields['rollout_epsilon']})"
+    primary_evaluator = _serialized_evaluator_name(fields["rollout_evaluator"])
+    if primary_evaluator != "none":
+        primary += f", evaluator={primary_evaluator}"
+    fallback = str(fields["rollout_fallback_policy"])
+    fallback_epsilon = fields["rollout_fallback_epsilon"]
+    if fallback_epsilon is not None:
+        fallback += f"(epsilon={fallback_epsilon})"
+    fallback_evaluator = _serialized_evaluator_name(
+        fields["rollout_fallback_evaluator"]
+    )
+    if fallback_evaluator != "none":
+        fallback += f", evaluator={fallback_evaluator}"
+    return f"conditional({condition.get('phase')} ? {primary} : {fallback})"
+
+
 def _rollout_policy_description(agent: MctsAgent) -> str:
+    if isinstance(agent.rollout_policy, ConditionalRollout):
+        primary = _base_rollout_policy_name(agent.rollout_policy.primary)
+        evaluator = _rollout_policy_evaluator(agent.rollout_policy.primary)
+        if evaluator is not None:
+            primary += f"/{_evaluator_name(evaluator)}"
+        epsilon = _rollout_policy_epsilon(agent.rollout_policy.primary)
+        if epsilon is not None:
+            primary += f"/epsilon={epsilon}"
+        fallback = _base_rollout_policy_name(agent.rollout_policy.fallback)
+        return (
+            f"conditional/{agent.rollout_policy.condition.phase}"
+            f"?{primary}:{fallback}"
+        )
     policy = _rollout_policy_name(agent)
     evaluator = _rollout_policy_evaluator(agent.rollout_policy)
     if evaluator is not None:
         policy += f"/{_evaluator_name(evaluator)}"
-    if isinstance(agent.rollout_policy, EpsilonGreedy):
-        policy += f"/epsilon={agent.rollout_policy.epsilon}"
+    epsilon = _rollout_policy_epsilon(agent.rollout_policy)
+    if epsilon is not None:
+        policy += f"/epsilon={epsilon}"
     return policy
 
 
@@ -2265,11 +2421,8 @@ def _configured_benchmark_dicts(
                 "rollout_evaluator": _evaluator_dict(
                     _rollout_policy_evaluator(agent.rollout_policy)
                 ),
-                "rollout_epsilon": (
-                    agent.rollout_policy.epsilon
-                    if isinstance(agent.rollout_policy, EpsilonGreedy)
-                    else None
-                ),
+                "rollout_epsilon": _rollout_policy_epsilon(agent.rollout_policy),
+                **_conditional_rollout_fields(agent.rollout_policy),
                 "sampled_positions": benchmark.sampled_positions,
                 "decision_time_mean_ms": benchmark.decision_time_mean_ms,
                 "decision_time_p50_ms": benchmark.decision_time_p50_ms,
@@ -2364,12 +2517,7 @@ def _print_evaluation(
         )
         rows = _configured_benchmark_dicts(report, configured_benchmarks)
         for row in rows:
-            rollout_policy = row["rollout_policy"]
-            if row["rollout_epsilon"] is not None:
-                rollout_policy += f"(epsilon={row['rollout_epsilon']})"
-            rollout_evaluator = _serialized_evaluator_name(row["rollout_evaluator"])
-            if rollout_evaluator != "none":
-                rollout_policy += f", evaluator={rollout_evaluator}"
+            rollout_policy = _serialized_rollout_policy_description(row)
             timings = ", ".join(
                 f"ply {timing['sampled_ply']}={timing['milliseconds']:.2f} ms/"
                 f"{timing['iterations']:,}i/{timing['nodes']:,} nodes"

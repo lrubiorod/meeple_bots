@@ -102,7 +102,46 @@ class EpsilonGreedy:
         _validate_state_evaluator("rollout evaluator", self.evaluator)
 
 
-RolloutPolicy: TypeAlias = UniformRandom | Greedy | EpsilonGreedy
+BaseRolloutPolicy: TypeAlias = UniformRandom | Greedy | EpsilonGreedy
+
+
+@dataclass(frozen=True, slots=True)
+class TurnPhaseIs:
+    """Match a named game turn phase while selecting rollout actions."""
+
+    phase: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.phase, str):
+            raise TypeError("rollout turn phase must be a string")
+        normalized = self.phase.strip().lower().replace("-", "_")
+        if normalized == "gemstones":
+            normalized = "place_gemstone"
+        if normalized not in {"collect", "place_gemstone"}:
+            raise ValueError(
+                "rollout turn phase must be collect or place_gemstone"
+            )
+        object.__setattr__(self, "phase", normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalRollout:
+    """Use one rollout policy when a condition matches and another otherwise."""
+
+    condition: TurnPhaseIs
+    primary: BaseRolloutPolicy
+    fallback: BaseRolloutPolicy = field(default_factory=UniformRandom)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.condition, TurnPhaseIs):
+            raise TypeError("rollout condition must be TurnPhaseIs")
+        if not isinstance(self.primary, (UniformRandom, Greedy, EpsilonGreedy)):
+            raise TypeError("primary rollout policy must be a base rollout policy")
+        if not isinstance(self.fallback, (UniformRandom, Greedy, EpsilonGreedy)):
+            raise TypeError("fallback rollout policy must be a base rollout policy")
+
+
+RolloutPolicy: TypeAlias = BaseRolloutPolicy | ConditionalRollout
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,9 +195,13 @@ class MctsAgent:
             if self.heuristic is not None and self.heuristic != evaluator_heuristic:
                 raise ValueError("heuristic and cutoff_evaluator configure different evaluators")
             object.__setattr__(self, "heuristic", evaluator_heuristic)
-        if not isinstance(self.rollout_policy, (UniformRandom, Greedy, EpsilonGreedy)):
+        if not isinstance(
+            self.rollout_policy,
+            (UniformRandom, Greedy, EpsilonGreedy, ConditionalRollout),
+        ):
             raise TypeError(
-                "rollout_policy must be UniformRandom, Greedy, or EpsilonGreedy"
+                "rollout_policy must be UniformRandom, Greedy, EpsilonGreedy, "
+                "or ConditionalRollout"
             )
 
 
@@ -1037,6 +1080,17 @@ def benchmark_mcts_agent(
         raise ValueError(f"seed must be between 0 and {_MAX_U64}")
     _validate_agent_evaluators(game, agent)
 
+    (
+        rollout_policy,
+        rollout_evaluator,
+        rollout_heuristic,
+        rollout_epsilon,
+        rollout_condition_phase,
+        fallback_rollout_policy,
+        fallback_rollout_evaluator,
+        fallback_rollout_heuristic,
+        fallback_rollout_epsilon,
+    ) = _native_rollout_policy(agent.rollout_policy)
     raw = _native.benchmark_mcts_agent(
         _native_game(game),
         agent.iterations,
@@ -1044,9 +1098,17 @@ def benchmark_mcts_agent(
         float(agent.exploration),
         agent.rollout_depth,
         *_native_evaluator(agent.cutoff_evaluator),
-        *_native_rollout_policy(agent.rollout_policy),
+        rollout_policy,
+        rollout_evaluator,
+        rollout_heuristic,
+        rollout_epsilon,
         median_depth,
         seed,
+        rollout_condition_phase,
+        fallback_rollout_policy,
+        fallback_rollout_evaluator,
+        fallback_rollout_heuristic,
+        fallback_rollout_epsilon,
     )
     return MctsAgentBenchmark(
         game=game,
@@ -1171,9 +1233,17 @@ def _native_agent(agent: Agent, game: Game):
     if isinstance(agent, RandomAgent):
         return _native.AgentConfig.random()
     if isinstance(agent, MctsAgent):
-        policy, rollout_evaluator, rollout_heuristic, epsilon = _native_rollout_policy(
-            agent.rollout_policy
-        )
+        (
+            policy,
+            rollout_evaluator,
+            rollout_heuristic,
+            epsilon,
+            rollout_condition_phase,
+            fallback_policy,
+            fallback_evaluator,
+            fallback_heuristic,
+            fallback_epsilon,
+        ) = _native_rollout_policy(agent.rollout_policy)
         cutoff_evaluator, cutoff_heuristic = _native_evaluator(agent.cutoff_evaluator)
         return _native.AgentConfig.mcts(
             agent.iterations,
@@ -1186,6 +1256,11 @@ def _native_agent(agent: Agent, game: Game):
             rollout_heuristic,
             epsilon,
             agent.time_budget,
+            rollout_condition_phase,
+            fallback_policy,
+            fallback_evaluator,
+            fallback_heuristic,
+            fallback_epsilon,
         )
     return _native.AgentConfig.human(
         _human_selector(agent, game),
@@ -1202,9 +1277,13 @@ def _non_negative_u32(name: str, value: int) -> None:
 
 def _validate_agent_evaluators(game: Game, agent: Agent) -> None:
     if isinstance(agent, MctsAgent):
+        if isinstance(agent.rollout_policy, ConditionalRollout):
+            if not isinstance(game, SpiritsOfTheForest):
+                raise ValueError(
+                    "turn-phase rollout conditions are only supported by spotf"
+                )
         _validate_game_evaluator(game, agent.cutoff_evaluator)
-        rollout_evaluator = _rollout_evaluator(agent.rollout_policy)
-        if rollout_evaluator is not None:
+        for rollout_evaluator in _rollout_evaluators(agent.rollout_policy):
             _validate_game_evaluator(game, rollout_evaluator)
 
 
@@ -1218,6 +1297,26 @@ def _native_evaluator(
 
 def _native_rollout_policy(
     policy: RolloutPolicy,
+) -> tuple[
+    str,
+    str | None,
+    int | None,
+    float | None,
+    str | None,
+    str | None,
+    str | None,
+    int | None,
+    float | None,
+]:
+    if isinstance(policy, ConditionalRollout):
+        primary = _native_base_rollout_policy(policy.primary)
+        fallback = _native_base_rollout_policy(policy.fallback)
+        return (*primary, policy.condition.phase, *fallback)
+    return (*_native_base_rollout_policy(policy), None, None, None, None, None)
+
+
+def _native_base_rollout_policy(
+    policy: BaseRolloutPolicy,
 ) -> tuple[str, str | None, int | None, float | None]:
     if isinstance(policy, UniformRandom):
         return "uniform_random", None, None, None
@@ -1234,9 +1333,22 @@ def _native_rollout_policy(
 
 
 def _rollout_evaluator(policy: RolloutPolicy) -> StateEvaluator | None:
+    if isinstance(policy, ConditionalRollout):
+        return _rollout_evaluator(policy.primary)
     if isinstance(policy, UniformRandom):
         return None
     return policy.evaluator
+
+
+def _rollout_evaluators(policy: RolloutPolicy) -> tuple[StateEvaluator, ...]:
+    if isinstance(policy, ConditionalRollout):
+        return tuple(
+            evaluator
+            for branch in (policy.primary, policy.fallback)
+            if (evaluator := _rollout_evaluator(branch)) is not None
+        )
+    evaluator = _rollout_evaluator(policy)
+    return () if evaluator is None else (evaluator,)
 
 
 def _validate_game_evaluator(game: Game, evaluator: StateEvaluator | None) -> None:

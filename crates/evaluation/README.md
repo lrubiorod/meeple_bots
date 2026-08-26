@@ -148,12 +148,13 @@ meeple-bots analyze --game spotf \
   --agent 'name=timed,t=1,d=120' \
   --agent 'name=horizon,i=20000,d=32,h=0' \
   --agent 'name=informed,i=10000,d=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
+  --agent 'name=collect-h2,i=5000,d=32,h=2,p=epsilon,rh=2,e=0.25,phase=collect' \
   --agent 'iterations=10000,exploration=0.8'
 ```
 
 Supported fields are `name`, `iterations` or `time_budget`, `depth`, `exploration`, cutoff
-`heuristic` or `cutoff_evaluator`, rollout `policy`, `rollout_heuristic`, and `epsilon`. Their short
-aliases are `i` or `t`, `d`, `c`, `h` or `ce`, `p`, `rh`, and `e`. `ce` accepts `neutral` or
+`heuristic` or `cutoff_evaluator`, rollout `policy`, `rollout_heuristic`, `epsilon`, and optional
+turn `phase`. Their short aliases are `i` or `t`, `d`, `c`, `h` or `ce`, `p`, `rh`, and `e`. `ce` accepts `neutral` or
 `hINDEX`. Missing values default to 1000 iterations, depth 16, square-root-of-two exploration,
 uniform-random rollouts, and neutral cutoff evaluation. A bare `--agent` uses every default.
 Automatic names encode the
@@ -165,6 +166,8 @@ constant is appended as `-cVALUE`.
 `rh=INDEX`; epsilon-greedy uses `e=0.1` when omitted. `h=INDEX` configures only cutoff evaluation,
 whereas `rh=INDEX` configures only informed rollout selection, so either mechanism can be enabled
 alone or both can use different game heuristics.
+For SPOTF, `phase=collect` applies the selected informed policy only during collection and uses
+uniform random rollout actions during gemstone placement.
 
 Inline agents and `--agent-config` profiles can be mixed in one comparison. Explicit and generated
 names must remain unique. Profiles are preferable when a configuration must be preserved as a

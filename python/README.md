@@ -303,18 +303,20 @@ meeple-bots analyze --game boop --target-time 5 --seed 42 --json
 Benchmark and rank any number of exact MCTS profiles on the same sampled positions:
 
 ```bash
-meeple-bots analyze --game boop --target-time 1 --seed 42 \
+meeple-bots analyze --game spotf --target-time 1 --seed 42 \
   --agent \
   --agent 'i=5000,d=120' \
   --agent 'name=equal-time-random,t=1,d=120,p=random' \
   --agent 'name=rollout-h1,i=20000,d=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
+  --agent 'name=collect-h2,i=5000,d=32,h=2,p=epsilon,rh=2,e=0.25,phase=collect' \
   --agent-config configs/mcts/heuristic.toml
 ```
 
 Each `--agent-config` uses the [reusable scalar profile](../agents/README.md#reusable-profiles)
 format. For quick tests, repeat `--agent [SPEC]` with comma-separated fields. The cutoff evaluator
 uses `h=INDEX` or `ce=neutral`; informed rollout uses `p=greedy|epsilon`, `rh=INDEX`, and optionally
-`e=EPSILON`. Use `t=SECONDS` instead of `i=ITERATIONS` for a wall-clock profile. A bare `--agent`
+`e=EPSILON`. For SPOTF, `phase=collect` wraps that policy in a conditional rollout whose fallback
+is uniform random. Use `t=SECONDS` instead of `i=ITERATIONS` for a wall-clock profile. A bare `--agent`
 defaults to 1000 iterations, depth 16, square-root-of-two
 exploration, uniform-random rollout, and neutral cutoff evaluation. Inline agents and profiles can
 be mixed; tournament grids are not accepted here.
@@ -414,10 +416,21 @@ time, iterations, and nodes in the JSONL move. See the executable
 [`template-study.toml`](../configs/tournaments/template-study.toml) for all combinations and grid
 examples.
 
+A conditional policy can restrict informed selection to a game phase. This SPOTF example evaluates
+H2 only for `TakeTile` and `EndCollection`; gemstone actions use the uniform fallback:
+
+```toml
+rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "collect" }, primary = { kind = "epsilon_greedy", epsilon = 0.25, evaluator = { kind = "game_heuristic", index = 2 } }, fallback = { kind = "uniform_random" } }
+```
+
+Conditional rollout configuration is preserved in JSONL and `agents.csv`. Turn-phase conditions
+are currently supported by SPOTF; other games reject them explicitly.
+
 An MCTS entry must define exactly one of `iterations` or `time_budget`, plus `rollout_depth`.
 Either budget can be an array; `rollout_depth` and `exploration` can also use arrays. Structured
 configuration also accepts arrays in `cutoff_evaluator.index`, `rollout_policy.evaluator.index`,
-and `rollout_policy.epsilon`. The loader creates their Cartesian product. For example:
+`rollout_policy.epsilon`, and the corresponding `rollout_policy.primary` fields of a conditional
+policy. The loader creates their Cartesian product. For example:
 
 ```toml
 [[agents]]

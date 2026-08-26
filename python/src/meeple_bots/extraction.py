@@ -71,6 +71,13 @@ _AGENT_FIELDS = (
     "rollout_evaluator",
     "rollout_heuristic",
     "rollout_epsilon",
+    "rollout_condition",
+    "rollout_condition_phase",
+    "rollout_primary_policy",
+    "rollout_fallback_policy",
+    "rollout_fallback_evaluator",
+    "rollout_fallback_heuristic",
+    "rollout_fallback_epsilon",
     "self_play",
 )
 
@@ -591,6 +598,13 @@ def _agent_signature(row: dict[str, object]) -> dict[str, object]:
             "rollout_evaluator",
             "rollout_heuristic",
             "rollout_epsilon",
+            "rollout_condition",
+            "rollout_condition_phase",
+            "rollout_primary_policy",
+            "rollout_fallback_policy",
+            "rollout_fallback_evaluator",
+            "rollout_fallback_heuristic",
+            "rollout_fallback_epsilon",
         )
     }
 
@@ -1676,6 +1690,24 @@ def _agent_row(raw: object) -> dict[str, object]:
         context="tournament rollout evaluator",
         allow_missing=True,
     )
+    condition_kind = ""
+    condition_phase = ""
+    condition = raw.get("rollout_condition")
+    if condition is not None:
+        if not isinstance(condition, dict):
+            raise TypeError("tournament agent rollout_condition must be an object")
+        condition_kind = _string_field(
+            condition, "kind", "tournament rollout condition"
+        )
+        condition_phase = _string_field(
+            condition, "phase", "tournament rollout condition"
+        )
+    fallback_kind, fallback_heuristic = _serialized_evaluator(
+        raw.get("rollout_fallback_evaluator"),
+        fallback_heuristic=None,
+        context="tournament fallback rollout evaluator",
+        allow_missing=True,
+    )
     return {
         "agent_name": _string_field(raw, "name", "tournament agent"),
         "kind": kind,
@@ -1691,6 +1723,17 @@ def _agent_row(raw: object) -> dict[str, object]:
         "rollout_heuristic": rollout_heuristic,
         "rollout_epsilon": (
             "" if raw.get("rollout_epsilon") is None else raw["rollout_epsilon"]
+        ),
+        "rollout_condition": condition_kind,
+        "rollout_condition_phase": condition_phase,
+        "rollout_primary_policy": raw.get("rollout_primary_policy") or "",
+        "rollout_fallback_policy": raw.get("rollout_fallback_policy") or "",
+        "rollout_fallback_evaluator": fallback_kind,
+        "rollout_fallback_heuristic": fallback_heuristic,
+        "rollout_fallback_epsilon": (
+            ""
+            if raw.get("rollout_fallback_epsilon") is None
+            else raw["rollout_fallback_epsilon"]
         ),
         "self_play": self_play,
     }

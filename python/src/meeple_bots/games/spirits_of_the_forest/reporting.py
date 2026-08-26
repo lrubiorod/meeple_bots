@@ -357,6 +357,11 @@ def _search_performance(actions: pd.DataFrame, agents: pd.DataFrame) -> pd.DataF
                 "iterations_per_second": (
                     total_iterations / total_seconds if total_seconds else np.nan
                 ),
+                "milliseconds_per_iteration": (
+                    1_000.0 * total_seconds / total_iterations
+                    if total_iterations
+                    else np.nan
+                ),
                 "mean_nodes": nodes.mean() if len(nodes) else np.nan,
                 "nodes_per_second": (
                     total_nodes / node_seconds if node_seconds else np.nan
@@ -388,6 +393,7 @@ def _search_by_phase(actions: pd.DataFrame) -> pd.DataFrame:
         "p95_decision_seconds",
         "mean_iterations",
         "iterations_per_second",
+        "milliseconds_per_iteration",
         "mean_nodes",
         "nodes_per_second",
         "mean_legal_actions",
@@ -419,6 +425,11 @@ def _search_by_phase(actions: pd.DataFrame) -> pd.DataFrame:
                 "mean_iterations": selected["search_iterations"].mean(),
                 "iterations_per_second": (
                     total_iterations / total_seconds if total_seconds else np.nan
+                ),
+                "milliseconds_per_iteration": (
+                    1_000.0 * total_seconds / total_iterations
+                    if total_iterations
+                    else np.nan
                 ),
                 "mean_nodes": nodes.mean() if len(nodes) else np.nan,
                 "nodes_per_second": (

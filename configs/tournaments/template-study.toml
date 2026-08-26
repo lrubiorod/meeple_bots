@@ -1,6 +1,6 @@
 # Executable SPOTF tournament template demonstrating the supported agent configurations.
-# It expands to 13 agents, 78 cross-agent pairings, and one selected self-play pairing.
-# With two matches per pairing this produces 158 matches. Increase the budgets only after
+# It expands to 17 agents, 136 cross-agent pairings, and one selected self-play pairing.
+# With two matches per pairing this produces 274 matches. Increase the budgets only after
 # checking the expected runtime with `meeple-bots analyze`.
 game = "spotf"
 output = "../../results/tournaments/template-study.jsonl"
@@ -73,6 +73,17 @@ rollout_depth = 32
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "epsilon_greedy", epsilon = [0.0, 0.1, 0.25, 1.0], evaluator = { kind = "game_heuristic", index = 1 } }
+
+# Conditional informed rollout: H2 guides Collect decisions, while gemstone decisions remain
+# uniform random. The nested epsilon array is expanded exactly like a top-level policy grid.
+[[agents]]
+name = "mcts-collect-rollout-h2"
+kind = "mcts"
+iterations = 250
+rollout_depth = 32
+exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "game_heuristic", index = 2 }
+rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "collect" }, primary = { kind = "epsilon_greedy", epsilon = [0.0, 0.25, 0.5, 0.75], evaluator = { kind = "game_heuristic", index = 2 } }, fallback = { kind = "uniform_random" } }
 
 # Cartesian-product example for comparing search width and horizon. These two arrays create four
 # uniform-rollout agents: every combination of 100/500 iterations and depth 16/64.
