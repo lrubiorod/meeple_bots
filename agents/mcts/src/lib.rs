@@ -134,6 +134,66 @@ where
     ) -> Result<G::Action, AgentError>;
 }
 
+pub trait RolloutCondition<G>
+where
+    G: DeterministicGame,
+{
+    fn matches(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+    ) -> bool;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConditionalRollout<C, P, F> {
+    pub condition: C,
+    pub primary: P,
+    pub fallback: F,
+}
+
+impl<C, P, F> ConditionalRollout<C, P, F> {
+    pub const fn new(condition: C, primary: P, fallback: F) -> Self {
+        Self {
+            condition,
+            primary,
+            fallback,
+        }
+    }
+}
+
+impl<G, C, P, F> RolloutPolicy<G> for ConditionalRollout<C, P, F>
+where
+    G: DeterministicGame,
+    G::State: Clone,
+    G::Action: Clone,
+    C: RolloutCondition<G>,
+    P: RolloutPolicy<G>,
+    F: RolloutPolicy<G>,
+{
+    fn select_action<R: RandomSource + ?Sized>(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        if self
+            .condition
+            .matches(game, state, active_player, root_player)
+        {
+            self.primary
+                .select_action(game, state, active_player, root_player, rng)
+        } else {
+            self.fallback
+                .select_action(game, state, active_player, root_player, rng)
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UniformRandom;
 
@@ -710,6 +770,37 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct FixedCondition(bool);
+
+    impl RolloutCondition<TicTacToe> for FixedCondition {
+        fn matches(
+            &self,
+            _game: &TicTacToe,
+            _state: &<TicTacToe as Game>::State,
+            _active_player: PlayerId,
+            _root_player: PlayerId,
+        ) -> bool {
+            self.0
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct FixedActionPolicy(u8);
+
+    impl RolloutPolicy<TicTacToe> for FixedActionPolicy {
+        fn select_action<R: RandomSource + ?Sized>(
+            &self,
+            _game: &TicTacToe,
+            _state: &<TicTacToe as Game>::State,
+            _active_player: PlayerId,
+            _root_player: PlayerId,
+            _rng: &mut R,
+        ) -> Result<TicTacToeAction, AgentError> {
+            Ok(action(self.0))
+        }
+    }
+
     fn action(index: u8) -> TicTacToeAction {
         TicTacToeAction::from_index(index).unwrap()
     }
@@ -1084,6 +1175,62 @@ mod tests {
     }
 
     #[test]
+    fn conditional_rollout_routes_without_consuming_randomness() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+
+        for (condition, expected) in [(true, action(0)), (false, action(1))] {
+            let mut rng = SplitMix64::new(13);
+            let mut untouched_rng = SplitMix64::new(13);
+            let selected = ConditionalRollout::new(
+                FixedCondition(condition),
+                FixedActionPolicy(0),
+                FixedActionPolicy(1),
+            )
+            .select_action(&game, &state, PlayerId::FIRST, PlayerId::FIRST, &mut rng)
+            .unwrap();
+
+            assert_eq!(selected, expected);
+            assert_eq!(rng.next_u64(), untouched_rng.next_u64());
+        }
+    }
+
+    #[test]
+    fn conditional_fallback_does_not_evaluate_the_primary_policy() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let mut conditional_rng = SplitMix64::new(31);
+        let mut uniform_rng = SplitMix64::new(31);
+        let policy = ConditionalRollout::new(
+            FixedCondition(false),
+            EpsilonGreedy::new(0.0, FailingEvaluator),
+            UniformRandom,
+        );
+
+        let selected = policy
+            .select_action(
+                &game,
+                &state,
+                PlayerId::FIRST,
+                PlayerId::FIRST,
+                &mut conditional_rng,
+            )
+            .unwrap();
+        let uniform = UniformRandom
+            .select_action(
+                &game,
+                &state,
+                PlayerId::FIRST,
+                PlayerId::FIRST,
+                &mut uniform_rng,
+            )
+            .unwrap();
+
+        assert_eq!(selected, uniform);
+        assert_eq!(conditional_rng.next_u64(), uniform_rng.next_u64());
+    }
+
+    #[test]
     fn epsilon_one_matches_uniform_random_mcts_search() {
         let game = TicTacToe;
         let state = game.initial_state();
@@ -1136,6 +1283,59 @@ mod tests {
             );
             assert_eq!(
                 epsilon_rng.next_u64(),
+                uniform_rng.next_u64(),
+                "seed {seed}"
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_epsilon_one_matches_uniform_random_mcts_search() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let budget = SearchBudget::Iterations(NonZeroU32::new(512).unwrap());
+
+        for seed in [0, 13, 42, 99] {
+            let mut uniform = MctsAgent::new(MctsConfig {
+                budget,
+                exploration: std::f64::consts::SQRT_2,
+                rollout_depth: 9,
+                rollout_policy: UniformRandom,
+            });
+            let mut conditional = MctsAgent::new(MctsConfig {
+                budget,
+                exploration: std::f64::consts::SQRT_2,
+                rollout_depth: 9,
+                rollout_policy: ConditionalRollout::new(
+                    FixedCondition(true),
+                    EpsilonGreedy::new(1.0, FailingEvaluator),
+                    UniformRandom,
+                ),
+            });
+            let mut uniform_rng = SplitMix64::new(seed);
+            let mut conditional_rng = SplitMix64::new(seed);
+
+            let uniform_action = uniform
+                .select_action(
+                    DecisionContext::new(&game, &state, PlayerId::FIRST),
+                    &mut uniform_rng,
+                )
+                .unwrap();
+            let conditional_action = conditional
+                .select_action(
+                    DecisionContext::new(&game, &state, PlayerId::FIRST),
+                    &mut conditional_rng,
+                )
+                .unwrap();
+
+            assert_eq!(conditional_action, uniform_action, "seed {seed}");
+            assert_eq!(
+                conditional.decision_stats(),
+                uniform.decision_stats(),
+                "seed {seed}"
+            );
+            assert_eq!(
+                conditional_rng.next_u64(),
                 uniform_rng.next_u64(),
                 "seed {seed}"
             );
