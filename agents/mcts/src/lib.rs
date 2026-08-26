@@ -20,6 +20,15 @@ pub struct MctsConfig<P = RolloutPolicyConfig<NeutralEvaluator>> {
     pub rollout_policy: P,
 }
 
+impl<P> MctsConfig<P> {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.exploration.is_finite() || self.exploration < 0.0 {
+            return Err("MCTS exploration must be finite and non-negative");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchBudget {
     Iterations(NonZeroU32),
@@ -598,6 +607,11 @@ impl<C, P, B> MctsAgent<C, P, B> {
         B: SelectionBias<G>,
         R: RandomSource + ?Sized,
     {
+        self.last_search_stats = None;
+        self.last_root_actions.clear();
+
+        self.config.validate().map_err(AgentError::message)?;
+
         let game = decision.game();
         let root_state = decision.state();
         let root_player = decision.player();
@@ -948,10 +962,7 @@ where
     for _ in 0..max_depth {
         match game.status(state) {
             PositionStatus::Terminal => {
-                return game
-                    .terminal_utility(state, root_player)
-                    .map(f64::from)
-                    .ok_or_else(|| AgentError::message("terminal utility is missing"));
+                return terminal_utility(game, state, root_player);
             }
             PositionStatus::PlayerTurn(active_player) => {
                 let action = policy.select_action(game, state, active_player, root_player, rng)?;
@@ -968,12 +979,20 @@ where
     }
 
     match game.status(state) {
-        PositionStatus::Terminal => game
-            .terminal_utility(state, root_player)
-            .map(f64::from)
-            .ok_or_else(|| AgentError::message("terminal utility is missing")),
+        PositionStatus::Terminal => terminal_utility(game, state, root_player),
         _ => evaluate_state(game, state, root_player, cutoff_evaluator),
     }
+}
+
+fn terminal_utility<G>(game: &G, state: &G::State, root_player: PlayerId) -> Result<f64, AgentError>
+where
+    G: DeterministicGame,
+{
+    let utility = game
+        .terminal_utility(state, root_player)
+        .map(f64::from)
+        .ok_or_else(|| AgentError::message("terminal utility is missing"))?;
+    validate_utility(utility, "terminal")
 }
 
 fn evaluate_state<G, E>(
@@ -986,17 +1005,19 @@ where
     G: DeterministicGame,
     E: StateEvaluator<G>,
 {
-    let utility = match game.status(state) {
-        PositionStatus::Terminal => game
-            .terminal_utility(state, root_player)
-            .map(f64::from)
-            .ok_or_else(|| AgentError::message("terminal utility is missing"))?,
-        _ => evaluator.evaluate(game, state, root_player)?,
-    };
+    if game.status(state) == PositionStatus::Terminal {
+        return terminal_utility(game, state, root_player);
+    }
+
+    let utility = evaluator.evaluate(game, state, root_player)?;
+    validate_utility(utility, "heuristic")
+}
+
+fn validate_utility(utility: f64, source: &str) -> Result<f64, AgentError> {
     if !utility.is_finite() || !(-1.0..=1.0).contains(&utility) {
-        return Err(AgentError::message(
-            "MCTS heuristic utility must be finite and between -1.0 and 1.0",
-        ));
+        return Err(AgentError::message(format!(
+            "MCTS {source} utility must be finite and between -1.0 and 1.0"
+        )));
     }
     Ok(utility)
 }
@@ -1037,6 +1058,52 @@ mod tests {
             Err(AgentError::message("evaluator should not be called"))
         }
     }
+
+    #[derive(Clone, Copy)]
+    struct FixedTerminalUtilityGame(Option<f32>);
+
+    impl Game for FixedTerminalUtilityGame {
+        type State = ();
+        type Action = ();
+        type Observation<'a> = &'a ();
+        type LegalActions<'a> = std::iter::Empty<()>;
+
+        fn player_count(&self) -> u8 {
+            2
+        }
+
+        fn initial_state(&self) -> Self::State {}
+
+        fn status(&self, _state: &Self::State) -> PositionStatus {
+            PositionStatus::Terminal
+        }
+
+        fn legal_actions<'a>(&'a self, _state: &'a Self::State) -> Self::LegalActions<'a> {
+            std::iter::empty()
+        }
+
+        fn apply_action(
+            &self,
+            _state: &mut Self::State,
+            _action: &Self::Action,
+        ) -> Result<(), IllegalAction> {
+            Err(IllegalAction::new("terminal game has no legal actions"))
+        }
+
+        fn observation<'a>(
+            &'a self,
+            state: &'a Self::State,
+            _player: PlayerId,
+        ) -> Self::Observation<'a> {
+            state
+        }
+
+        fn terminal_utility(&self, _state: &Self::State, _player: PlayerId) -> Option<f32> {
+            self.0
+        }
+    }
+
+    impl DeterministicGame for FixedTerminalUtilityGame {}
 
     #[derive(Clone, Copy)]
     struct FixedCondition(bool);
@@ -1387,6 +1454,97 @@ mod tests {
 
             assert!(error.to_string().contains("between -1.0 and 1.0"));
         }
+    }
+
+    #[test]
+    fn rejects_invalid_terminal_utilities() {
+        for invalid in [f32::NAN, f32::INFINITY, -1.1, 1.1] {
+            let game = FixedTerminalUtilityGame(Some(invalid));
+            let error = rollout(
+                &game,
+                &mut game.initial_state(),
+                PlayerId::FIRST,
+                1,
+                &UniformRandom,
+                &NeutralEvaluator,
+                &mut SplitMix64::new(3),
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("MCTS terminal utility"));
+        }
+    }
+
+    #[test]
+    fn rejects_missing_terminal_utilities() {
+        let game = FixedTerminalUtilityGame(None);
+        let error = rollout(
+            &game,
+            &mut game.initial_state(),
+            PlayerId::FIRST,
+            0,
+            &UniformRandom,
+            &NeutralEvaluator,
+            &mut SplitMix64::new(3),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "terminal utility is missing");
+    }
+
+    #[test]
+    fn rejects_invalid_exploration_values() {
+        let game = TicTacToe;
+        for invalid in [f64::NAN, f64::INFINITY, -0.1] {
+            let mut agent = MctsAgent::new(MctsConfig {
+                budget: SearchBudget::default(),
+                exploration: invalid,
+                rollout_depth: 1,
+                rollout_policy: UniformRandom,
+            });
+            let error = agent
+                .select_action(
+                    DecisionContext::new(&game, &game.initial_state(), PlayerId::FIRST),
+                    &mut SplitMix64::new(3),
+                )
+                .unwrap_err();
+
+            assert_eq!(
+                error.to_string(),
+                "MCTS exploration must be finite and non-negative"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_selection_clears_previous_decision_stats() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let mut agent = MctsAgent::new(MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 1,
+            rollout_policy: UniformRandom,
+        });
+        let mut rng = SplitMix64::new(3);
+
+        agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut rng,
+            )
+            .unwrap();
+        assert!(agent.last_search_stats().is_some());
+
+        agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::SECOND),
+                &mut rng,
+            )
+            .unwrap_err();
+
+        assert_eq!(agent.last_search_stats(), None);
+        assert_eq!(agent.decision_stats(), AgentDecisionStats::default());
     }
 
     #[test]

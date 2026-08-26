@@ -829,6 +829,7 @@ fn validate_uninformed_agent(game: GameId, config: &MctsAgentConfig) -> Result<(
 }
 
 fn validate_search_config<P>(config: &MctsConfig<P>) -> Result<(), CatalogError> {
+    config.validate().map_err(CatalogError::InvalidMctsConfig)?;
     if matches!(config.budget, SearchBudget::Time(duration) if duration.is_zero()) {
         return Err(CatalogError::InvalidMctsConfig(
             "MCTS time budget must be greater than zero",
@@ -1792,6 +1793,22 @@ mod tests {
         };
         let error = configured_spirits_of_the_forest_mcts(spirits_h3).unwrap_err();
         assert!(error.to_string().contains("available indices: 0..2"));
+    }
+
+    #[test]
+    fn rejects_invalid_search_exploration() {
+        for invalid in [f64::NAN, f64::INFINITY, -0.1] {
+            let AgentConfig::Mcts(mut config) = mcts(None) else {
+                unreachable!();
+            };
+            config.search.exploration = invalid;
+
+            let error = configured_tic_tac_toe_mcts(config).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "MCTS exploration must be finite and non-negative"
+            );
+        }
     }
 
     #[test]
