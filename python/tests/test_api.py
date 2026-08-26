@@ -46,6 +46,7 @@ from meeple_bots.cli import (
     _load_tournament_config,
     _parse_inline_mcts_profile,
     _serialized_rollout_policy_description,
+    _tournament_pairings,
     build_parser,
     main,
 )
@@ -1785,6 +1786,7 @@ class MatchApiTests(unittest.TestCase):
         summary = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(summary["pairings"], 2)
+        self.assertEqual(summary["pairing_mode"], "round_robin")
         self.assertEqual(summary["matches"], 4)
         self.assertEqual(summary["workers"], 1)
         self.assertEqual(summary["output"], str(trace))
@@ -1793,6 +1795,7 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(records[0]["record_type"], "tournament")
         self.assertEqual(records[0]["schema_version"], 1)
         self.assertEqual(records[0]["study_type"], "tournament")
+        self.assertEqual(records[0]["pairing_mode"], "round_robin")
         self.assertEqual(records[0]["workers"], 1)
         self.assertEqual(len(records), 5)
         self.assertEqual(
@@ -1895,6 +1898,217 @@ class MatchApiTests(unittest.TestCase):
                 (10000, 32),
             ],
         )
+
+    def test_adjacent_pairing_mode_only_pairs_neighbouring_sweep_values(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "adjacent.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "boop"',
+                        'pairing_mode = "adjacent"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "uct"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        "exploration = [0.25, 0.5, 1.0, 1.4]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+            pairs = [
+                (agent_a.name, agent_b.name)
+                for agent_a, agent_b in _tournament_pairings(
+                    config.agents, config.pairing_mode
+                )
+            ]
+
+        self.assertEqual(
+            pairs,
+            [
+                ("uct-c0.25", "uct-c0.5"),
+                ("uct-c0.5", "uct-c1.0"),
+                ("uct-c1.0", "uct-c1.4"),
+            ],
+        )
+
+    def test_adjacent_pairing_mode_keeps_cross_template_round_robin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "cross-template.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "tic-tac-toe"',
+                        'pairing_mode = "adjacent"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "uct"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        "exploration = [0.5, 1.0, 1.5]",
+                        "[[agents]]",
+                        'name = "random"',
+                        'kind = "random"',
+                        "[[agents]]",
+                        'name = "other"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+            pairs = {
+                (agent_a.name, agent_b.name)
+                for agent_a, agent_b in _tournament_pairings(
+                    config.agents, config.pairing_mode
+                )
+            }
+
+        self.assertEqual(len(pairs), 9)
+        for sweep_name in ("uct-c0.5", "uct-c1.0", "uct-c1.5"):
+            self.assertIn((sweep_name, "random"), pairs)
+            self.assertIn((sweep_name, "other"), pairs)
+        self.assertIn(("random", "other"), pairs)
+        self.assertNotIn(("uct-c0.5", "uct-c1.5"), pairs)
+
+    def test_adjacent_pairing_mode_connects_each_grid_dimension(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "adjacent-grid.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "boop"',
+                        'pairing_mode = "adjacent"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "grid"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = [32, 64]",
+                        "exploration = [0.5, 1.0, 1.5]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+            pairs = [
+                (agent_a.name, agent_b.name)
+                for agent_a, agent_b in _tournament_pairings(
+                    config.agents, config.pairing_mode
+                )
+            ]
+
+        expected = {
+            ("grid-d32-c0.5", "grid-d32-c1.0"),
+            ("grid-d32-c1.0", "grid-d32-c1.5"),
+            ("grid-d64-c0.5", "grid-d64-c1.0"),
+            ("grid-d64-c1.0", "grid-d64-c1.5"),
+            ("grid-d32-c0.5", "grid-d64-c0.5"),
+            ("grid-d32-c1.0", "grid-d64-c1.0"),
+            ("grid-d32-c1.5", "grid-d64-c1.5"),
+        }
+        self.assertEqual(set(pairs), expected)
+        self.assertEqual(len(pairs), len(set(pairs)))
+        for agent_a, agent_b in _tournament_pairings(
+            config.agents, config.pairing_mode
+        ):
+            differing_parameters = sum(
+                (
+                    agent_a.agent.rollout_depth != agent_b.agent.rollout_depth,
+                    agent_a.agent.exploration != agent_b.agent.exploration,
+                )
+            )
+            self.assertEqual(differing_parameters, 1)
+
+    def test_round_robin_pairing_mode_preserves_all_pairs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "round-robin.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "boop"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "uct"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 1",
+                        "exploration = [0.5, 1.0, 1.5, 2.0]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+            default_pairs = _tournament_pairings(config.agents)
+            explicit_pairs = _tournament_pairings(config.agents, "round_robin")
+
+        self.assertEqual(config.pairing_mode, "round_robin")
+        self.assertEqual(default_pairs, explicit_pairs)
+        self.assertEqual(len(default_pairs), 6)
+
+    def test_adjacent_pairing_mode_supports_scalar_templates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "scalar.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "tic-tac-toe"',
+                        'pairing_mode = "adjacent"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "first"',
+                        'kind = "random"',
+                        "[[agents]]",
+                        'name = "second"',
+                        'kind = "random"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+            pairs = _tournament_pairings(config.agents, config.pairing_mode)
+
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(
+            (pairs[0][0].name, pairs[0][1].name),
+            ("first", "second"),
+        )
+
+    def test_tournament_rejects_unknown_pairing_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "invalid-pairing.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "tic-tac-toe"',
+                        'pairing_mode = "nearest"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "first"',
+                        'kind = "random"',
+                        "[[agents]]",
+                        'name = "second"',
+                        'kind = "random"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "round_robin or adjacent"):
+                _load_tournament_config(config_path)
 
     def test_tournament_agent_grid_accepts_time_budgets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

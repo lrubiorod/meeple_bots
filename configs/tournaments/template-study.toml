@@ -5,6 +5,9 @@
 game = "spotf"
 output = "../../results/tournaments/template-study.jsonl"
 matches_per_pair = 2
+# `round_robin` is the default. Use `adjacent` to compare neighboring values inside each agent
+# grid while retaining round-robin pairings between separate [[agents]] entries.
+pairing_mode = "round_robin"
 seed = 42
 max_plies = 10000
 workers = "auto"

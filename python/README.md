@@ -40,7 +40,7 @@ Activate the environment with `source .venv/bin/activate` in each new terminal a
 | Play or watch locally | `meeple-bots gui` |
 | Run one visible terminal match | `meeple-bots match` |
 | Compare two configurations repeatedly | `meeple-bots batch` |
-| Run a reproducible round-robin study | `tournament`, `extract`, and `report` |
+| Run a reproducible tournament study | `tournament`, `extract`, and `report` |
 
 The installed command and module entry points are equivalent:
 
@@ -185,7 +185,7 @@ experiments are starting points, not playing-strength guarantees. See the
 | `match` | Run and display one match. | Terminal text or JSON |
 | `batch` | Compare two automated participants. | Summary and optional JSONL trace |
 | `analyze` | Sample game structure and calibrate MCTS. | Evaluation report |
-| `tournament` | Run configured round-robin pairings. | JSONL trace |
+| `tournament` | Run configured round-robin or adjacent pairings. | JSONL trace |
 | `extract` | Convert tournament or batch traces into tables. | Manifest and CSV files |
 | `report` | Build statistics and figures from extracted tables. | HTML, JSON, PNG, and CSV |
 
@@ -364,6 +364,7 @@ examples in one executable study.
 game = "boop"
 output = "../../results/tournaments/boop-study.jsonl"
 matches_per_pair = 20
+pairing_mode = "round_robin"
 seed = 42
 max_plies = 10000
 workers = "auto"
@@ -385,9 +386,16 @@ heuristic_index = 0
 self_play = true
 ```
 
-The tournament schedules every distinct pair of agents and alternates their seats. `self_play =
-true` adds one same-configuration pairing without including those games in competitive standings.
-Different names may intentionally use identical parameters.
+The default `pairing_mode = "round_robin"` schedules every distinct pair of agents and alternates
+their seats. `self_play = true` adds one same-configuration pairing without including those games
+in competitive standings. Different names may intentionally use identical parameters.
+
+For ordered parameter sweeps, `pairing_mode = "adjacent"` reduces only the internal pairings of
+each `[[agents]]` grid. Two variants from the same entry are paired when they differ in exactly one
+array dimension and use consecutive positions in that array. Variants from different entries still
+use round-robin pairings. For example, a grid with three `exploration` values and two
+`rollout_depth` values creates the seven edges of the resulting 3-by-2 grid instead of all fifteen
+internal pairs. Array order defines adjacency; values are not numerically sorted by the loader.
 
 Tournament matches use the same thread pool as `Batch`. Set `workers = "auto"` or a positive TOML
 integer. The CLI can override the file for one run:

@@ -212,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     tournament = commands.add_parser(
         "tournament",
-        help="run a configured round-robin tournament and save full match traces",
+        help="run a configured tournament and save full match traces",
     )
     tournament.add_argument("--config", type=Path, required=True)
     tournament.add_argument(
@@ -470,12 +470,15 @@ class _TournamentAgent:
     name: str
     agent: RandomAgent | MctsAgent
     self_play: bool
+    template_index: int
+    grid_position: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class _TournamentConfig:
     game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest
     output: Path | None
+    pairing_mode: str
     matches_per_pair: int
     seed: int
     max_plies: int
@@ -524,7 +527,7 @@ def _run_tournament(args: argparse.Namespace) -> int:
     output_path = args.output if args.output is not None else config.output
     if output_path is None:
         raise ValueError("tournament output is required in the config or with --output")
-    pairings = _tournament_pairings(config.agents)
+    pairings = _tournament_pairings(config.agents, config.pairing_mode)
     total_matches = len(pairings) * config.matches_per_pair
     worker_count = min(
         resolve_workers(config.workers if args.workers is None else args.workers),
@@ -568,6 +571,7 @@ def _run_tournament(args: argparse.Namespace) -> int:
                 "study_type": "tournament",
                 "game": _game_name(config.game),
                 "output": str(output_path),
+                "pairing_mode": config.pairing_mode,
                 "matches_per_pair": config.matches_per_pair,
                 "seed": config.seed,
                 "max_plies": config.max_plies,
@@ -646,6 +650,7 @@ def _run_tournament(args: argparse.Namespace) -> int:
     summary = {
         "game": _game_name(config.game),
         "agents": len(config.agents),
+        "pairing_mode": config.pairing_mode,
         "pairings": len(pairings),
         "matches": total_matches,
         "workers": worker_count,
@@ -733,6 +738,7 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
     allowed = {
         "game",
         "output",
+        "pairing_mode",
         "matches_per_pair",
         "seed",
         "max_plies",
@@ -757,6 +763,11 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
     output = None if raw_output is None else Path(raw_output)
     if output is not None and not output.is_absolute():
         output = (path.parent / output).resolve()
+    pairing_mode = values.get("pairing_mode", "round_robin")
+    if not isinstance(pairing_mode, str):
+        raise TypeError("tournament pairing_mode must be a string")
+    if pairing_mode not in {"round_robin", "adjacent"}:
+        raise ValueError("tournament pairing_mode must be round_robin or adjacent")
     matches_per_pair = _positive_tournament_integer(
         "matches_per_pair", values.get("matches_per_pair")
     )
@@ -788,6 +799,7 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
     return _TournamentConfig(
         game=game,
         output=output,
+        pairing_mode=pairing_mode,
         matches_per_pair=matches_per_pair,
         seed=seed,
         max_plies=max_plies,
@@ -861,7 +873,11 @@ def _load_tournament_agents(
             )
         return (
             _TournamentAgent(
-                name=name.strip(), agent=RandomAgent(), self_play=self_play
+                name=name.strip(),
+                agent=RandomAgent(),
+                self_play=self_play,
+                template_index=index,
+                grid_position=(),
             ),
         )
 
@@ -912,9 +928,21 @@ def _load_tournament_agents(
             f"the maximum is {_MAX_AGENTS_PER_TOURNAMENT_GRID}"
         )
 
-    combinations = product(*grid_options) if grid_options else [()]
+    grid_positions = (
+        product(*(range(len(options)) for options in grid_options))
+        if grid_options
+        else [()]
+    )
     expanded = []
-    for combination in combinations:
+    for grid_position in grid_positions:
+        combination = tuple(
+            options[position]
+            for options, position in zip(
+                grid_options,
+                grid_position,
+                strict=True,
+            )
+        )
         concrete = dict(values)
         for (path, _suffix), value in zip(grid_fields, combination, strict=True):
             _set_nested_tournament_value(concrete, path, value)
@@ -932,6 +960,8 @@ def _load_tournament_agents(
                 name=f"{name.strip()}{suffix}",
                 agent=agent,
                 self_play=self_play,
+                template_index=index,
+                grid_position=tuple(grid_position),
             )
         )
     return tuple(expanded)
@@ -1014,14 +1044,36 @@ def _mcts_budget_kwargs(
 
 def _tournament_pairings(
     agents: tuple[_TournamentAgent, ...],
+    pairing_mode: str = "round_robin",
 ) -> list[tuple[_TournamentAgent, _TournamentAgent]]:
     pairings = [
         (agent_a, agent_b)
         for index, agent_a in enumerate(agents)
         for agent_b in agents[index + 1 :]
+        if pairing_mode == "round_robin"
+        or agent_a.template_index != agent_b.template_index
+        or _adjacent_grid_variants(agent_a, agent_b)
     ]
     pairings.extend((agent, agent) for agent in agents if agent.self_play)
     return pairings
+
+
+def _adjacent_grid_variants(
+    agent_a: _TournamentAgent,
+    agent_b: _TournamentAgent,
+) -> bool:
+    if len(agent_a.grid_position) != len(agent_b.grid_position):
+        return False
+    differences = [
+        abs(position_a - position_b)
+        for position_a, position_b in zip(
+            agent_a.grid_position,
+            agent_b.grid_position,
+            strict=True,
+        )
+        if position_a != position_b
+    ]
+    return differences == [1]
 
 
 def _update_tournament_standings(
