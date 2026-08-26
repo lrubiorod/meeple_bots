@@ -7,6 +7,12 @@ exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "uniform_random" }
 
+# Optional tree-selection prior. The condition is checked on the state where the action is chosen,
+# while the evaluator scores its child state. Set root_diagnostics=true to trace root visits,
+# utilities, cached heuristic values, and final bias terms.
+# progressive_bias = { weight = 0.25, evaluator = { kind = "game_heuristic", index = 2 }, condition = { kind = "turn_phase", phase = "collect" } }
+# root_diagnostics = true
+
 # Informed-rollout example, independent from cutoff evaluation:
 # rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 0 } }
 

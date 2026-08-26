@@ -29,6 +29,7 @@ from meeple_bots import (
     MatchMoveObservation,
     MctsAgent,
     NeutralEvaluator,
+    ProgressiveBias,
     RandomAgent,
     SpiritTile,
     SpiritsOfTheForest,
@@ -528,6 +529,27 @@ class MatchApiTests(unittest.TestCase):
             "evaluator=game_heuristic(2) : uniform_random)",
         )
 
+    def test_progressive_bias_is_preserved_in_extracted_agent_metadata(self) -> None:
+        agent = MctsAgent(
+            iterations=5,
+            rollout_depth=2,
+            progressive_bias=ProgressiveBias(
+                0.25,
+                GameHeuristic(2),
+                TurnPhaseIs("collect"),
+            ),
+            root_diagnostics=True,
+        )
+
+        row = _agent_row(_batch_agent_dict("progressive", agent))
+
+        self.assertEqual(row["progressive_bias_weight"], 0.25)
+        self.assertEqual(row["progressive_bias_evaluator"], "game_heuristic")
+        self.assertEqual(row["progressive_bias_heuristic"], 2)
+        self.assertEqual(row["progressive_bias_condition"], "turn_phase")
+        self.assertEqual(row["progressive_bias_condition_phase"], "collect")
+        self.assertTrue(row["root_diagnostics"])
+
     def test_conditional_rollout_can_be_benchmarked_by_analyze(self) -> None:
         agent = MctsAgent(
             iterations=1,
@@ -545,6 +567,37 @@ class MatchApiTests(unittest.TestCase):
 
         self.assertEqual(benchmark.agent, agent)
         self.assertGreater(benchmark.milliseconds_per_iteration, 0.0)
+
+    def test_conditional_progressive_bias_records_root_diagnostics(self) -> None:
+        bias = ProgressiveBias(0.25, GameHeuristic(2), TurnPhaseIs("collect"))
+        result = Match(
+            game=SpiritsOfTheForest(),
+            first=MctsAgent(
+                iterations=16,
+                rollout_depth=2,
+                cutoff_evaluator=GameHeuristic(2),
+                rollout_policy=UniformRandom(),
+                progressive_bias=bias,
+                root_diagnostics=True,
+            ),
+            second=RandomAgent(),
+            seed=19,
+        ).run()
+
+        first_search = next(move for move in result.moves if move.player == 0)
+        self.assertTrue(first_search.root_actions)
+        self.assertEqual(
+            sum(root.selected for root in first_search.root_actions),
+            1,
+        )
+        self.assertTrue(
+            all(root.heuristic_value is not None for root in first_search.root_actions)
+        )
+        with self.assertRaisesRegex(ValueError, "only supported by spotf"):
+            Match(
+                game=Boop(),
+                first=MctsAgent(progressive_bias=bias),
+            )
 
     def test_boop_match_accepts_both_heuristics(self) -> None:
         for heuristic in (0, 1):
@@ -722,6 +775,18 @@ class MatchApiTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "cannot combine iterations"):
             _parse_inline_mcts_profile("i=100,t=0.25")
+
+    def test_inline_mcts_profile_accepts_progressive_bias(self) -> None:
+        profile = _parse_inline_mcts_profile(
+            "i=100,d=130,h=2,pb=0.25,pbh=2,pbphase=collect,rd=true"
+        )
+
+        self.assertEqual(
+            profile.agent.progressive_bias,
+            ProgressiveBias(0.25, GameHeuristic(2), TurnPhaseIs("collect")),
+        )
+        self.assertTrue(profile.agent.root_diagnostics)
+        self.assertIn("pb0.25", profile.name)
 
     def test_scripted_humans_receive_positions_and_finish_a_match(self) -> None:
         first_moves = iter([(0, 0), (0, 1), (0, 2)])
@@ -2055,6 +2120,46 @@ class MatchApiTests(unittest.TestCase):
             all(isinstance(policy.fallback, UniformRandom) for policy in policies)
         )
 
+    def test_tournament_grid_expands_progressive_bias_weights(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "progressive-grid.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "spotf"',
+                        "matches_per_pair = 1",
+                        "[[agents]]",
+                        'name = "random"',
+                        'kind = "random"',
+                        "[[agents]]",
+                        'name = "progressive"',
+                        'kind = "mcts"',
+                        "iterations = 4",
+                        "rollout_depth = 2",
+                        'cutoff_evaluator = { kind = "game_heuristic", index = 2 }',
+                        'rollout_policy = { kind = "uniform_random" }',
+                        'progressive_bias = { weight = [0.0, 0.25], evaluator = { '
+                        'kind = "game_heuristic", index = 2 }, condition = { '
+                        'kind = "turn_phase", phase = "collect" } }',
+                        "root_diagnostics = true",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+
+        self.assertEqual(
+            [entry.name for entry in config.agents],
+            ["random", "progressive-pb0.0", "progressive-pb0.25"],
+        )
+        agents = [entry.agent for entry in config.agents[1:]]
+        self.assertEqual(
+            [agent.progressive_bias.weight for agent in agents],
+            [0.0, 0.25],
+        )
+        self.assertTrue(all(agent.root_diagnostics for agent in agents))
+
     def test_tournament_agent_grid_rejects_duplicate_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory, "grid.toml")
@@ -2292,8 +2397,9 @@ class MatchApiTests(unittest.TestCase):
             )
             self.assertIsNone(manifest["source"])
             self.assertEqual(len(manifest["sources"]), 2)
-            self.assertEqual(manifest["analysis_schema_version"], 4)
+            self.assertEqual(manifest["analysis_schema_version"], 5)
             self.assertEqual(manifest["row_counts"]["studies"], 2)
+            self.assertTrue((output_dir / "root_actions.csv").is_file())
 
     def test_cli_extract_rejects_conflicting_agent_names_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2486,11 +2592,12 @@ class MatchApiTests(unittest.TestCase):
             self.assertEqual(summary["game"], "spotf")
             self.assertFalse(report_summary["search_data_available"])
             self.assertEqual(summary["figures"], 12)
-            self.assertEqual(summary["tables"], 14)
+            self.assertEqual(summary["tables"], 15)
             self.assertEqual(len(list((report / "figures").glob("*.png"))), 12)
-            self.assertEqual(len(list((report / "tables").glob("*.csv"))), 14)
+            self.assertEqual(len(list((report / "tables").glob("*.csv"))), 15)
             self.assertTrue((report / "tables" / "search_performance.csv").is_file())
             self.assertTrue((report / "tables" / "strategic_progress.csv").is_file())
+            self.assertTrue((report / "tables" / "root_selection.csv").is_file())
             self.assertIn(
                 "Spirits of the Forest tournament report",
                 (report / "index.html").read_text(),

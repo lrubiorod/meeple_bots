@@ -1,6 +1,6 @@
 # Executable SPOTF tournament template demonstrating the supported agent configurations.
-# It expands to 17 agents, 136 cross-agent pairings, and one selected self-play pairing.
-# With two matches per pairing this produces 274 matches. Increase the budgets only after
+# It expands to 22 agents, 231 cross-agent pairings, and one selected self-play pairing.
+# With two matches per pairing this produces 464 matches. Increase the budgets only after
 # checking the expected runtime with `meeple-bots analyze`.
 game = "spotf"
 output = "../../results/tournaments/template-study.jsonl"
@@ -84,6 +84,19 @@ rollout_depth = 32
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "game_heuristic", index = 2 }
 rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "collect" }, primary = { kind = "epsilon_greedy", epsilon = [0.0, 0.25, 0.5, 0.75], evaluator = { kind = "game_heuristic", index = 2 } }, fallback = { kind = "uniform_random" } }
+
+# Progressive Bias keeps uniform rollouts but adds a cached, decaying H2 prior to UCT selection
+# only for Collect decisions. The weight array expands to five agents with -pb... suffixes.
+[[agents]]
+name = "mcts-collect-progressive-h2"
+kind = "mcts"
+time_budget = 0.05
+rollout_depth = 130
+exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "game_heuristic", index = 2 }
+rollout_policy = { kind = "uniform_random" }
+progressive_bias = { weight = [0.0, 0.1, 0.25, 0.5, 1.0], evaluator = { kind = "game_heuristic", index = 2 }, condition = { kind = "turn_phase", phase = "collect" } }
+root_diagnostics = true
 
 # Cartesian-product example for comparing search width and horizon. These two arrays create four
 # uniform-rollout agents: every combination of 100/500 iterations and depth 16/64.

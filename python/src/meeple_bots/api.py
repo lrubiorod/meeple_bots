@@ -107,19 +107,19 @@ BaseRolloutPolicy: TypeAlias = UniformRandom | Greedy | EpsilonGreedy
 
 @dataclass(frozen=True, slots=True)
 class TurnPhaseIs:
-    """Match a named game turn phase while selecting rollout actions."""
+    """Match a named game turn phase while applying a search policy."""
 
     phase: str
 
     def __post_init__(self) -> None:
         if not isinstance(self.phase, str):
-            raise TypeError("rollout turn phase must be a string")
+            raise TypeError("turn phase must be a string")
         normalized = self.phase.strip().lower().replace("-", "_")
         if normalized == "gemstones":
             normalized = "place_gemstone"
         if normalized not in {"collect", "place_gemstone"}:
             raise ValueError(
-                "rollout turn phase must be collect or place_gemstone"
+                "turn phase must be collect or place_gemstone"
             )
         object.__setattr__(self, "phase", normalized)
 
@@ -145,6 +145,26 @@ RolloutPolicy: TypeAlias = BaseRolloutPolicy | ConditionalRollout
 
 
 @dataclass(frozen=True, slots=True)
+class ProgressiveBias:
+    """Add a decaying heuristic prior to UCT tree selection."""
+
+    weight: float
+    evaluator: StateEvaluator
+    condition: TurnPhaseIs | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.weight, bool) or not isinstance(self.weight, (int, float)):
+            raise TypeError("progressive bias weight must be a number")
+        if not isfinite(self.weight) or self.weight < 0:
+            raise ValueError(
+                "progressive bias weight must be finite and non-negative"
+            )
+        _validate_state_evaluator("progressive bias evaluator", self.evaluator)
+        if self.condition is not None and not isinstance(self.condition, TurnPhaseIs):
+            raise TypeError("progressive bias condition must be TurnPhaseIs or None")
+
+
+@dataclass(frozen=True, slots=True)
 class MctsAgent:
     """Configuration for the Monte Carlo Tree Search agent."""
 
@@ -155,6 +175,8 @@ class MctsAgent:
     cutoff_evaluator: StateEvaluator | None = None
     rollout_policy: RolloutPolicy = field(default_factory=UniformRandom)
     time_budget: float | None = None
+    progressive_bias: ProgressiveBias | None = None
+    root_diagnostics: bool = False
 
     def __post_init__(self) -> None:
         if self.iterations is None and self.time_budget is None:
@@ -203,6 +225,12 @@ class MctsAgent:
                 "rollout_policy must be UniformRandom, Greedy, EpsilonGreedy, "
                 "or ConditionalRollout"
             )
+        if self.progressive_bias is not None and not isinstance(
+            self.progressive_bias, ProgressiveBias
+        ):
+            raise TypeError("progressive_bias must be ProgressiveBias or None")
+        if not isinstance(self.root_diagnostics, bool):
+            raise TypeError("root_diagnostics must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -655,6 +683,18 @@ Agent: TypeAlias = RandomAgent | MctsAgent | HumanAgent
 
 
 @dataclass(frozen=True, slots=True)
+class RootActionDiagnostic:
+    """Cached root-child statistics from one MCTS decision."""
+
+    action_index: int
+    visits: int
+    mean_utility: float
+    heuristic_value: float | None
+    progressive_bias: float | None
+    selected: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Move:
     """One action selected by one player."""
 
@@ -663,6 +703,9 @@ class Move:
     decision_seconds: float = field(default=0.0, compare=False)
     search_iterations: int | None = field(default=None, compare=False)
     search_nodes: int | None = field(default=None, compare=False)
+    root_actions: tuple[RootActionDiagnostic, ...] = field(
+        default=(), compare=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -797,6 +840,17 @@ class Match:
                 decision_seconds=item.get("decision_seconds", 0.0),
                 search_iterations=item.get("search_iterations"),
                 search_nodes=item.get("search_nodes"),
+                root_actions=tuple(
+                    RootActionDiagnostic(
+                        action_index=root["action_index"],
+                        visits=root["visits"],
+                        mean_utility=root["mean_utility"],
+                        heuristic_value=root.get("heuristic_value"),
+                        progressive_bias=root.get("progressive_bias"),
+                        selected=root["selected"],
+                    )
+                    for root in item.get("root_actions", ())
+                ),
             )
             for item in raw["moves"]
         )
@@ -1109,6 +1163,8 @@ def benchmark_mcts_agent(
         fallback_rollout_evaluator,
         fallback_rollout_heuristic,
         fallback_rollout_epsilon,
+        *_native_progressive_bias(agent.progressive_bias),
+        agent.root_diagnostics,
     )
     return MctsAgentBenchmark(
         game=game,
@@ -1261,6 +1317,8 @@ def _native_agent(agent: Agent, game: Game):
             fallback_evaluator,
             fallback_heuristic,
             fallback_epsilon,
+            *_native_progressive_bias(agent.progressive_bias),
+            agent.root_diagnostics,
         )
     return _native.AgentConfig.human(
         _human_selector(agent, game),
@@ -1285,6 +1343,15 @@ def _validate_agent_evaluators(game: Game, agent: Agent) -> None:
         _validate_game_evaluator(game, agent.cutoff_evaluator)
         for rollout_evaluator in _rollout_evaluators(agent.rollout_policy):
             _validate_game_evaluator(game, rollout_evaluator)
+        if agent.progressive_bias is not None:
+            if (
+                agent.progressive_bias.condition is not None
+                and not isinstance(game, SpiritsOfTheForest)
+            ):
+                raise ValueError(
+                    "turn-phase progressive bias conditions are only supported by spotf"
+                )
+            _validate_game_evaluator(game, agent.progressive_bias.evaluator)
 
 
 def _native_evaluator(
@@ -1293,6 +1360,16 @@ def _native_evaluator(
     if isinstance(evaluator, GameHeuristic):
         return "game_heuristic", evaluator.index
     return "neutral", None
+
+
+def _native_progressive_bias(
+    bias: ProgressiveBias | None,
+) -> tuple[float | None, str | None, int | None, str | None]:
+    if bias is None:
+        return None, None, None, None
+    evaluator, heuristic = _native_evaluator(bias.evaluator)
+    phase = None if bias.condition is None else bias.condition.phase
+    return float(bias.weight), evaluator, heuristic, phase
 
 
 def _native_rollout_policy(

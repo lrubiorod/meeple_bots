@@ -10,10 +10,10 @@ use meeple_bots_catalog::{
     AgentConfig, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution, CatalogError,
     CatalogGemstoneSacrifice, CatalogMatchReport, CatalogPieceKind, CatalogPowerSource,
     CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, CatalogTurnPhase,
-    ConfiguredRolloutPolicy, EvaluationConfig, EvaluatorConfig, GameId, MatchConfig,
-    MctsAgentConfig, MctsConfig, RecordedMove, RolloutConditionConfig, RolloutPolicyConfig,
-    SearchBudget, analyze_seeded_trace, analyze_trace, benchmark_mcts_agent, configured_boop_mcts,
-    configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
+    ConfiguredRolloutPolicy, ConfiguredSelectionBias, EvaluationConfig, EvaluatorConfig, GameId,
+    MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, RolloutConditionConfig,
+    RolloutPolicyConfig, SearchBudget, analyze_seeded_trace, analyze_trace, benchmark_mcts_agent,
+    configured_boop_mcts, configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
     configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
     run_boop_match_with_trace, run_connect_four_match_with_observer,
     run_connect_four_match_with_trace, run_match_with_trace,
@@ -77,6 +77,11 @@ impl PyAgentConfig {
         fallback_rollout_evaluator=None,
         fallback_rollout_heuristic=None,
         fallback_rollout_epsilon=None,
+        progressive_bias_weight=None,
+        progressive_bias_evaluator=None,
+        progressive_bias_heuristic=None,
+        progressive_bias_condition_phase=None,
+        root_diagnostics=false,
     ))]
     fn mcts(
         iterations: Option<u32>,
@@ -94,6 +99,11 @@ impl PyAgentConfig {
         fallback_rollout_evaluator: Option<&str>,
         fallback_rollout_heuristic: Option<u32>,
         fallback_rollout_epsilon: Option<f64>,
+        progressive_bias_weight: Option<f64>,
+        progressive_bias_evaluator: Option<&str>,
+        progressive_bias_heuristic: Option<u32>,
+        progressive_bias_condition_phase: Option<&str>,
+        root_diagnostics: bool,
     ) -> PyResult<Self> {
         if !exploration.is_finite() || exploration < 0.0 {
             return Err(PyValueError::new_err(
@@ -125,6 +135,13 @@ impl PyAgentConfig {
                     )?,
                 },
                 cutoff_evaluator: parse_evaluator(cutoff_evaluator, cutoff_heuristic)?,
+                progressive_bias: parse_selection_bias(
+                    progressive_bias_weight,
+                    progressive_bias_evaluator,
+                    progressive_bias_heuristic,
+                    progressive_bias_condition_phase,
+                )?,
+                root_diagnostics,
             })),
         })
     }
@@ -583,6 +600,11 @@ fn py_evaluate_game(
     fallback_rollout_evaluator=None,
     fallback_rollout_heuristic=None,
     fallback_rollout_epsilon=None,
+    progressive_bias_weight=None,
+    progressive_bias_evaluator=None,
+    progressive_bias_heuristic=None,
+    progressive_bias_condition_phase=None,
+    root_diagnostics=false,
 ))]
 fn py_benchmark_mcts_agent(
     py: Python<'_>,
@@ -604,6 +626,11 @@ fn py_benchmark_mcts_agent(
     fallback_rollout_evaluator: Option<&str>,
     fallback_rollout_heuristic: Option<u32>,
     fallback_rollout_epsilon: Option<f64>,
+    progressive_bias_weight: Option<f64>,
+    progressive_bias_evaluator: Option<&str>,
+    progressive_bias_heuristic: Option<u32>,
+    progressive_bias_condition_phase: Option<&str>,
+    root_diagnostics: bool,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     if !exploration.is_finite() || exploration < 0.0 {
@@ -636,6 +663,13 @@ fn py_benchmark_mcts_agent(
                 )?,
             },
             cutoff_evaluator: parse_evaluator(cutoff_evaluator, cutoff_heuristic)?,
+            progressive_bias: parse_selection_bias(
+                progressive_bias_weight,
+                progressive_bias_evaluator,
+                progressive_bias_heuristic,
+                progressive_bias_condition_phase,
+            )?,
+            root_diagnostics,
         },
         median_depth,
         seed,
@@ -711,6 +745,45 @@ fn parse_evaluator(kind: &str, heuristic: Option<u32>) -> PyResult<EvaluatorConf
     }
 }
 
+fn parse_selection_bias(
+    weight: Option<f64>,
+    evaluator: Option<&str>,
+    heuristic: Option<u32>,
+    condition_phase: Option<&str>,
+) -> PyResult<ConfiguredSelectionBias> {
+    if weight.is_none() && evaluator.is_none() && heuristic.is_none() && condition_phase.is_none() {
+        return Ok(ConfiguredSelectionBias::None);
+    }
+    let weight =
+        weight.ok_or_else(|| PyValueError::new_err("progressive bias requires a weight"))?;
+    if !weight.is_finite() || weight < 0.0 {
+        return Err(PyValueError::new_err(
+            "progressive bias weight must be finite and non-negative",
+        ));
+    }
+    let evaluator =
+        evaluator.ok_or_else(|| PyValueError::new_err("progressive bias requires an evaluator"))?;
+    let condition = condition_phase
+        .map(parse_turn_phase)
+        .transpose()?
+        .map(RolloutConditionConfig::TurnPhase);
+    Ok(ConfiguredSelectionBias::Progressive {
+        weight,
+        evaluator: parse_evaluator(evaluator, heuristic)?,
+        condition,
+    })
+}
+
+fn parse_turn_phase(phase: &str) -> PyResult<CatalogTurnPhase> {
+    match phase {
+        "collect" => Ok(CatalogTurnPhase::Collect),
+        "place_gemstone" | "gemstones" => Ok(CatalogTurnPhase::PlaceGemstone),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown turn phase {phase}; expected collect or place_gemstone"
+        ))),
+    }
+}
+
 fn parse_configured_rollout_policy(
     policy: &str,
     evaluator: Option<&str>,
@@ -735,15 +808,7 @@ fn parse_configured_rollout_policy(
         }
         return Ok(ConfiguredRolloutPolicy::Standard(primary));
     };
-    let phase = match phase {
-        "collect" => CatalogTurnPhase::Collect,
-        "place_gemstone" | "gemstones" => CatalogTurnPhase::PlaceGemstone,
-        _ => {
-            return Err(PyValueError::new_err(format!(
-                "unknown rollout turn phase {phase}; expected collect or place_gemstone"
-            )));
-        }
-    };
+    let phase = parse_turn_phase(phase)?;
     let fallback_policy = fallback_policy.ok_or_else(|| {
         PyValueError::new_err("conditional rollout requires a fallback rollout policy")
     })?;
@@ -1219,6 +1284,18 @@ fn py_run_match(
         movement.set_item("decision_seconds", recorded.decision_seconds)?;
         movement.set_item("search_iterations", recorded.search_iterations)?;
         movement.set_item("search_nodes", recorded.search_nodes)?;
+        let root_actions = PyList::empty(py);
+        for root_action in &recorded.root_actions {
+            let item = PyDict::new(py);
+            item.set_item("action_index", root_action.action_index)?;
+            item.set_item("visits", root_action.visits)?;
+            item.set_item("mean_utility", root_action.mean_utility)?;
+            item.set_item("heuristic_value", root_action.heuristic_value)?;
+            item.set_item("progressive_bias", root_action.progressive_bias)?;
+            item.set_item("selected", root_action.selected)?;
+            root_actions.append(item)?;
+        }
+        movement.set_item("root_actions", root_actions)?;
         moves.append(movement)?;
     }
     result.set_item("moves", moves)?;
@@ -1304,6 +1381,7 @@ fn py_analyze_trace(
                     decision_seconds: 0.0,
                     search_iterations: None,
                     search_nodes: None,
+                    root_actions: Vec::new(),
                 })
             })
             .collect::<PyResult<Vec<_>>>()?,
@@ -1317,6 +1395,7 @@ fn py_analyze_trace(
                     decision_seconds: 0.0,
                     search_iterations: None,
                     search_nodes: None,
+                    root_actions: Vec::new(),
                 })
             })
             .collect::<PyResult<Vec<_>>>()?,

@@ -426,11 +426,24 @@ rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phas
 Conditional rollout configuration is preserved in JSONL and `agents.csv`. Turn-phase conditions
 are currently supported by SPOTF; other games reject them explicitly.
 
+Progressive Bias can guide UCT while preserving uniform rollouts. This example evaluates each new
+child once with H2 during Collect, caches that value, and lets its influence decay with visits:
+
+```toml
+progressive_bias = { weight = 0.25, evaluator = { kind = "game_heuristic", index = 2 }, condition = { kind = "turn_phase", phase = "collect" } }
+root_diagnostics = true
+```
+
+`root_diagnostics` is opt-in because it increases trace size. When enabled, every JSONL move stores
+the expanded root actions' indices, visits, mean utility, cached heuristic value, final Progressive
+Bias term, and selected flag. `extract` normalizes these records into `root_actions.csv`.
+
 An MCTS entry must define exactly one of `iterations` or `time_budget`, plus `rollout_depth`.
 Either budget can be an array; `rollout_depth` and `exploration` can also use arrays. Structured
 configuration also accepts arrays in `cutoff_evaluator.index`, `rollout_policy.evaluator.index`,
 `rollout_policy.epsilon`, and the corresponding `rollout_policy.primary` fields of a conditional
-policy. The loader creates their Cartesian product. For example:
+policy. `progressive_bias.weight` also accepts an array. The loader creates their Cartesian product.
+For example:
 
 ```toml
 [[agents]]
@@ -456,7 +469,7 @@ The flat compatibility fields `heuristic_index`, `rollout_heuristic_index`, and
 Generated names append only the fields written as arrays. The suffixes are `i` for iterations, `t`
 for time budget, `d`
 for rollout depth, `c` for exploration, `h` for cutoff heuristic index, `rh` for rollout heuristic
-index, and `e` for rollout epsilon. The
+index, `e` for rollout epsilon, and `pb` for Progressive Bias weight. The
 example therefore creates names from `mcts-h0-i100-d8` through `mcts-h0-i10000-d32`. Scalar
 entries retain their original names, so existing tournament files remain compatible.
 

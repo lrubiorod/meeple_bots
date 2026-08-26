@@ -23,6 +23,7 @@ from .api import (
     Move,
     MoveSpiritGemstone,
     PlaceSpiritGemstone,
+    RootActionDiagnostic,
     SkipSpiritGemstone,
     SpiritGemstoneSacrifice,
     SpiritsOfTheForest,
@@ -53,6 +54,7 @@ _SPOTF_OUTPUT_FILES = {
     "tile_takes": "tile_takes.csv",
     "gemstone_actions": "gemstone_actions.csv",
     "categories": "categories.csv",
+    "root_actions": "root_actions.csv",
 }
 
 _SPOTF_TILE_COUNT = 48
@@ -78,6 +80,12 @@ _AGENT_FIELDS = (
     "rollout_fallback_evaluator",
     "rollout_fallback_heuristic",
     "rollout_fallback_epsilon",
+    "progressive_bias_weight",
+    "progressive_bias_evaluator",
+    "progressive_bias_heuristic",
+    "progressive_bias_condition",
+    "progressive_bias_condition_phase",
+    "root_diagnostics",
     "self_play",
 )
 
@@ -310,6 +318,21 @@ _SPOTF_ACTION_STATE_FIELDS = tuple(
 )
 
 _SPOTF_ACTION_FIELDS = _SPOTF_ACTION_BASE_FIELDS + _SPOTF_ACTION_STATE_FIELDS
+
+_ROOT_ACTION_FIELDS = (
+    "match_number",
+    "ply",
+    "player",
+    "agent",
+    "phase",
+    "action_index",
+    "visits",
+    "visit_share",
+    "mean_utility",
+    "heuristic_value",
+    "progressive_bias",
+    "selected",
+)
 
 _PLAYER_TURN_FIELDS = (
     "match_number",
@@ -605,6 +628,11 @@ def _agent_signature(row: dict[str, object]) -> dict[str, object]:
             "rollout_fallback_evaluator",
             "rollout_fallback_heuristic",
             "rollout_fallback_epsilon",
+            "progressive_bias_weight",
+            "progressive_bias_evaluator",
+            "progressive_bias_heuristic",
+            "progressive_bias_condition",
+            "progressive_bias_condition_phase",
         )
     }
 
@@ -666,6 +694,7 @@ def extract_tournament(
             "tile_takes": _TILE_TAKE_FIELDS,
             "gemstone_actions": _GEMSTONE_ACTION_FIELDS,
             "categories": _CATEGORY_FIELDS,
+            "root_actions": _ROOT_ACTION_FIELDS,
         }
         game_metadata = {
             "turn_semantics": {
@@ -809,7 +838,7 @@ def extract_tournament(
             "output_dir": str(output_dir),
             "game": game_name,
             "tournament_schema_version": 1,
-            "analysis_schema_version": 4,
+            "analysis_schema_version": 5,
             "declared_matches": declared_matches,
             "processed_matches": processed_matches,
             "complete": complete,
@@ -1080,6 +1109,31 @@ def _extract_spotf_match(
             move,
             turn,
         )
+        total_root_visits = sum(root.visits for root in move.root_actions)
+        for root in move.root_actions:
+            writers["root_actions"].writerow(
+                {
+                    "match_number": context.match_number,
+                    "ply": turn["ply"],
+                    "player": move.player,
+                    "agent": context.players[move.player],
+                    "phase": turn["phase_before"],
+                    "action_index": root.action_index,
+                    "visits": root.visits,
+                    "visit_share": (
+                        root.visits / total_root_visits if total_root_visits else 0.0
+                    ),
+                    "mean_utility": root.mean_utility,
+                    "heuristic_value": (
+                        "" if root.heuristic_value is None else root.heuristic_value
+                    ),
+                    "progressive_bias": (
+                        "" if root.progressive_bias is None else root.progressive_bias
+                    ),
+                    "selected": root.selected,
+                }
+            )
+            row_counts["root_actions"] += 1
         physical_turn.append((move, turn))
         if turn["turn_completed_after"]:
             _write_spotf_player_turn(context, writers, row_counts, physical_turn)
@@ -1568,6 +1622,9 @@ def _trace_move(raw: object, match_number: int, expected_ply: int) -> Move:
         decision_seconds=raw.get("decision_seconds", ""),
         search_iterations=raw.get("search_iterations", ""),
         search_nodes=raw.get("search_nodes", ""),
+        root_actions=_trace_root_actions(
+            raw.get("root_actions"), f"match {match_number} ply {ply}"
+        ),
         action=BoopAction(
             piece=BoopPieceKind(_string_field(action, "piece", "boop action")),
             row=_integer_field(action, "row", "boop action"),
@@ -1646,6 +1703,9 @@ def _trace_spotf_move(raw: object, match_number: int, expected_ply: int) -> Move
         decision_seconds=raw.get("decision_seconds", ""),
         search_iterations=raw.get("search_iterations", ""),
         search_nodes=raw.get("search_nodes", ""),
+        root_actions=_trace_root_actions(
+            raw.get("root_actions"), f"match {match_number} ply {ply}"
+        ),
     )
 
 
@@ -1656,6 +1716,36 @@ def _trace_position(raw: object) -> BoopPosition:
         _integer_field(raw, "row", "graduation position"),
         _integer_field(raw, "column", "graduation position"),
     )
+
+
+def _trace_root_actions(raw: object, context: str) -> tuple[RootActionDiagnostic, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise TypeError(f"{context} root_actions must be a list")
+    diagnostics = []
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise TypeError(f"{context} root action {index} must be an object")
+        diagnostics.append(
+            RootActionDiagnostic(
+                action_index=_integer_field(item, "action_index", context),
+                visits=_integer_field(item, "visits", context),
+                mean_utility=float(item["mean_utility"]),
+                heuristic_value=(
+                    None
+                    if item.get("heuristic_value") is None
+                    else float(item["heuristic_value"])
+                ),
+                progressive_bias=(
+                    None
+                    if item.get("progressive_bias") is None
+                    else float(item["progressive_bias"])
+                ),
+                selected=bool(item.get("selected", False)),
+            )
+        )
+    return tuple(diagnostics)
 
 
 def _agent_row(raw: object) -> dict[str, object]:
@@ -1708,6 +1798,12 @@ def _agent_row(raw: object) -> dict[str, object]:
         context="tournament fallback rollout evaluator",
         allow_missing=True,
     )
+    bias_kind, bias_heuristic = _serialized_evaluator(
+        raw.get("progressive_bias_evaluator"),
+        fallback_heuristic=raw.get("progressive_bias_heuristic"),
+        context="tournament progressive bias evaluator",
+        allow_missing=True,
+    )
     return {
         "agent_name": _string_field(raw, "name", "tournament agent"),
         "kind": kind,
@@ -1735,6 +1831,18 @@ def _agent_row(raw: object) -> dict[str, object]:
             if raw.get("rollout_fallback_epsilon") is None
             else raw["rollout_fallback_epsilon"]
         ),
+        "progressive_bias_weight": (
+            ""
+            if raw.get("progressive_bias_weight") is None
+            else raw["progressive_bias_weight"]
+        ),
+        "progressive_bias_evaluator": bias_kind,
+        "progressive_bias_heuristic": bias_heuristic,
+        "progressive_bias_condition": raw.get("progressive_bias_condition") or "",
+        "progressive_bias_condition_phase": (
+            raw.get("progressive_bias_condition_phase") or ""
+        ),
+        "root_diagnostics": bool(raw.get("root_diagnostics", False)),
         "self_play": self_play,
     }
 

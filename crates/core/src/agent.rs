@@ -1,9 +1,20 @@
 use crate::{AgentError, Game, PerfectInformationGame, PlayerId, RandomSource};
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct AgentDecisionStats {
     pub search_iterations: Option<u64>,
     pub search_nodes: Option<u64>,
+    pub root_actions: Vec<RootActionStats>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RootActionStats {
+    pub action_index: u32,
+    pub visits: u32,
+    pub mean_utility: f64,
+    pub heuristic_value: Option<f64>,
+    pub progressive_bias: Option<f64>,
+    pub selected: bool,
 }
 
 /// Read-only decision boundary handed to an agent by the simulation.

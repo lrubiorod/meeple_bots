@@ -9,6 +9,7 @@ use meeple_bots_boop::{
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{
     Agent, AgentError, DeterministicGame, Game, HeuristicGame, PlayerId, RandomSource,
+    RootActionStats,
 };
 pub use meeple_bots_evaluation::{
     EvaluationConfig, EvaluationError, GameEvaluationReport, IterationBudgetEstimate,
@@ -18,7 +19,8 @@ use meeple_bots_evaluation::{
     benchmark_mcts_agent as benchmark_typed_mcts_agent, evaluate_game as evaluate_typed_game,
 };
 use meeple_bots_mcts_agent::{
-    ConditionalRollout, GameHeuristic, MctsAgent, RolloutCondition, RolloutPolicy, StateEvaluator,
+    ConditionalRollout, GameHeuristic, MctsAgent, PolicyCondition, RolloutPolicy, SelectionBias,
+    StateEvaluator,
 };
 pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, SearchBudget, UniformRandom};
 use meeple_bots_random_agent::RandomAgent;
@@ -52,6 +54,19 @@ pub enum AgentConfig {
 pub struct MctsAgentConfig {
     pub search: MctsConfig<ConfiguredRolloutPolicy>,
     pub cutoff_evaluator: EvaluatorConfig,
+    pub progressive_bias: ConfiguredSelectionBias,
+    pub root_diagnostics: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ConfiguredSelectionBias {
+    #[default]
+    None,
+    Progressive {
+        weight: f64,
+        evaluator: EvaluatorConfig,
+        condition: Option<RolloutConditionConfig>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -222,6 +237,7 @@ pub struct RecordedMove {
     pub decision_seconds: f64,
     pub search_iterations: Option<u64>,
     pub search_nodes: Option<u64>,
+    pub root_actions: Vec<RootActionStats>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -507,13 +523,15 @@ fn catalog_boop_action(action: &CatalogAction) -> Result<BoopAction, &'static st
     Ok(BoopAction::new(piece, position, resolution))
 }
 
-pub type BoopMctsAgent = MctsAgent<EvaluatorConfig, RolloutPolicyConfig<EvaluatorConfig>>;
-pub type SpiritsOfTheForestMctsAgent = MctsAgent<EvaluatorConfig, ConfiguredRolloutPolicy>;
+pub type BoopMctsAgent =
+    MctsAgent<EvaluatorConfig, RolloutPolicyConfig<EvaluatorConfig>, ConfiguredSelectionBias>;
+pub type SpiritsOfTheForestMctsAgent =
+    MctsAgent<EvaluatorConfig, ConfiguredRolloutPolicy, ConfiguredSelectionBias>;
 
 #[derive(Clone, Copy, Debug)]
 struct SpiritsTurnPhaseCondition(CatalogTurnPhase);
 
-impl RolloutCondition<SpiritsOfTheForest> for SpiritsTurnPhaseCondition {
+impl PolicyCondition<SpiritsOfTheForest> for SpiritsTurnPhaseCondition {
     fn matches(
         &self,
         _game: &SpiritsOfTheForest,
@@ -526,6 +544,83 @@ impl RolloutCondition<SpiritsOfTheForest> for SpiritsTurnPhaseCondition {
             (CatalogTurnPhase::Collect, TurnPhase::Collect)
                 | (CatalogTurnPhase::PlaceGemstone, TurnPhase::PlaceGemstone)
         )
+    }
+}
+
+impl SelectionBias<SpiritsOfTheForest> for ConfiguredSelectionBias {
+    fn weight(&self) -> f64 {
+        match self {
+            Self::None => 0.0,
+            Self::Progressive { weight, .. } => *weight,
+        }
+    }
+
+    fn applies(
+        &self,
+        game: &SpiritsOfTheForest,
+        state: &<SpiritsOfTheForest as Game>::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+    ) -> bool {
+        match self {
+            Self::None => false,
+            Self::Progressive {
+                condition: None, ..
+            } => true,
+            Self::Progressive {
+                condition: Some(RolloutConditionConfig::TurnPhase(phase)),
+                ..
+            } => SpiritsTurnPhaseCondition(*phase).matches(game, state, active_player, root_player),
+        }
+    }
+
+    fn evaluate_child(
+        &self,
+        game: &SpiritsOfTheForest,
+        state: &<SpiritsOfTheForest as Game>::State,
+        root_player: PlayerId,
+    ) -> Result<f64, AgentError> {
+        match self {
+            Self::None => Ok(0.0),
+            Self::Progressive { evaluator, .. } => evaluator.evaluate(game, state, root_player),
+        }
+    }
+}
+
+impl SelectionBias<Boop> for ConfiguredSelectionBias {
+    fn weight(&self) -> f64 {
+        match self {
+            Self::None => 0.0,
+            Self::Progressive { weight, .. } => *weight,
+        }
+    }
+
+    fn applies(
+        &self,
+        _game: &Boop,
+        _state: &<Boop as Game>::State,
+        _active_player: PlayerId,
+        _root_player: PlayerId,
+    ) -> bool {
+        matches!(
+            self,
+            Self::Progressive {
+                condition: None,
+                ..
+            }
+        )
+    }
+
+    fn evaluate_child(
+        &self,
+        game: &Boop,
+        state: &<Boop as Game>::State,
+        root_player: PlayerId,
+    ) -> Result<f64, AgentError> {
+        match self {
+            Self::None => Ok(0.0),
+            Self::Progressive { evaluator, .. } => evaluator.evaluate(game, state, root_player),
+        }
     }
 }
 
@@ -573,10 +668,12 @@ where
 
 pub fn configured_boop_mcts(config: MctsAgentConfig) -> Result<BoopMctsAgent, CatalogError> {
     validate_agent_evaluators(GameId::Boop, &Boop, &config)?;
-    Ok(MctsAgent::with_cutoff_evaluator(
+    Ok(MctsAgent::with_progressive_bias(
         standard_search_config(config.search)?,
         config.cutoff_evaluator,
-    ))
+        config.progressive_bias,
+    )
+    .with_root_diagnostics(config.root_diagnostics))
 }
 
 pub fn configured_spirits_of_the_forest_mcts(
@@ -584,10 +681,12 @@ pub fn configured_spirits_of_the_forest_mcts(
 ) -> Result<SpiritsOfTheForestMctsAgent, CatalogError> {
     let game = spirits_of_the_forest_game(0);
     validate_agent_evaluators(GameId::SpiritsOfTheForest, &game, &config)?;
-    Ok(MctsAgent::with_cutoff_evaluator(
+    Ok(MctsAgent::with_progressive_bias(
         config.search,
         config.cutoff_evaluator,
-    ))
+        config.progressive_bias,
+    )
+    .with_root_diagnostics(config.root_diagnostics))
 }
 
 pub fn configured_connect_four_mcts(
@@ -611,6 +710,7 @@ fn validate_agent_evaluators<G: HeuristicGame>(
 ) -> Result<(), CatalogError> {
     validate_search_config(&config.search)?;
     validate_evaluator(game_id, game, config.cutoff_evaluator)?;
+    validate_selection_bias(game_id, game, config.progressive_bias)?;
     match config.search.rollout_policy {
         ConfiguredRolloutPolicy::Standard(policy) => {
             validate_base_rollout_policy(game_id, game, policy)?;
@@ -626,6 +726,43 @@ fn validate_agent_evaluators<G: HeuristicGame>(
         }
     }
     Ok(())
+}
+
+fn validate_selection_bias<G: HeuristicGame>(
+    game_id: GameId,
+    game: &G,
+    bias: ConfiguredSelectionBias,
+) -> Result<(), CatalogError> {
+    let ConfiguredSelectionBias::Progressive {
+        weight,
+        evaluator,
+        condition,
+    } = bias
+    else {
+        return Ok(());
+    };
+    if !weight.is_finite() || weight < 0.0 {
+        return Err(CatalogError::InvalidMctsConfig(
+            "MCTS progressive bias weight must be finite and non-negative",
+        ));
+    }
+    validate_evaluator(game_id, game, evaluator)?;
+    if let Some(condition) = condition {
+        validate_selection_condition(game_id, condition)?;
+    }
+    Ok(())
+}
+
+fn validate_selection_condition(
+    game: GameId,
+    condition: RolloutConditionConfig,
+) -> Result<(), CatalogError> {
+    match (game, condition) {
+        (GameId::SpiritsOfTheForest, RolloutConditionConfig::TurnPhase(_)) => Ok(()),
+        (_, RolloutConditionConfig::TurnPhase(_)) => Err(CatalogError::InvalidMctsConfig(
+            "turn-phase progressive bias conditions are only supported by spotf",
+        )),
+    }
 }
 
 fn validate_base_rollout_policy<G: HeuristicGame>(
@@ -681,6 +818,11 @@ fn validate_uninformed_agent(game: GameId, config: &MctsAgentConfig) -> Result<(
     ) {
         return Err(CatalogError::InvalidMctsConfig(
             "informed rollout requires a game with MCTS evaluators",
+        ));
+    }
+    if !matches!(config.progressive_bias, ConfiguredSelectionBias::None) {
+        return Err(CatalogError::InvalidMctsConfig(
+            "progressive bias requires a game with MCTS evaluators",
         ));
     }
     Ok(())
@@ -1154,6 +1296,7 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
             decision_seconds: traced_action.decision_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
+            root_actions: traced_action.decision_stats.root_actions,
         })
         .collect();
 
@@ -1201,6 +1344,7 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
             decision_seconds: traced_action.decision_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
+            root_actions: traced_action.decision_stats.root_actions,
         })
         .collect();
 
@@ -1261,6 +1405,7 @@ fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
             decision_seconds: traced_action.decision_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
+            root_actions: traced_action.decision_stats.root_actions,
         })
         .collect();
     let pools = state.pools().map(|pool| CatalogPool {
@@ -1314,6 +1459,7 @@ fn spirits_of_the_forest_report(
             decision_seconds: traced_action.decision_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
+            root_actions: traced_action.decision_stats.root_actions,
         })
         .collect();
     let spirit_forest = (0..meeple_bots_spirits_of_the_forest::TILE_COUNT)
@@ -1478,16 +1624,16 @@ fn run_boop_batch(
         }
         (AgentConfig::Random, AgentConfig::Mcts(second)) => {
             let second = configured_boop_mcts(second)?;
-            play_batch(&Boop, config, || RandomAgent, || second)
+            play_batch(&Boop, config, || RandomAgent, || second.clone())
         }
         (AgentConfig::Mcts(first), AgentConfig::Random) => {
             let first = configured_boop_mcts(first)?;
-            play_batch(&Boop, config, || first, || RandomAgent)
+            play_batch(&Boop, config, || first.clone(), || RandomAgent)
         }
         (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
             let first = configured_boop_mcts(first)?;
             let second = configured_boop_mcts(second)?;
-            play_batch(&Boop, config, || first, || second)
+            play_batch(&Boop, config, || first.clone(), || second.clone())
         }
     }?;
     Ok(results)
@@ -1504,16 +1650,16 @@ fn run_connect_four_batch(
         }
         (AgentConfig::Random, AgentConfig::Mcts(second)) => {
             let second = configured_connect_four_mcts(second)?;
-            play_batch(&ConnectFour, config, || RandomAgent, || second)
+            play_batch(&ConnectFour, config, || RandomAgent, || second.clone())
         }
         (AgentConfig::Mcts(first), AgentConfig::Random) => {
             let first = configured_connect_four_mcts(first)?;
-            play_batch(&ConnectFour, config, || first, || RandomAgent)
+            play_batch(&ConnectFour, config, || first.clone(), || RandomAgent)
         }
         (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
             let first = configured_connect_four_mcts(first)?;
             let second = configured_connect_four_mcts(second)?;
-            play_batch(&ConnectFour, config, || first, || second)
+            play_batch(&ConnectFour, config, || first.clone(), || second.clone())
         }
     }?;
     Ok(results)
@@ -1530,16 +1676,16 @@ fn run_tic_tac_toe_batch(
         }
         (AgentConfig::Random, AgentConfig::Mcts(second)) => {
             let second = configured_tic_tac_toe_mcts(second)?;
-            play_batch(&TicTacToe, config, || RandomAgent, || second)
+            play_batch(&TicTacToe, config, || RandomAgent, || second.clone())
         }
         (AgentConfig::Mcts(first), AgentConfig::Random) => {
             let first = configured_tic_tac_toe_mcts(first)?;
-            play_batch(&TicTacToe, config, || first, || RandomAgent)
+            play_batch(&TicTacToe, config, || first.clone(), || RandomAgent)
         }
         (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
             let first = configured_tic_tac_toe_mcts(first)?;
             let second = configured_tic_tac_toe_mcts(second)?;
-            play_batch(&TicTacToe, config, || first, || second)
+            play_batch(&TicTacToe, config, || first.clone(), || second.clone())
         }
     }?;
     Ok(results)
@@ -1562,6 +1708,8 @@ mod tests {
             cutoff_evaluator: heuristic.map_or(EvaluatorConfig::Neutral, |index| {
                 EvaluatorConfig::GameHeuristic { index }
             }),
+            progressive_bias: ConfiguredSelectionBias::None,
+            root_diagnostics: false,
         })
     }
 

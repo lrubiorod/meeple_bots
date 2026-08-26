@@ -81,6 +81,7 @@ Obtain more useful information from each iteration without machine learning.
 - Add heuristic or rule-based rollout policies.
 - Support epsilon mixtures: usually choose a heuristic action, but sometimes choose randomly.
 - Add progressive bias so game knowledge influences early selection and fades as visits grow.
+  (Implemented with optional conditional evaluators and cached child values.)
 - Compare full rollouts with shorter heuristic-evaluated rollouts.
 - Investigate implicit minimax backups for tactical games.
 - Tune exploration independently for each game and search policy.

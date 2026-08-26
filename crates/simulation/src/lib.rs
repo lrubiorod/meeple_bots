@@ -115,12 +115,12 @@ pub struct NoopObserver;
 
 impl<G: Game> MatchObserver<G> for NoopObserver {}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ActionTrace<A> {
     pub actions: Vec<TracedAction<A>>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TracedAction<A> {
     pub player: PlayerId,
     pub action: A,
@@ -197,8 +197,14 @@ where
         decision_time: Duration,
         decision_stats: AgentDecisionStats,
     ) {
-        self.trace
-            .on_action(game, state, player, action, decision_time, decision_stats);
+        self.trace.on_action(
+            game,
+            state,
+            player,
+            action,
+            decision_time,
+            decision_stats.clone(),
+        );
         self.observer
             .on_action(game, state, player, action, decision_time, decision_stats);
     }

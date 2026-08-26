@@ -100,6 +100,21 @@ def _load_tables(input_dir: Path, manifest: dict[str, object]) -> dict[str, pd.D
                 f"extraction table {name} has {len(table)} rows; expected {expected_rows}"
             )
         tables[name] = table
+    root_filename = manifest_tables.get("root_actions")
+    if isinstance(root_filename, str):
+        root_path = input_dir / root_filename
+        root_actions = pd.read_csv(root_path)
+        expected_root_rows = row_counts.get("root_actions")
+        if not isinstance(expected_root_rows, int):
+            raise TypeError("extraction row count for root_actions must be an integer")
+        if len(root_actions) != expected_root_rows:
+            raise ValueError(
+                "extraction table root_actions has "
+                f"{len(root_actions)} rows; expected {expected_root_rows}"
+            )
+        tables["root_actions"] = root_actions
+    else:
+        tables["root_actions"] = pd.DataFrame()
     if tables["matches"].empty:
         raise ValueError("cannot generate a report without completed matches")
     return tables
@@ -118,6 +133,7 @@ def _derive_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         "turn_structure": _turn_structure(tables["player_turns"], tables["actions"], agents),
         "search_performance": _search_performance(tables["actions"], tables["agents"]),
         "search_by_phase": _search_by_phase(tables["actions"]),
+        "root_selection": _root_selection(tables["root_actions"]),
         "strategic_progress": _strategic_progress(tables["player_turns"]),
         "spirit_performance": _category_performance(
             tables["categories"], "spirit", _SPIRIT_ORDER
@@ -128,7 +144,46 @@ def _derive_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         "gemstone_strategy": _gemstone_strategy(tables["gemstone_actions"], agents),
         "sacrifice_strategy": _sacrifice_strategy(tables["tile_takes"], agents),
         "sacrifice_timing": _sacrifice_timing(tables["tile_takes"], agents),
-    }
+}
+
+
+def _root_selection(root_actions: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "agent",
+        "phase",
+        "decisions",
+        "mean_root_actions",
+        "mean_selected_visit_share",
+        "mean_selected_utility",
+        "mean_selected_heuristic",
+        "mean_selected_progressive_bias",
+    ]
+    if root_actions.empty:
+        return pd.DataFrame(columns=columns)
+    roots = root_actions.copy()
+    roots["selected"] = _boolean(roots["selected"])
+    roots["decision"] = (
+        roots["match_number"].astype(str) + ":" + roots["ply"].astype(str)
+    )
+    rows = []
+    for (agent, phase), group in roots.groupby(["agent", "phase"], sort=True):
+        selected = group.loc[group["selected"]]
+        action_counts = group.groupby("decision").size()
+        rows.append(
+            {
+                "agent": agent,
+                "phase": phase,
+                "decisions": group["decision"].nunique(),
+                "mean_root_actions": action_counts.mean(),
+                "mean_selected_visit_share": selected["visit_share"].mean(),
+                "mean_selected_utility": selected["mean_utility"].mean(),
+                "mean_selected_heuristic": selected["heuristic_value"].mean(),
+                "mean_selected_progressive_bias": selected[
+                    "progressive_bias"
+                ].mean(),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _boolean(values: pd.Series) -> pd.Series:

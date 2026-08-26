@@ -8,7 +8,8 @@ use std::{
 
 use meeple_bots_core::{
     Agent, AgentDecisionStats, AgentError, DecisionContext, DeterministicGame, HeuristicGame,
-    PerfectInformationGame, PlayerId, PositionStatus, RandomSource, TwoPlayerZeroSumGame,
+    PerfectInformationGame, PlayerId, PositionStatus, RandomSource, RootActionStats,
+    TwoPlayerZeroSumGame,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -134,7 +135,7 @@ where
     ) -> Result<G::Action, AgentError>;
 }
 
-pub trait RolloutCondition<G>
+pub trait PolicyCondition<G>
 where
     G: DeterministicGame,
 {
@@ -145,6 +146,121 @@ where
         active_player: PlayerId,
         root_player: PlayerId,
     ) -> bool;
+}
+
+pub use PolicyCondition as RolloutCondition;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Always;
+
+impl<G: DeterministicGame> PolicyCondition<G> for Always {
+    fn matches(
+        &self,
+        _game: &G,
+        _state: &G::State,
+        _active_player: PlayerId,
+        _root_player: PlayerId,
+    ) -> bool {
+        true
+    }
+}
+
+pub trait SelectionBias<G>
+where
+    G: DeterministicGame,
+{
+    fn weight(&self) -> f64;
+
+    fn applies(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+    ) -> bool;
+
+    fn evaluate_child(
+        &self,
+        game: &G,
+        state: &G::State,
+        root_player: PlayerId,
+    ) -> Result<f64, AgentError>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoSelectionBias;
+
+impl<G: DeterministicGame> SelectionBias<G> for NoSelectionBias {
+    fn weight(&self) -> f64 {
+        0.0
+    }
+
+    fn applies(
+        &self,
+        _game: &G,
+        _state: &G::State,
+        _active_player: PlayerId,
+        _root_player: PlayerId,
+    ) -> bool {
+        false
+    }
+
+    fn evaluate_child(
+        &self,
+        _game: &G,
+        _state: &G::State,
+        _root_player: PlayerId,
+    ) -> Result<f64, AgentError> {
+        Ok(0.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProgressiveBias<C, E> {
+    pub weight: f64,
+    pub condition: C,
+    pub evaluator: E,
+}
+
+impl<C, E> ProgressiveBias<C, E> {
+    pub const fn new(weight: f64, condition: C, evaluator: E) -> Self {
+        Self {
+            weight,
+            condition,
+            evaluator,
+        }
+    }
+}
+
+impl<G, C, E> SelectionBias<G> for ProgressiveBias<C, E>
+where
+    G: DeterministicGame,
+    C: PolicyCondition<G>,
+    E: StateEvaluator<G>,
+{
+    fn weight(&self) -> f64 {
+        self.weight
+    }
+
+    fn applies(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+    ) -> bool {
+        self.condition
+            .matches(game, state, active_player, root_player)
+    }
+
+    fn evaluate_child(
+        &self,
+        game: &G,
+        state: &G::State,
+        root_player: PlayerId,
+    ) -> Result<f64, AgentError> {
+        evaluate_state(game, state, root_player, &self.evaluator)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -169,7 +285,7 @@ where
     G: DeterministicGame,
     G::State: Clone,
     G::Action: Clone,
-    C: RolloutCondition<G>,
+    C: PolicyCondition<G>,
     P: RolloutPolicy<G>,
     F: RolloutPolicy<G>,
 {
@@ -387,11 +503,18 @@ where
     Ok(actions[best_indices[tie_index]].clone())
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct MctsAgent<C = NeutralEvaluator, P = RolloutPolicyConfig<NeutralEvaluator>> {
+#[derive(Clone, Debug)]
+pub struct MctsAgent<
+    C = NeutralEvaluator,
+    P = RolloutPolicyConfig<NeutralEvaluator>,
+    B = NoSelectionBias,
+> {
     pub config: MctsConfig<P>,
     pub cutoff_evaluator: C,
+    pub selection_bias: B,
+    pub root_diagnostics: bool,
     last_search_stats: Option<MctsSearchStats>,
+    last_root_actions: Vec<RootActionStats>,
 }
 
 impl Default for MctsAgent<NeutralEvaluator, RolloutPolicyConfig<NeutralEvaluator>> {
@@ -405,7 +528,10 @@ impl<P> MctsAgent<NeutralEvaluator, P> {
         Self {
             config,
             cutoff_evaluator: NeutralEvaluator,
+            selection_bias: NoSelectionBias,
+            root_diagnostics: false,
             last_search_stats: None,
+            last_root_actions: Vec::new(),
         }
     }
 }
@@ -415,8 +541,33 @@ impl<C, P> MctsAgent<C, P> {
         Self {
             config,
             cutoff_evaluator,
+            selection_bias: NoSelectionBias,
+            root_diagnostics: false,
             last_search_stats: None,
+            last_root_actions: Vec::new(),
         }
+    }
+}
+
+impl<C, P, B> MctsAgent<C, P, B> {
+    pub const fn with_progressive_bias(
+        config: MctsConfig<P>,
+        cutoff_evaluator: C,
+        selection_bias: B,
+    ) -> Self {
+        Self {
+            config,
+            cutoff_evaluator,
+            selection_bias,
+            root_diagnostics: false,
+            last_search_stats: None,
+            last_root_actions: Vec::new(),
+        }
+    }
+
+    pub fn with_root_diagnostics(mut self, enabled: bool) -> Self {
+        self.root_diagnostics = enabled;
+        self
     }
 
     pub const fn last_search_stats(&self) -> Option<MctsSearchStats> {
@@ -425,9 +576,11 @@ impl<C, P> MctsAgent<C, P> {
 
     pub fn decision_stats(&self) -> AgentDecisionStats {
         self.last_search_stats
+            .as_ref()
             .map_or_else(AgentDecisionStats::default, |stats| AgentDecisionStats {
                 search_iterations: Some(stats.iterations),
                 search_nodes: Some(stats.nodes),
+                root_actions: self.last_root_actions.clone(),
             })
     }
 
@@ -442,6 +595,7 @@ impl<C, P> MctsAgent<C, P> {
         G::Action: Clone,
         C: StateEvaluator<G>,
         P: RolloutPolicy<G>,
+        B: SelectionBias<G>,
         R: RandomSource + ?Sized,
     {
         let game = decision.game();
@@ -458,7 +612,14 @@ impl<C, P> MctsAgent<C, P> {
         if root_actions.is_empty() {
             return Err(AgentError::NoLegalActions);
         }
-        let mut nodes = vec![Node::new(None, root_actions)];
+        let bias_weight = self.selection_bias.weight();
+        if !bias_weight.is_finite() || bias_weight < 0.0 {
+            return Err(AgentError::message(
+                "MCTS progressive bias weight must be finite and non-negative",
+            ));
+        }
+        let bias_enabled = bias_weight > 0.0;
+        let mut nodes = vec![Node::new(None, None, None, root_actions)];
 
         let search_started = Instant::now();
         let mut completed_iterations = 0_u64;
@@ -497,12 +658,27 @@ impl<C, P> MctsAgent<C, P> {
                 };
 
                 if !nodes[node_index].unexpanded.is_empty() {
+                    let bias_applies = bias_enabled
+                        && self
+                            .selection_bias
+                            .applies(game, &state, active_player, root_player);
                     let action_index = rng
                         .index(nodes[node_index].unexpanded.len())
                         .expect("non-empty actions");
-                    let action = nodes[node_index].unexpanded.swap_remove(action_index);
-                    game.apply_action(&mut state, &action)
+                    let unexpanded = nodes[node_index].unexpanded.swap_remove(action_index);
+                    game.apply_action(&mut state, &unexpanded.action)
                         .map_err(|error| AgentError::message(error.to_string()))?;
+
+                    let heuristic_value = if bias_applies {
+                        Some(
+                            self.selection_bias
+                                .evaluate_child(game, &state, root_player)?,
+                        )
+                    } else if bias_enabled {
+                        Some(0.0)
+                    } else {
+                        None
+                    };
 
                     let child_actions =
                         if matches!(game.status(&state), PositionStatus::PlayerTurn(_)) {
@@ -511,7 +687,12 @@ impl<C, P> MctsAgent<C, P> {
                             Vec::new()
                         };
                     let child_index = nodes.len();
-                    nodes.push(Node::new(Some(action), child_actions));
+                    nodes.push(Node::new(
+                        Some(unexpanded.action),
+                        Some(unexpanded.index),
+                        heuristic_value,
+                        child_actions,
+                    ));
                     nodes[node_index].children.push(child_index);
                     node_index = child_index;
                     path.push(node_index);
@@ -525,7 +706,13 @@ impl<C, P> MctsAgent<C, P> {
                 }
 
                 let maximizing = active_player == root_player;
-                let selected = best_child(&nodes, node_index, maximizing, self.config.exploration);
+                let selected = best_child(
+                    &nodes,
+                    node_index,
+                    maximizing,
+                    self.config.exploration,
+                    bias_weight,
+                );
                 let action = nodes[selected]
                     .action
                     .as_ref()
@@ -553,12 +740,6 @@ impl<C, P> MctsAgent<C, P> {
             completed_iterations += 1;
         }
 
-        self.last_search_stats = Some(MctsSearchStats {
-            iterations: completed_iterations,
-            nodes: nodes.len() as u64,
-            elapsed: search_started.elapsed(),
-        });
-
         let selected_index = nodes[0]
             .children
             .iter()
@@ -574,6 +755,36 @@ impl<C, P> MctsAgent<C, P> {
                     })
             })
             .ok_or(AgentError::NoLegalActions)?;
+
+        self.last_root_actions = if self.root_diagnostics {
+            nodes[0]
+                .children
+                .iter()
+                .copied()
+                .map(|child_index| {
+                    let child = &nodes[child_index];
+                    RootActionStats {
+                        action_index: child
+                            .action_index
+                            .expect("root child has a parent-relative action index"),
+                        visits: child.visits,
+                        mean_utility: child.mean_utility(),
+                        heuristic_value: child.heuristic_value,
+                        progressive_bias: bias_enabled
+                            .then(|| progressive_bias_term(child, true, bias_weight)),
+                        selected: child_index == selected_index,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.last_search_stats = Some(MctsSearchStats {
+            iterations: completed_iterations,
+            nodes: nodes.len() as u64,
+            elapsed: search_started.elapsed(),
+        });
+
         nodes[selected_index]
             .action
             .clone()
@@ -583,18 +794,34 @@ impl<C, P> MctsAgent<C, P> {
 
 struct Node<A> {
     action: Option<A>,
+    action_index: Option<u32>,
+    heuristic_value: Option<f64>,
     children: Vec<usize>,
-    unexpanded: Vec<A>,
+    unexpanded: Vec<IndexedAction<A>>,
     visits: u32,
     total_utility: f64,
 }
 
 impl<A> Node<A> {
-    fn new(action: Option<A>, unexpanded: Vec<A>) -> Self {
+    fn new(
+        action: Option<A>,
+        action_index: Option<u32>,
+        heuristic_value: Option<f64>,
+        unexpanded: Vec<A>,
+    ) -> Self {
         Self {
             action,
+            action_index,
+            heuristic_value,
             children: Vec::new(),
-            unexpanded,
+            unexpanded: unexpanded
+                .into_iter()
+                .enumerate()
+                .map(|(index, action)| IndexedAction {
+                    action,
+                    index: index as u32,
+                })
+                .collect(),
             visits: 0,
             total_utility: 0.0,
         }
@@ -609,13 +836,19 @@ impl<A> Node<A> {
     }
 }
 
-impl<G, C, P> Agent<G> for MctsAgent<C, P>
+struct IndexedAction<A> {
+    action: A,
+    index: u32,
+}
+
+impl<G, C, P, B> Agent<G> for MctsAgent<C, P, B>
 where
     G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
     G::State: Clone,
     G::Action: Clone,
     C: StateEvaluator<G>,
     P: RolloutPolicy<G>,
+    B: SelectionBias<G>,
 {
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
@@ -630,21 +863,56 @@ where
     }
 }
 
-fn best_child<A>(nodes: &[Node<A>], parent: usize, maximizing: bool, exploration: f64) -> usize {
+fn best_child<A>(
+    nodes: &[Node<A>],
+    parent: usize,
+    maximizing: bool,
+    exploration: f64,
+    bias_weight: f64,
+) -> usize {
     let parent_visits = f64::from(nodes[parent].visits.max(1));
     nodes[parent]
         .children
         .iter()
         .copied()
         .max_by(|left, right| {
-            uct_score(&nodes[*left], parent_visits, maximizing, exploration).total_cmp(&uct_score(
+            selection_score(
+                &nodes[*left],
+                parent_visits,
+                maximizing,
+                exploration,
+                bias_weight,
+            )
+            .total_cmp(&selection_score(
                 &nodes[*right],
                 parent_visits,
                 maximizing,
                 exploration,
+                bias_weight,
             ))
         })
         .expect("parent has children")
+}
+
+fn selection_score<A>(
+    node: &Node<A>,
+    parent_visits: f64,
+    maximizing: bool,
+    exploration: f64,
+    bias_weight: f64,
+) -> f64 {
+    let uct = uct_score(node, parent_visits, maximizing, exploration);
+    if bias_weight == 0.0 {
+        uct
+    } else {
+        uct + progressive_bias_term(node, maximizing, bias_weight)
+    }
+}
+
+fn progressive_bias_term<A>(node: &Node<A>, maximizing: bool, weight: f64) -> f64 {
+    let heuristic = node.heuristic_value.unwrap_or(0.0);
+    let signed_heuristic = if maximizing { heuristic } else { -heuristic };
+    weight * signed_heuristic / (f64::from(node.visits) + 1.0)
 }
 
 fn uct_score<A>(node: &Node<A>, parent_visits: f64, maximizing: bool, exploration: f64) -> f64 {
@@ -1340,6 +1608,102 @@ mod tests {
                 "seed {seed}"
             );
         }
+    }
+
+    #[test]
+    fn zero_progressive_bias_matches_uct_baseline_exactly() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let config = MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(256).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 9,
+            rollout_policy: UniformRandom,
+        };
+        for seed in [0, 17, 42] {
+            let mut baseline = MctsAgent::new(config).with_root_diagnostics(true);
+            let mut biased = MctsAgent::with_progressive_bias(
+                config,
+                NeutralEvaluator,
+                ProgressiveBias::new(0.0, FixedCondition(true), FailingEvaluator),
+            )
+            .with_root_diagnostics(true);
+            let mut baseline_rng = SplitMix64::new(seed);
+            let mut biased_rng = SplitMix64::new(seed);
+
+            let baseline_action = baseline
+                .select_action(
+                    DecisionContext::new(&game, &state, PlayerId::FIRST),
+                    &mut baseline_rng,
+                )
+                .unwrap();
+            let biased_action = biased
+                .select_action(
+                    DecisionContext::new(&game, &state, PlayerId::FIRST),
+                    &mut biased_rng,
+                )
+                .unwrap();
+
+            assert_eq!(biased_action, baseline_action);
+            assert_eq!(biased.decision_stats(), baseline.decision_stats());
+            assert_eq!(biased_rng.next_u64(), baseline_rng.next_u64());
+        }
+    }
+
+    #[test]
+    fn progressive_bias_favors_better_equal_statistics_and_decays() {
+        let mut lower = Node::new(Some(0_u8), Some(0), Some(-0.5), Vec::new());
+        lower.visits = 4;
+        let mut higher = Node::new(Some(1_u8), Some(1), Some(0.5), Vec::new());
+        higher.visits = 4;
+        assert!(
+            selection_score(&higher, 20.0, true, 0.0, 1.0)
+                > selection_score(&lower, 20.0, true, 0.0, 1.0)
+        );
+
+        let early = progressive_bias_term(&higher, true, 1.0);
+        higher.visits = 40;
+        let late = progressive_bias_term(&higher, true, 1.0);
+        assert!(late.abs() < early.abs());
+    }
+
+    #[test]
+    fn conditional_progressive_bias_skips_evaluator_outside_condition() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let config = MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(32).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 2,
+            rollout_policy: UniformRandom,
+        };
+        let mut agent = MctsAgent::with_progressive_bias(
+            config,
+            NeutralEvaluator,
+            ProgressiveBias::new(1.0, FixedCondition(false), FailingEvaluator),
+        );
+
+        agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut SplitMix64::new(9),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn progressive_bias_sign_follows_active_player_perspective() {
+        let mut parent = Node::new(None, None, None, Vec::<u8>::new());
+        parent.visits = 20;
+        parent.children = vec![1, 2];
+        let mut lower = Node::new(Some(0), Some(0), Some(-0.5), Vec::new());
+        lower.visits = 4;
+        let mut higher = Node::new(Some(1), Some(1), Some(0.5), Vec::new());
+        higher.visits = 4;
+        let nodes = vec![parent, lower, higher];
+
+        assert_eq!(best_child(&nodes, 0, true, 0.0, 1.0), 2);
+        assert_eq!(best_child(&nodes, 0, false, 0.0, 1.0), 1);
     }
 
     #[test]

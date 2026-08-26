@@ -72,6 +72,8 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 | `rollout_depth` | `256` | Maximum simulated actions after expansion. |
 | `cutoff_evaluator` | `NeutralEvaluator()` | Evaluator used only when a rollout reaches its depth cutoff. |
 | `rollout_policy` | `UniformRandom()` | Policy used to select simulated actions outside the tree. |
+| `progressive_bias` | `None` | Optional decaying heuristic prior added to UCT tree selection. |
+| `root_diagnostics` | `false` | Record visits, utility, cached heuristic, and bias for expanded root actions. |
 
 The legacy `heuristic=INDEX` argument remains available as shorthand for
 `cutoff_evaluator=GameHeuristic(INDEX)`.
@@ -124,10 +126,36 @@ policies evaluate and copy every candidate successor, so their iterations are mo
 uniform-random iterations. Compare policies at equal wall-clock decision budgets as well as equal
 iteration counts.
 
-In Rust, `MctsAgent<C, P>` is generic over `C: StateEvaluator` and `P: RolloutPolicy`. `Greedy<E>`
+In Rust, `MctsAgent<C, P, B>` is generic over cutoff evaluator, rollout policy, and optional
+selection bias. `Greedy<E>`
 and `EpsilonGreedy<E>` are themselves generic over their rollout evaluator. The runtime catalog
 uses configuration enums for the built-in variants, while a Rust integration can inject another
 concrete evaluator or policy without duplicating the MCTS loop or paying for dynamic dispatch.
+
+### Progressive Bias
+
+Progressive Bias keeps the rollout policy unchanged and adds
+`weight * heuristic(child) / (child_visits + 1)` to UCT selection. The child heuristic is computed
+once when the node is expanded and cached. Its sign follows the real active player: nodes controlled
+by the root player maximize it and opponent nodes minimize it, including games with consecutive
+actions by the same player. Weight zero takes the exact baseline path and does not call the evaluator.
+
+Conditions are checked on the parent state where the action is selected, while the evaluator scores
+the resulting child. For SPOTF this allows H2 to guide only Collect without affecting gemstone
+decisions:
+
+```python
+from meeple_bots import GameHeuristic, MctsAgent, ProgressiveBias, TurnPhaseIs, UniformRandom
+
+agent = MctsAgent(
+    time_budget=0.5,
+    rollout_depth=130,
+    cutoff_evaluator=GameHeuristic(2),
+    rollout_policy=UniformRandom(),
+    progressive_bias=ProgressiveBias(0.25, GameHeuristic(2), TurnPhaseIs("collect")),
+    root_diagnostics=True,
+)
+```
 
 ### Cutoff evaluation
 

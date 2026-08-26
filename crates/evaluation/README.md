@@ -149,18 +149,21 @@ meeple-bots analyze --game spotf \
   --agent 'name=horizon,i=20000,d=32,h=0' \
   --agent 'name=informed,i=10000,d=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
   --agent 'name=collect-h2,i=5000,d=32,h=2,p=epsilon,rh=2,e=0.25,phase=collect' \
+  --agent 'name=collect-pb-h2,t=0.5,d=130,h=2,pb=0.25,pbh=2,pbphase=collect,rd=true' \
   --agent 'iterations=10000,exploration=0.8'
 ```
 
 Supported fields are `name`, `iterations` or `time_budget`, `depth`, `exploration`, cutoff
 `heuristic` or `cutoff_evaluator`, rollout `policy`, `rollout_heuristic`, `epsilon`, and optional
-turn `phase`. Their short aliases are `i` or `t`, `d`, `c`, `h` or `ce`, `p`, `rh`, and `e`. `ce` accepts `neutral` or
-`hINDEX`. Missing values default to 1000 iterations, depth 16, square-root-of-two exploration,
-uniform-random rollouts, and neutral cutoff evaluation. A bare `--agent` uses every default.
-Automatic names encode the
-effective configuration, for example
-`mcts-i5000-d120` and `mcts-h0-i20000-d32`; a non-default exploration
-constant is appended as `-cVALUE`.
+turn `phase`. Progressive Bias adds `progressive_bias`, `progressive_bias_heuristic`, and optional
+`progressive_bias_phase`; `root_diagnostics` enables root-action statistics. Their short aliases
+are `i` or `t`, `d`, `c`, `h` or `ce`, `p`, `rh`, `e`, `pb`, `pbh`, `pbphase`, and `rd`. `ce`
+accepts `neutral` or `hINDEX`. Missing values default to 1000 iterations, depth 16,
+square-root-of-two exploration, uniform-random rollouts, neutral cutoff evaluation, no Progressive
+Bias, and disabled root diagnostics. A bare `--agent` uses every default. Automatic names encode
+the effective configuration, for example `mcts-i5000-d120`, `mcts-h0-i20000-d32`, and
+`mcts-h2-t0.5-d130-pb0.25-pbh2-pbphase-collect`; a non-default exploration constant is appended as
+`-cVALUE`.
 
 `p=random` and `p=uniform` abbreviate uniform-random rollout. `p=greedy` and `p=epsilon` require
 `rh=INDEX`; epsilon-greedy uses `e=0.1` when omitted. `h=INDEX` configures only cutoff evaluation,
@@ -168,6 +171,12 @@ whereas `rh=INDEX` configures only informed rollout selection, so either mechani
 alone or both can use different game heuristics.
 For SPOTF, `phase=collect` applies the selected informed policy only during collection and uses
 uniform random rollout actions during gemstone placement.
+
+`pb=WEIGHT` enables Progressive Bias, `pbh=INDEX` selects its independent evaluator, and
+`pbphase=collect` restricts it to SPOTF collection decisions. The evaluator is computed once when
+a child is expanded and cached; its contribution then decays as that child accumulates visits.
+`rd=true` records the root actions' visits, mean utility, cached heuristic value, final bias term,
+and selected flag. It is disabled by default because detailed root records increase JSONL size.
 
 Inline agents and `--agent-config` profiles can be mixed in one comparison. Explicit and generated
 names must remain unique. Profiles are preferable when a configuration must be preserved as a

@@ -40,6 +40,7 @@ from .api import (
     NeutralEvaluator,
     MoveSpiritGemstone,
     PlaceSpiritGemstone,
+    ProgressiveBias,
     RandomAgent,
     SkipSpiritGemstone,
     SpiritTile,
@@ -71,6 +72,7 @@ _TOURNAMENT_GRID_FIELDS = (
     (("rollout_epsilon",), "e"),
     (("rollout_policy", "epsilon"), "e"),
     (("rollout_policy", "primary", "epsilon"), "e"),
+    (("progressive_bias", "weight"), "pb"),
 )
 _MAX_AGENTS_PER_TOURNAMENT_GRID = 256
 _MISSING_GRID_VALUE = object()
@@ -364,7 +366,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"{_mcts_budget_description(profile.agent)}, "
                     f"depth {profile.agent.rollout_depth}, "
                     f"cutoff={_evaluator_name(profile.agent.cutoff_evaluator)}, "
-                    f"rollout={_rollout_policy_description(profile.agent)}",
+                    f"rollout={_rollout_policy_description(profile.agent)}, "
+                    "progressive_bias="
+                    f"{_progressive_bias_description(profile.agent.progressive_bias)}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -814,6 +818,8 @@ def _load_tournament_agents(
         "rollout_use_heuristic",
         "rollout_heuristic_index",
         "rollout_epsilon",
+        "progressive_bias",
+        "root_diagnostics",
         "self_play",
     }
     unknown = sorted(values.keys() - allowed)
@@ -844,6 +850,8 @@ def _load_tournament_agents(
         "rollout_use_heuristic",
         "rollout_heuristic_index",
         "rollout_epsilon",
+        "progressive_bias",
+        "root_diagnostics",
     }
     if kind == "random":
         unexpected = sorted(values.keys() & mcts_fields)
@@ -971,6 +979,12 @@ def _build_tournament_mcts_agent(
             f"tournament agent {name}",
         ),
         rollout_policy=_configured_rollout_policy(values, f"tournament agent {name}"),
+        progressive_bias=_configured_progressive_bias(
+            values, f"tournament agent {name}"
+        ),
+        root_diagnostics=_configured_root_diagnostics(
+            values, f"tournament agent {name}"
+        ),
     )
     Match(game=game, first=agent, second=RandomAgent())
     return agent
@@ -1254,6 +1268,8 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
         "rollout_use_heuristic",
         "rollout_heuristic_index",
         "rollout_epsilon",
+        "progressive_bias",
+        "root_diagnostics",
     }
     unknown = sorted(values.keys() - allowed)
     if unknown:
@@ -1274,6 +1290,8 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
             rollout_depth=values["rollout_depth"],
             cutoff_evaluator=_configured_cutoff_evaluator(values, "MCTS profile"),
             rollout_policy=_configured_rollout_policy(values, "MCTS profile"),
+            progressive_bias=_configured_progressive_bias(values, "MCTS profile"),
+            root_diagnostics=_configured_root_diagnostics(values, "MCTS profile"),
         ),
     )
 
@@ -1328,6 +1346,15 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         "phase": "rollout_phase",
         "scope": "rollout_phase",
         "rollout_phase": "rollout_phase",
+        "pb": "progressive_bias_weight",
+        "progressive_bias": "progressive_bias_weight",
+        "progressive_bias_weight": "progressive_bias_weight",
+        "pbh": "progressive_bias_heuristic",
+        "progressive_bias_heuristic": "progressive_bias_heuristic",
+        "pbphase": "progressive_bias_phase",
+        "progressive_bias_phase": "progressive_bias_phase",
+        "rd": "root_diagnostics",
+        "root_diagnostics": "root_diagnostics",
     }
     if spec.strip():
         for raw_field in spec.split(","):
@@ -1404,6 +1431,38 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
             primary=rollout_policy,
             fallback=UniformRandom(),
         )
+    progressive_fields = {
+        "progressive_bias_weight",
+        "progressive_bias_heuristic",
+        "progressive_bias_phase",
+    }
+    progressive_bias = None
+    if progressive_fields & values.keys():
+        if "progressive_bias_weight" not in values:
+            raise ValueError("inline progressive bias requires pb=<weight>")
+        if "progressive_bias_heuristic" not in values:
+            raise ValueError("inline progressive bias requires pbh=<heuristic index>")
+        try:
+            bias_weight = float(values["progressive_bias_weight"])
+        except ValueError as error:
+            raise ValueError("inline progressive bias weight must be a number") from error
+        progressive_bias = ProgressiveBias(
+            bias_weight,
+            GameHeuristic(
+                _inline_agent_integer(
+                    values["progressive_bias_heuristic"],
+                    "progressive bias heuristic",
+                )
+            ),
+            (
+                TurnPhaseIs(values["progressive_bias_phase"])
+                if "progressive_bias_phase" in values
+                else None
+            ),
+        )
+    root_diagnostics_text = values.get("root_diagnostics", "false").lower()
+    if root_diagnostics_text not in {"true", "false"}:
+        raise ValueError("inline root_diagnostics must be true or false")
     agent = MctsAgent(
         iterations=iterations,
         time_budget=time_budget,
@@ -1411,6 +1470,8 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         rollout_depth=rollout_depth,
         cutoff_evaluator=cutoff_evaluator,
         rollout_policy=rollout_policy,
+        progressive_bias=progressive_bias,
+        root_diagnostics=root_diagnostics_text == "true",
     )
     name = values.get("name")
     if name is not None and not name.strip():
@@ -1465,6 +1526,15 @@ def _inline_agent_name(agent: MctsAgent) -> str:
         parts.append(f"phase-{agent.rollout_policy.condition.phase}")
     if rollout_heuristic is not None:
         parts.append(f"rh{rollout_heuristic}")
+    if agent.progressive_bias is not None:
+        parts.append(f"pb{agent.progressive_bias.weight}")
+        bias_heuristic = _evaluator_heuristic_index(
+            agent.progressive_bias.evaluator
+        )
+        if bias_heuristic is not None:
+            parts.append(f"pbh{bias_heuristic}")
+        if agent.progressive_bias.condition is not None:
+            parts.append(f"pbphase-{agent.progressive_bias.condition.phase}")
     return "-".join(parts)
 
 
@@ -1526,7 +1596,8 @@ def _batch_agent_description(name: str, agent: RandomAgent | MctsAgent) -> str:
         f"rollout_depth={agent.rollout_depth}, "
         f"exploration={agent.exploration:.6f}, "
         f"cutoff={_evaluator_name(agent.cutoff_evaluator)}, "
-        f"rollout={_rollout_policy_description(agent)})"
+        f"rollout={_rollout_policy_description(agent)}, "
+        f"progressive_bias={_progressive_bias_description(agent.progressive_bias)})"
     )
 
 
@@ -1548,7 +1619,41 @@ def _batch_agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, ob
         ),
         "rollout_epsilon": _rollout_policy_epsilon(agent.rollout_policy),
         **_conditional_rollout_fields(agent.rollout_policy),
+        **_progressive_bias_fields(agent.progressive_bias),
+        "root_diagnostics": agent.root_diagnostics,
     }
+
+
+def _progressive_bias_fields(bias: ProgressiveBias | None) -> dict[str, object]:
+    if bias is None:
+        return {
+            "progressive_bias_weight": None,
+            "progressive_bias_evaluator": None,
+            "progressive_bias_heuristic": None,
+            "progressive_bias_condition": None,
+            "progressive_bias_condition_phase": None,
+        }
+    return {
+        "progressive_bias_weight": bias.weight,
+        "progressive_bias_evaluator": _evaluator_dict(bias.evaluator),
+        "progressive_bias_heuristic": _evaluator_heuristic_index(bias.evaluator),
+        "progressive_bias_condition": (
+            "turn_phase" if bias.condition is not None else None
+        ),
+        "progressive_bias_condition_phase": (
+            bias.condition.phase if bias.condition is not None else None
+        ),
+    }
+
+
+def _progressive_bias_description(bias: ProgressiveBias | None) -> str:
+    if bias is None:
+        return "none"
+    condition = "always" if bias.condition is None else bias.condition.phase
+    return (
+        f"weight={bias.weight:g}/{_evaluator_name(bias.evaluator)}/"
+        f"condition={condition}"
+    )
 
 
 def _mcts_budget_description(agent: MctsAgent) -> str:
@@ -1720,6 +1825,8 @@ def _agent(
                 NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic)
             ),
             rollout_policy=mcts.rollout_policy,
+            progressive_bias=mcts.progressive_bias,
+            root_diagnostics=mcts.root_diagnostics,
         )
     return RandomAgent()
 
@@ -1751,6 +1858,14 @@ def _agent_dict(name: str, agent) -> dict[str, object]:
             _conditional_rollout_fields(agent.rollout_policy)
             if isinstance(agent, MctsAgent)
             else {}
+        ),
+        **(
+            _progressive_bias_fields(agent.progressive_bias)
+            if isinstance(agent, MctsAgent)
+            else _progressive_bias_fields(None)
+        ),
+        "root_diagnostics": (
+            agent.root_diagnostics if isinstance(agent, MctsAgent) else False
         ),
     }
 
@@ -1810,6 +1925,61 @@ def _configured_evaluator(
     if isinstance(index, bool) or not isinstance(index, int):
         raise TypeError(f"{context} game_heuristic evaluator requires an integer index")
     return GameHeuristic(index)
+
+
+def _configured_progressive_bias(
+    values: dict[str, object],
+    context: str,
+) -> ProgressiveBias | None:
+    raw = values.get("progressive_bias")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError(f"{context} progressive_bias must be a TOML table")
+    unknown = sorted(raw.keys() - {"weight", "evaluator", "condition"})
+    if unknown:
+        raise ValueError(
+            f"unknown {context} progressive_bias fields: {', '.join(unknown)}"
+        )
+    weight = raw.get("weight")
+    if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+        raise TypeError(f"{context} progressive_bias requires a numeric weight")
+    if "evaluator" not in raw:
+        raise ValueError(f"{context} progressive_bias requires an evaluator")
+    evaluator = _configured_evaluator(
+        raw["evaluator"], f"{context} progressive bias"
+    )
+    condition_raw = raw.get("condition")
+    condition = None
+    if condition_raw is not None:
+        if not isinstance(condition_raw, dict):
+            raise TypeError(
+                f"{context} progressive_bias condition must be a TOML table"
+            )
+        unknown_condition = sorted(condition_raw.keys() - {"kind", "phase"})
+        if unknown_condition:
+            raise ValueError(
+                f"unknown {context} progressive_bias condition fields: "
+                + ", ".join(unknown_condition)
+            )
+        if condition_raw.get("kind") != "turn_phase":
+            raise ValueError(
+                f"{context} progressive_bias condition kind must be turn_phase"
+            )
+        phase = condition_raw.get("phase")
+        if not isinstance(phase, str):
+            raise TypeError(
+                f"{context} progressive_bias turn_phase condition requires a phase"
+            )
+        condition = TurnPhaseIs(phase)
+    return ProgressiveBias(float(weight), evaluator, condition)
+
+
+def _configured_root_diagnostics(values: dict[str, object], context: str) -> bool:
+    enabled = values.get("root_diagnostics", False)
+    if not isinstance(enabled, bool):
+        raise TypeError(f"{context} root_diagnostics must be a boolean")
+    return enabled
 
 
 def _configured_rollout_policy(
@@ -2116,6 +2286,17 @@ def _result_dict(result: MatchResult) -> dict[str, object]:
                 "decision_seconds": move.decision_seconds,
                 "search_iterations": move.search_iterations,
                 "search_nodes": move.search_nodes,
+                "root_actions": [
+                    {
+                        "action_index": root.action_index,
+                        "visits": root.visits,
+                        "mean_utility": root.mean_utility,
+                        "heuristic_value": root.heuristic_value,
+                        "progressive_bias": root.progressive_bias,
+                        "selected": root.selected,
+                    }
+                    for root in move.root_actions
+                ],
             }
             for ply, move in enumerate(result.moves, start=1)
         ],
@@ -2253,7 +2434,8 @@ def _agent_name(name: str, agent) -> str:
     if isinstance(agent, MctsAgent):
         return (
             f"{name} (cutoff {_evaluator_name(agent.cutoff_evaluator)}, "
-            f"rollout {_rollout_policy_description(agent)})"
+            f"rollout {_rollout_policy_description(agent)}, "
+            f"progressive bias {_progressive_bias_description(agent.progressive_bias)})"
         )
     return name
 
@@ -2423,6 +2605,8 @@ def _configured_benchmark_dicts(
                 ),
                 "rollout_epsilon": _rollout_policy_epsilon(agent.rollout_policy),
                 **_conditional_rollout_fields(agent.rollout_policy),
+                **_progressive_bias_fields(agent.progressive_bias),
+                "root_diagnostics": agent.root_diagnostics,
                 "sampled_positions": benchmark.sampled_positions,
                 "decision_time_mean_ms": benchmark.decision_time_mean_ms,
                 "decision_time_p50_ms": benchmark.decision_time_p50_ms,

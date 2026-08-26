@@ -85,7 +85,8 @@ Obtener información más útil de cada iteración sin recurrir a aprendizaje au
 - Permitir mezclas epsilon: elegir normalmente una acción heurística, pero algunas veces una al
   azar.
 - Añadir progressive bias para que el conocimiento del juego influya en la selección inicial y se
-  desvanezca al aumentar las visitas.
+  desvanezca al aumentar las visitas. (Implementado con evaluadores condicionales opcionales y
+  valores de hijos almacenados en caché.)
 - Comparar rollouts completos con rollouts más cortos evaluados mediante heurística.
 - Investigar implicit minimax backups para juegos tácticos.
 - Ajustar la exploración de forma independiente para cada juego y política de búsqueda.
