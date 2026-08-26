@@ -132,7 +132,6 @@ pub trait RolloutPolicy<G>
 where
     G: DeterministicGame,
     G::State: Clone,
-    G::Action: Clone,
 {
     fn select_action<R: RandomSource + ?Sized>(
         &self,
@@ -293,7 +292,6 @@ impl<G, C, P, F> RolloutPolicy<G> for ConditionalRollout<C, P, F>
 where
     G: DeterministicGame,
     G::State: Clone,
-    G::Action: Clone,
     C: PolicyCondition<G>,
     P: RolloutPolicy<G>,
     F: RolloutPolicy<G>,
@@ -326,7 +324,6 @@ impl<G> RolloutPolicy<G> for UniformRandom
 where
     G: DeterministicGame,
     G::State: Clone,
-    G::Action: Clone,
 {
     fn select_action<R: RandomSource + ?Sized>(
         &self,
@@ -336,9 +333,9 @@ where
         _root_player: PlayerId,
         rng: &mut R,
     ) -> Result<G::Action, AgentError> {
-        let actions: Vec<_> = game.legal_actions(state).collect();
+        let mut actions: Vec<_> = game.legal_actions(state).collect();
         let index = rng.index(actions.len()).ok_or(AgentError::NoLegalActions)?;
-        Ok(actions[index].clone())
+        Ok(actions.swap_remove(index))
     }
 }
 
@@ -357,7 +354,6 @@ impl<G, E> RolloutPolicy<G> for Greedy<E>
 where
     G: DeterministicGame,
     G::State: Clone,
-    G::Action: Clone,
     E: StateEvaluator<G>,
 {
     fn select_action<R: RandomSource + ?Sized>(
@@ -395,7 +391,6 @@ impl<G, E> RolloutPolicy<G> for EpsilonGreedy<E>
 where
     G: DeterministicGame,
     G::State: Clone,
-    G::Action: Clone,
     E: StateEvaluator<G>,
 {
     fn select_action<R: RandomSource + ?Sized>(
@@ -406,21 +401,12 @@ where
         root_player: PlayerId,
         rng: &mut R,
     ) -> Result<G::Action, AgentError> {
-        if !self.epsilon.is_finite() || !(0.0..=1.0).contains(&self.epsilon) {
-            return Err(AgentError::message(
-                "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
-            ));
-        }
-
-        if self.epsilon == 1.0 || (self.epsilon > 0.0 && rng.unit_f64() < self.epsilon) {
-            return UniformRandom.select_action(game, state, active_player, root_player, rng);
-        }
-
-        select_greedy_action(
+        select_epsilon_greedy_action(
             game,
             state,
             active_player,
             root_player,
+            self.epsilon,
             &self.evaluator,
             rng,
         )
@@ -431,7 +417,6 @@ impl<G, E> RolloutPolicy<G> for RolloutPolicyConfig<E>
 where
     G: DeterministicGame,
     G::State: Clone,
-    G::Action: Clone,
     E: StateEvaluator<G>,
 {
     fn select_action<R: RandomSource + ?Sized>(
@@ -449,19 +434,44 @@ where
             Self::Greedy { evaluator } => {
                 select_greedy_action(game, state, active_player, root_player, evaluator, rng)
             }
-            Self::EpsilonGreedy { epsilon, evaluator } => {
-                if !epsilon.is_finite() || !(0.0..=1.0).contains(epsilon) {
-                    return Err(AgentError::message(
-                        "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
-                    ));
-                }
-                if *epsilon == 1.0 || (*epsilon > 0.0 && rng.unit_f64() < *epsilon) {
-                    UniformRandom.select_action(game, state, active_player, root_player, rng)
-                } else {
-                    select_greedy_action(game, state, active_player, root_player, evaluator, rng)
-                }
-            }
+            Self::EpsilonGreedy { epsilon, evaluator } => select_epsilon_greedy_action(
+                game,
+                state,
+                active_player,
+                root_player,
+                *epsilon,
+                evaluator,
+                rng,
+            ),
         }
+    }
+}
+
+fn select_epsilon_greedy_action<G, E, R>(
+    game: &G,
+    state: &G::State,
+    active_player: PlayerId,
+    root_player: PlayerId,
+    epsilon: f64,
+    evaluator: &E,
+    rng: &mut R,
+) -> Result<G::Action, AgentError>
+where
+    G: DeterministicGame,
+    G::State: Clone,
+    E: StateEvaluator<G>,
+    R: RandomSource + ?Sized,
+{
+    if !epsilon.is_finite() || !(0.0..=1.0).contains(&epsilon) {
+        return Err(AgentError::message(
+            "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
+        ));
+    }
+
+    if epsilon == 1.0 || (epsilon > 0.0 && rng.unit_f64() < epsilon) {
+        UniformRandom.select_action(game, state, active_player, root_player, rng)
+    } else {
+        select_greedy_action(game, state, active_player, root_player, evaluator, rng)
     }
 }
 
@@ -476,20 +486,15 @@ fn select_greedy_action<G, E, R>(
 where
     G: DeterministicGame,
     G::State: Clone,
-    G::Action: Clone,
     E: StateEvaluator<G>,
     R: RandomSource + ?Sized,
 {
-    let actions: Vec<_> = game.legal_actions(state).collect();
-    if actions.is_empty() {
-        return Err(AgentError::NoLegalActions);
-    }
     let maximizing = active_player == root_player;
     let mut best_score = None;
-    let mut best_indices = Vec::new();
-    for (index, action) in actions.iter().enumerate() {
+    let mut best_actions = Vec::new();
+    for action in game.legal_actions(state) {
         let mut successor = state.clone();
-        game.apply_action(&mut successor, action)
+        game.apply_action(&mut successor, &action)
             .map_err(|error| AgentError::message(error.to_string()))?;
         let score = evaluate_state(game, &successor, root_player, evaluator)?;
         let ordering = best_score.map(|best: f64| score.total_cmp(&best));
@@ -499,17 +504,17 @@ where
         );
         if best_score.is_none() || is_better {
             best_score = Some(score);
-            best_indices.clear();
-            best_indices.push(index);
+            best_actions.clear();
+            best_actions.push(action);
         } else if ordering == Some(Ordering::Equal) {
-            best_indices.push(index);
+            best_actions.push(action);
         }
     }
 
     let tie_index = rng
-        .index(best_indices.len())
-        .expect("at least one action has the best score");
-    Ok(actions[best_indices[tie_index]].clone())
+        .index(best_actions.len())
+        .ok_or(AgentError::NoLegalActions)?;
+    Ok(best_actions.swap_remove(tie_index))
 }
 
 #[derive(Clone, Debug)]
@@ -945,7 +950,6 @@ fn rollout<G, P, C, R>(
 where
     G: DeterministicGame,
     G::State: Clone,
-    G::Action: Clone,
     P: RolloutPolicy<G>,
     C: StateEvaluator<G>,
     R: RandomSource + ?Sized,
@@ -1589,6 +1593,39 @@ mod tests {
             .unwrap();
 
         assert_eq!(epsilon, uniform);
+        assert_eq!(epsilon_rng.next_u64(), uniform_rng.next_u64());
+    }
+
+    #[test]
+    fn greedy_ties_match_uniform_random_selection() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+
+        for seed in [0, 13, 42, 99] {
+            let mut uniform_rng = SplitMix64::new(seed);
+            let mut greedy_rng = SplitMix64::new(seed);
+            let uniform = UniformRandom
+                .select_action(
+                    &game,
+                    &state,
+                    PlayerId::FIRST,
+                    PlayerId::FIRST,
+                    &mut uniform_rng,
+                )
+                .unwrap();
+            let greedy = Greedy::new(FixedEvaluator(0.0))
+                .select_action(
+                    &game,
+                    &state,
+                    PlayerId::FIRST,
+                    PlayerId::FIRST,
+                    &mut greedy_rng,
+                )
+                .unwrap();
+
+            assert_eq!(greedy, uniform, "seed {seed}");
+            assert_eq!(greedy_rng.next_u64(), uniform_rng.next_u64(), "seed {seed}");
+        }
     }
 
     #[test]
