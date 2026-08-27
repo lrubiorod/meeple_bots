@@ -133,6 +133,11 @@ where
     G: DeterministicGame,
     G::State: Clone,
 {
+    /// Validates configuration before a search starts.
+    fn validate(&self) -> Result<(), AgentError> {
+        Ok(())
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &self,
         game: &G,
@@ -296,6 +301,11 @@ where
     P: RolloutPolicy<G>,
     F: RolloutPolicy<G>,
 {
+    fn validate(&self) -> Result<(), AgentError> {
+        self.primary.validate()?;
+        self.fallback.validate()
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &self,
         game: &G,
@@ -393,6 +403,10 @@ where
     G::State: Clone,
     E: StateEvaluator<G>,
 {
+    fn validate(&self) -> Result<(), AgentError> {
+        validate_rollout_epsilon(self.epsilon)
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &self,
         game: &G,
@@ -419,6 +433,13 @@ where
     G::State: Clone,
     E: StateEvaluator<G>,
 {
+    fn validate(&self) -> Result<(), AgentError> {
+        match self {
+            Self::EpsilonGreedy { epsilon, .. } => validate_rollout_epsilon(*epsilon),
+            Self::UniformRandom | Self::Greedy { .. } => Ok(()),
+        }
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &self,
         game: &G,
@@ -462,17 +483,20 @@ where
     E: StateEvaluator<G>,
     R: RandomSource + ?Sized,
 {
-    if !epsilon.is_finite() || !(0.0..=1.0).contains(&epsilon) {
-        return Err(AgentError::message(
-            "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
-        ));
-    }
-
     if epsilon == 1.0 || (epsilon > 0.0 && rng.unit_f64() < epsilon) {
         UniformRandom.select_action(game, state, active_player, root_player, rng)
     } else {
         select_greedy_action(game, state, active_player, root_player, evaluator, rng)
     }
+}
+
+fn validate_rollout_epsilon(epsilon: f64) -> Result<(), AgentError> {
+    if !epsilon.is_finite() || !(0.0..=1.0).contains(&epsilon) {
+        return Err(AgentError::message(
+            "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
+        ));
+    }
+    Ok(())
 }
 
 fn select_greedy_action<G, E, R>(
@@ -615,6 +639,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
         self.last_root_actions.clear();
 
         self.config.validate().map_err(AgentError::message)?;
+        self.config.rollout_policy.validate()?;
 
         let game = decision.game();
         let root_state = decision.state();
@@ -630,10 +655,18 @@ impl<C, P, B> MctsAgent<C, P, B> {
         if root.unexpanded.is_empty() {
             return Err(AgentError::NoLegalActions);
         }
-        let root_action_count = u32::try_from(root.unexpanded.len())
-            .map_err(|_| AgentError::message("MCTS root has too many legal actions"))?;
-        let mut root_unexpanded_action_indices: Vec<_> = (0..root_action_count).collect();
-        let mut root_child_action_indices = Vec::with_capacity(root.unexpanded.len());
+        let mut root_unexpanded_action_indices = if self.root_diagnostics {
+            let root_action_count = u32::try_from(root.unexpanded.len())
+                .map_err(|_| AgentError::message("MCTS root has too many legal actions"))?;
+            (0..root_action_count).collect()
+        } else {
+            Vec::new()
+        };
+        let mut root_child_action_indices = if self.root_diagnostics {
+            Vec::with_capacity(root.unexpanded.len())
+        } else {
+            Vec::new()
+        };
         let bias_weight = self.selection_bias.weight();
         if !bias_weight.is_finite() || bias_weight < 0.0 {
             return Err(AgentError::message(
@@ -690,7 +723,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                         .index(nodes[node_index].unexpanded.len())
                         .expect("non-empty actions");
                     let unexpanded = nodes[node_index].unexpanded.swap_remove(unexpanded_slot);
-                    let root_action_index = (node_index == 0)
+                    let root_action_index = (self.root_diagnostics && node_index == 0)
                         .then(|| root_unexpanded_action_indices.swap_remove(unexpanded_slot));
                     game.apply_action(&mut state, &unexpanded)
                         .map_err(|error| AgentError::message(error.to_string()))?;
@@ -1016,6 +1049,8 @@ fn validate_utility(utility: f64, source: &str) -> Result<f64, AgentError> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use meeple_bots_core::{Game, IllegalAction};
     use meeple_bots_random_agent::RandomAgent;
     use meeple_bots_simulation::{MatchConfig, SplitMix64, play_match};
@@ -1186,6 +1221,31 @@ mod tests {
             _rng: &mut R,
         ) -> Result<TicTacToeAction, AgentError> {
             Ok(action(self.0))
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingRolloutPolicy {
+        validations: Cell<u32>,
+        selections: Cell<u32>,
+    }
+
+    impl RolloutPolicy<TicTacToe> for CountingRolloutPolicy {
+        fn validate(&self) -> Result<(), AgentError> {
+            self.validations.set(self.validations.get() + 1);
+            Ok(())
+        }
+
+        fn select_action<R: RandomSource + ?Sized>(
+            &self,
+            game: &TicTacToe,
+            state: &<TicTacToe as Game>::State,
+            active_player: PlayerId,
+            root_player: PlayerId,
+            rng: &mut R,
+        ) -> Result<TicTacToeAction, AgentError> {
+            self.selections.set(self.selections.get() + 1);
+            UniformRandom.select_action(game, state, active_player, root_player, rng)
         }
     }
 
@@ -1950,6 +2010,26 @@ mod tests {
     }
 
     #[test]
+    fn disabled_root_diagnostics_do_not_report_action_stats() {
+        let game = TicTacToe;
+        let mut agent = MctsAgent::new(MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(9).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 1,
+            rollout_policy: UniformRandom,
+        });
+
+        agent
+            .select_action(
+                DecisionContext::new(&game, &game.initial_state(), PlayerId::FIRST),
+                &mut SplitMix64::new(5),
+            )
+            .unwrap();
+
+        assert!(agent.decision_stats().root_actions.is_empty());
+    }
+
+    #[test]
     fn progressive_bias_favors_better_equal_statistics_and_decays() {
         let mut lower = Node::new(Some(0_u8), -0.5, Vec::new());
         lower.visits = 4;
@@ -2006,20 +2086,68 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_rollout_epsilon() {
+    fn rejects_invalid_rollout_epsilon_before_simulation() {
         let game = TicTacToe;
         for epsilon in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
-            let error = EpsilonGreedy::new(epsilon, FixedEvaluator(0.0))
+            let mut agent = MctsAgent::new(MctsConfig {
+                budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
+                exploration: std::f64::consts::SQRT_2,
+                rollout_depth: 0,
+                rollout_policy: EpsilonGreedy::new(epsilon, FixedEvaluator(0.0)),
+            });
+            let error = agent
                 .select_action(
-                    &game,
-                    &game.initial_state(),
-                    PlayerId::FIRST,
-                    PlayerId::FIRST,
+                    DecisionContext::new(&game, &game.initial_state(), PlayerId::FIRST),
                     &mut SplitMix64::new(3),
                 )
                 .unwrap_err();
 
             assert!(error.to_string().contains("between 0.0 and 1.0"));
         }
+    }
+
+    #[test]
+    fn conditional_rollout_validates_both_branches() {
+        let game = TicTacToe;
+        let mut agent = MctsAgent::new(MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 0,
+            rollout_policy: ConditionalRollout::new(
+                FixedCondition(false),
+                EpsilonGreedy::new(f64::NAN, FixedEvaluator(0.0)),
+                UniformRandom,
+            ),
+        });
+
+        let error = agent
+            .select_action(
+                DecisionContext::new(&game, &game.initial_state(), PlayerId::FIRST),
+                &mut SplitMix64::new(3),
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("between 0.0 and 1.0"));
+    }
+
+    #[test]
+    fn rollout_policy_is_validated_once_per_search() {
+        let game = TicTacToe;
+        let mut agent = MctsAgent::new(MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(32).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 2,
+            rollout_policy: CountingRolloutPolicy::default(),
+        });
+
+        agent
+            .select_action(
+                DecisionContext::new(&game, &game.initial_state(), PlayerId::FIRST),
+                &mut SplitMix64::new(3),
+            )
+            .unwrap();
+
+        assert_eq!(agent.config.rollout_policy.validations.get(), 1);
+        assert!(agent.config.rollout_policy.selections.get() > 1);
     }
 }
