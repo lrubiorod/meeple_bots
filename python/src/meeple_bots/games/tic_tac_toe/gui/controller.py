@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from time import monotonic
 
 from ....api import (
@@ -16,12 +17,13 @@ from ....api import (
     TicTacToeAction,
 )
 from ....gui.player import GuiPlayer
+from ....gui.trace import write_gui_trace
 
 
 class TicTacToeGui:
     """Coordinate a live match between browser input and native agents."""
 
-    def __init__(self) -> None:
+    def __init__(self, trace_dir: Path = Path("results/gui/tic-tac-toe")) -> None:
         self._condition = threading.Condition()
         self._cancelled = threading.Event()
         self._thread: threading.Thread | None = None
@@ -32,6 +34,8 @@ class TicTacToeGui:
             GuiPlayer("mcts", rollout_depth=9),
         )
         self._minimum_move_seconds = 0.6
+        self._trace_dir = trace_dir
+        self._save_trace = False
         self._last_published = monotonic()
         self._state: dict[str, object] = self._initial_state()
 
@@ -42,6 +46,7 @@ class TicTacToeGui:
         *,
         seed: int = 0,
         minimum_move_seconds: float = 0.6,
+        save_trace: bool = False,
     ) -> None:
         if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**64:
             raise ValueError("seed must be an integer between 0 and 2^64 - 1")
@@ -51,6 +56,8 @@ class TicTacToeGui:
             or not 0 <= minimum_move_seconds <= 10
         ):
             raise ValueError("minimum_move_seconds must be between 0 and 10")
+        if not isinstance(save_trace, bool):
+            raise ValueError("save_trace must be a boolean")
 
         self.cancel()
         with self._condition:
@@ -59,6 +66,7 @@ class TicTacToeGui:
             self._legal_actions = ()
             self._players = (first, second)
             self._minimum_move_seconds = float(minimum_move_seconds)
+            self._save_trace = save_trace
             self._last_published = monotonic()
             self._state = self._initial_state()
             self._state.update(
@@ -68,6 +76,7 @@ class TicTacToeGui:
                     "seed": seed,
                     "minimum_move_seconds": self._minimum_move_seconds,
                     "players": [first.as_dict(), second.as_dict()],
+                    "save_trace": save_trace,
                 }
             )
             self._thread = threading.Thread(
@@ -106,6 +115,7 @@ class TicTacToeGui:
             self._condition.notify_all()
 
     def _run_match(self, seed: int) -> None:
+        started = monotonic()
         try:
             result = Match(
                 game=TicTacToe(),
@@ -126,6 +136,20 @@ class TicTacToeGui:
 
         if self._cancelled.is_set():
             return
+        trace_path = None
+        trace_error = None
+        if self._save_trace:
+            try:
+                trace_path = write_gui_trace(
+                    self._trace_dir,
+                    game="tic-tac-toe",
+                    max_plies=9,
+                    result=result,
+                    players=self._players,
+                    duration_seconds=monotonic() - started,
+                )
+            except Exception as error:
+                trace_error = str(error)
         with self._condition:
             self._state["status"] = "finished"
             self._state["active_player"] = None
@@ -134,6 +158,8 @@ class TicTacToeGui:
                 "Draw" if result.winner is None else f"Player {result.winner + 1} wins"
             )
             self._state["legal_actions"] = []
+            self._state["trace_path"] = None if trace_path is None else str(trace_path)
+            self._state["trace_error"] = trace_error
             self._condition.notify_all()
 
     def _agent(self, player: int):
@@ -144,8 +170,10 @@ class TicTacToeGui:
             return RandomAgent()
         return MctsAgent(
             iterations=configured.iterations,
+            time_budget=configured.time_budget,
             exploration=configured.exploration,
             rollout_depth=configured.rollout_depth,
+            tree_reuse=configured.tree_reuse,
         )
 
     def _select_human_action(self, turn: HumanTurn) -> TicTacToeAction:
@@ -223,4 +251,7 @@ class TicTacToeGui:
             "last_decision_seconds": None,
             "seed": 0,
             "minimum_move_seconds": self._minimum_move_seconds,
+            "save_trace": self._save_trace,
+            "trace_path": None,
+            "trace_error": None,
         }

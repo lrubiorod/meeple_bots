@@ -38,7 +38,7 @@ PAGE = r"""<!doctype html>
 <label id="iterations-label-0" hidden>Iteraciones por decisión<input id="iterations-0" type="number" min="1" value="500"></label>
 <label>Profundidad<input id="depth-0" type="number" min="1" value="130"></label>
 <label>Exploración<input id="exploration-0" type="number" min="0" step="0.1" value="1"></label>
-<label>Heurística<select id="heuristic-0"><option value="0">H0 · Puntuación provisional y gemas</option><option value="1">H1 · Conservación de gemas</option><option value="2" selected>H2 · Progreso alcanzable</option><option value="none">Ninguna</option></select></label>
+<label>Heurística<select id="heuristic-0"><option value="0">H0 · Puntuación provisional y gemas</option><option value="1">H1 · Conservación de gemas</option><option value="2">H2 · Progreso alcanzable</option><option value="none" selected>Ninguna</option></select></label>
 <label><input id="tree-reuse-0" type="checkbox" checked> Reutilizar árbol</label>
 </div>
 <div class="mcts-config" id="mcts-config-1">
@@ -48,7 +48,7 @@ PAGE = r"""<!doctype html>
 <label id="iterations-label-1" hidden>Iteraciones por decisión<input id="iterations-1" type="number" min="1" value="500"></label>
 <label>Profundidad<input id="depth-1" type="number" min="1" value="130"></label>
 <label>Exploración<input id="exploration-1" type="number" min="0" step="0.1" value="1"></label>
-<label>Heurística<select id="heuristic-1"><option value="0">H0 · Puntuación provisional y gemas</option><option value="1">H1 · Conservación de gemas</option><option value="2" selected>H2 · Progreso alcanzable</option><option value="none">Ninguna</option></select></label>
+<label>Heurística<select id="heuristic-1"><option value="0">H0 · Puntuación provisional y gemas</option><option value="1">H1 · Conservación de gemas</option><option value="2">H2 · Progreso alcanzable</option><option value="none" selected>Ninguna</option></select></label>
 <label><input id="tree-reuse-1" type="checkbox" checked> Reutilizar árbol</label>
 </div>
 </section>

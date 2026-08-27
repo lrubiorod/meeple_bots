@@ -37,6 +37,7 @@ _COMMON_OUTPUT_FILES = {
     "agents": "agents.csv",
     "studies": "studies.csv",
     "matches": "matches.csv",
+    "moves": "moves.csv",
     "manifest": "manifest.json",
 }
 
@@ -152,6 +153,27 @@ _TREE_REUSE_FIELDS = (
     "reused_nodes",
     "pruned_nodes",
     "reuse_resets",
+)
+
+_GENERIC_MOVE_FIELDS = (
+    "match_number",
+    "ply",
+    "total_plies",
+    "player",
+    "agent",
+    "outcome",
+    "decision_seconds",
+    "search_iterations",
+    "search_nodes",
+    *_TREE_REUSE_FIELDS,
+    "progress_fraction",
+    "game_quarter",
+    "action_type",
+    "action_kind",
+    "action_json",
+    "root_action_count",
+    "root_actions_json",
+    "terminal_after",
 )
 
 _TURN_BASE_FIELDS = (
@@ -725,8 +747,12 @@ def extract_tournament(
             },
         }
     else:
-        _analyze_trace(game, ())
-        raise AssertionError("unavailable analysis must return an error")
+        extract_match = None
+        game_output_files = {}
+        game_writer_fields = {}
+        game_metadata = {
+            "analysis": "generic move-level extraction",
+        }
 
     output_files = _COMMON_OUTPUT_FILES | game_output_files
     targets = {name: output_dir / filename for name, filename in output_files.items()}
@@ -756,6 +782,12 @@ def extract_tournament(
                     _MATCH_FIELDS,
                     with_provenance=True,
                 ),
+                "moves": _csv_writer(
+                    stack,
+                    temporary_dir / "moves.csv",
+                    _fields_with_provenance(_GENERIC_MOVE_FIELDS),
+                    with_provenance=True,
+                ),
                 **{
                     name: _csv_writer(
                         stack,
@@ -766,7 +798,7 @@ def extract_tournament(
                     for name, fields in game_writer_fields.items()
                 },
             }
-            match_writers = [writers["matches"]] + [
+            match_writers = [writers["matches"], writers["moves"]] + [
                 writers[name] for name in game_writer_fields
             ]
             for agent in agent_rows:
@@ -815,7 +847,9 @@ def extract_tournament(
                             f"match {source_match_number} in {study.path}",
                         )
                         study_pairing_max = max(study_pairing_max, source_pairing)
-                        extract_match(context, writers, row_counts, game)
+                        _extract_generic_match(context, writers, row_counts)
+                        if extract_match is not None:
+                            extract_match(context, writers, row_counts, game)
 
                 study_complete = (
                     study_processed == study.declared_matches and not study_truncated
@@ -860,7 +894,7 @@ def extract_tournament(
             "output_dir": str(output_dir),
             "game": game_name,
             "tournament_schema_version": 1,
-            "analysis_schema_version": 5,
+            "analysis_schema_version": 6,
             "declared_matches": declared_matches,
             "processed_matches": processed_matches,
             "complete": complete,
@@ -994,6 +1028,68 @@ def _extract_common_match(
         raw_moves=raw_moves,
         raw_result=raw_result,
     )
+
+
+def _extract_generic_match(
+    context: _MatchContext,
+    writers: dict[str, _CsvWriter],
+    row_counts: dict[str, int],
+) -> None:
+    """Normalize game-independent move and search metrics."""
+
+    for ply, raw in enumerate(context.raw_moves, 1):
+        move_context = f"match {context.match_number} ply {ply}"
+        if not isinstance(raw, dict):
+            raise TypeError(f"{move_context} must be an object")
+        if _integer_field(raw, "ply", move_context) != ply:
+            raise ValueError(f"{move_context} reports an inconsistent ply")
+        player = _integer_field(raw, "player", move_context)
+        if player not in (0, 1):
+            raise ValueError(f"{move_context} player must be 0 or 1")
+        action = raw.get("action")
+        if not isinstance(action, dict):
+            raise TypeError(f"{move_context} action must be an object")
+        action_type = _string_field(action, "type", f"{move_context} action")
+        action_kind = action.get("kind", action_type)
+        if not isinstance(action_kind, str):
+            raise TypeError(f"{move_context} action kind must be a string")
+        root_actions = raw.get("root_actions")
+        if root_actions is None:
+            root_actions = []
+        if not isinstance(root_actions, list):
+            raise TypeError(f"{move_context} root_actions must be a list")
+        tree_reuse = _trace_tree_reuse(raw.get("tree_reuse"), move_context)
+        writers["moves"].writerow(
+            {
+                "match_number": context.match_number,
+                "ply": ply,
+                "total_plies": context.plies,
+                "player": player,
+                "agent": context.players[player],
+                "outcome": _player_outcome(player, context.winner_player),
+                "decision_seconds": raw.get("decision_seconds", ""),
+                "search_iterations": raw.get("search_iterations", ""),
+                "search_nodes": raw.get("search_nodes", ""),
+                **_tree_reuse_row(tree_reuse),
+                "progress_fraction": ply / context.plies,
+                "game_quarter": _game_quarter(ply, context.plies),
+                "action_type": action_type,
+                "action_kind": action_kind,
+                "action_json": json.dumps(
+                    action,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "root_action_count": len(root_actions),
+                "root_actions_json": json.dumps(
+                    root_actions,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "terminal_after": ply == context.plies,
+            }
+        )
+        row_counts["moves"] += 1
 
 
 def _extract_boop_match(

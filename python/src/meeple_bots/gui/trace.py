@@ -1,4 +1,4 @@
-"""Extractable JSONL traces for completed GUI matches."""
+"""Extractable JSONL traces shared by graphical interfaces."""
 
 from __future__ import annotations
 
@@ -7,43 +7,39 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from ....api import MatchResult
-from ....gui.player import GuiPlayer
+from ..api import MatchResult
+from ..serialization import match_result_dict
+from .player import GuiPlayer
 
 
 def write_gui_trace(
     output_dir: Path,
     *,
+    game: str,
+    max_plies: int,
     result: MatchResult,
     players: tuple[GuiPlayer, GuiPlayer],
     duration_seconds: float,
 ) -> Path:
     """Atomically write one completed GUI match in the tournament trace schema."""
 
-    # Import lazily to avoid coupling GUI module initialization to the CLI.
-    from ....cli import _result_dict
-
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    target = output_dir / f"spotf-gui-{timestamp}-{uuid4().hex[:8]}.jsonl"
+    target = output_dir / f"{game}-gui-{timestamp}-{uuid4().hex[:8]}.jsonl"
     temporary = target.with_suffix(".jsonl.tmp")
     names = tuple(_player_name(index, player) for index, player in enumerate(players))
-    winner = (
-        None
-        if result.winner is None
-        else "agent_a"
-        if result.winner == 0
-        else "agent_b"
+    winner = None if result.winner is None else (
+        "agent_a" if result.winner == 0 else "agent_b"
     )
     header = {
         "record_type": "tournament",
         "schema_version": 1,
         "study_type": "batch",
-        "game": "spotf",
+        "game": game,
         "output": str(target),
         "matches_per_pair": 1,
         "seed": result.seed,
-        "max_plies": 256,
+        "max_plies": max_plies,
         "workers": 1,
         "total_pairings": 1,
         "total_matches": 1,
@@ -64,7 +60,7 @@ def write_gui_trace(
         "players": list(names),
         "winner": winner,
         "duration_seconds": duration_seconds,
-        "result": _result_dict(result),
+        "result": match_result_dict(result),
     }
     try:
         with temporary.open("x", encoding="utf-8") as output:

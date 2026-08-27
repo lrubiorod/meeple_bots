@@ -26,7 +26,7 @@ from ....api import (
     _initial_spirits_state,
 )
 from ....gui.player import GuiPlayer
-from .trace import write_gui_trace
+from ....gui.trace import write_gui_trace
 
 
 class SpiritsOfTheForestGui:
@@ -38,7 +38,7 @@ class SpiritsOfTheForestGui:
         self._legal_actions: tuple[SpiritsOfTheForestAction, ...] = ()
         self._players = (
             GuiPlayer("human", rollout_depth=64),
-            GuiPlayer("mcts", rollout_depth=64, heuristic=0),
+            GuiPlayer("mcts", rollout_depth=64),
         )
         self._minimum_move_seconds = 0.4
         self._trace_dir = trace_dir
@@ -191,6 +191,8 @@ class SpiritsOfTheForestGui:
             try:
                 trace_path = write_gui_trace(
                     self._trace_dir,
+                    game="spotf",
+                    max_plies=256,
                     result=result,
                     players=self._players,
                     duration_seconds=monotonic() - started,

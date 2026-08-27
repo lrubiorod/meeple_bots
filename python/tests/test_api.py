@@ -2743,7 +2743,7 @@ class MatchApiTests(unittest.TestCase):
             )
             self.assertIsNone(manifest["source"])
             self.assertEqual(len(manifest["sources"]), 2)
-            self.assertEqual(manifest["analysis_schema_version"], 5)
+            self.assertEqual(manifest["analysis_schema_version"], 6)
             self.assertEqual(manifest["row_counts"]["studies"], 2)
             self.assertTrue((output_dir / "root_actions.csv").is_file())
 
@@ -2817,7 +2817,7 @@ class MatchApiTests(unittest.TestCase):
             self.assertTrue(summary["truncated_last_line"])
             self.assertFalse(manifest["complete"])
 
-    def test_cli_extract_reports_games_without_an_analyzer_before_creating_output(
+    def test_cli_extracts_generic_tables_for_games_without_specialized_analysis(
         self,
     ) -> None:
         for game in ("connect-four", "tic-tac-toe"):
@@ -2836,16 +2836,17 @@ class MatchApiTests(unittest.TestCase):
                     + "\n",
                     encoding="utf-8",
                 )
-                errors = io.StringIO()
-                with redirect_stderr(errors):
+                with redirect_stdout(io.StringIO()):
                     exit_code = main(["extract", "--input", str(trace)])
 
-                self.assertEqual(exit_code, 1)
-                self.assertIn(
-                    f"tournament analysis is not available for {game}",
-                    errors.getvalue(),
+                output_dir = Path(directory, game, "data")
+                manifest = json.loads(
+                    Path(output_dir, "manifest.json").read_text(encoding="utf-8")
                 )
-                self.assertFalse(Path(directory, game).exists())
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(manifest["analysis_schema_version"], 6)
+                self.assertEqual(manifest["analysis"], "generic move-level extraction")
+                self.assertTrue(Path(output_dir, "moves.csv").is_file())
 
     def test_cli_report_rejects_an_unimplemented_game_before_creating_output(
         self,

@@ -59,6 +59,7 @@ PAGE = r"""<!doctype html>
     select, input[type="number"] { width: 100%; margin-top: 5px; border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; background: #101621; color: var(--ink); font: inherit; }
     .mcts-options { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
     .mcts-options.hidden { display: none; }
+    .budget-field.hidden { display: none; }
     .pace { margin: 18px 0; }
     .pace-line { display: flex; justify-content: space-between; color: var(--muted); font-size: .8rem; }
     input[type="range"] { width: 100%; accent-color: var(--accent); }
@@ -112,15 +113,16 @@ PAGE = r"""<!doctype html>
           <div class="player" id="player-card-0" style="--player-color:var(--first)">
             <div class="player-head"><span class="player-name">Jugador 1</span><span class="token"></span></div>
             <label>Control<select id="player-0"><option value="human">Humano</option><option value="mcts">MCTS</option><option value="random">Random</option></select></label>
-            <div class="mcts-options hidden" id="mcts-0"><label>Iteraciones<input id="iterations-0" type="number" min="1" value="1000"></label><label>Profundidad<input id="depth-0" type="number" min="1" value="64"></label></div>
+            <div class="mcts-options hidden" id="mcts-0"><label>Presupuesto<select id="budget-mode-0"><option value="iterations">Iteraciones</option><option value="time">Tiempo</option></select></label><label class="budget-field" id="iterations-label-0">Iteraciones<input id="iterations-0" type="number" min="1" value="1000"></label><label class="budget-field hidden" id="time-label-0">Tiempo por decisión (s)<input id="time-budget-0" type="number" min="0.001" step="0.1" value="1"></label><label>Profundidad<input id="depth-0" type="number" min="1" value="64"></label><label><input id="tree-reuse-0" type="checkbox"> Reutilizar árbol</label></div>
           </div>
           <div class="player" id="player-card-1" style="--player-color:var(--second)">
             <div class="player-head"><span class="player-name">Jugador 2</span><span class="token"></span></div>
             <label>Control<select id="player-1"><option value="mcts">MCTS</option><option value="human">Humano</option><option value="random">Random</option></select></label>
-            <div class="mcts-options" id="mcts-1"><label>Iteraciones<input id="iterations-1" type="number" min="1" value="1000"></label><label>Profundidad<input id="depth-1" type="number" min="1" value="64"></label></div>
+            <div class="mcts-options" id="mcts-1"><label>Presupuesto<select id="budget-mode-1"><option value="iterations">Iteraciones</option><option value="time">Tiempo</option></select></label><label class="budget-field" id="iterations-label-1">Iteraciones<input id="iterations-1" type="number" min="1" value="1000"></label><label class="budget-field hidden" id="time-label-1">Tiempo por decisión (s)<input id="time-budget-1" type="number" min="0.001" step="0.1" value="1"></label><label>Profundidad<input id="depth-1" type="number" min="1" value="64"></label><label><input id="tree-reuse-1" type="checkbox"> Reutilizar árbol</label></div>
           </div>
         </div>
         <div class="pace"><div class="pace-line"><span>Intervalo mínimo entre jugadas</span><b id="pace-value">0.6 s</b></div><input id="pace" type="range" min="0" max="3" step="0.1" value="0.6"></div>
+        <label><input id="save-trace" type="checkbox" checked> Guardar JSONL para análisis posterior</label>
         <div class="seed-row"><label>Semilla<input id="seed" type="number" min="0" value="0"></label><button class="start" id="start">Nueva partida</button></div>
         <div class="error" id="error"></div>
       </section>
@@ -165,13 +167,18 @@ PAGE = r"""<!doctype html>
     }
 
     for (const player of [0, 1]) document.querySelector(`#player-${player}`).addEventListener('change', updateAgentFields);
+    for (const player of [0, 1]) document.querySelector(`#budget-mode-${player}`).addEventListener('change', () => updateBudgetFields(player));
     const pace = document.querySelector('#pace');
     pace.addEventListener('input', () => document.querySelector('#pace-value').textContent = `${Number(pace.value).toFixed(1)} s`);
     document.querySelector('#start').addEventListener('click', start);
 
     function playerConfig(index) {
-      return {kind: document.querySelector(`#player-${index}`).value, iterations: Number(document.querySelector(`#iterations-${index}`).value), rollout_depth: Number(document.querySelector(`#depth-${index}`).value)};
+      const kind = document.querySelector(`#player-${index}`).value;
+      if (kind !== 'mcts') return {kind};
+      const timed = document.querySelector(`#budget-mode-${index}`).value === 'time';
+      return {kind, iterations:timed?null:Number(document.querySelector(`#iterations-${index}`).value), time_budget:timed?Number(document.querySelector(`#time-budget-${index}`).value):null, rollout_depth:Number(document.querySelector(`#depth-${index}`).value), tree_reuse:document.querySelector(`#tree-reuse-${index}`).checked};
     }
+    function updateBudgetFields(index) { const timed=document.querySelector(`#budget-mode-${index}`).value==='time'; document.querySelector(`#iterations-label-${index}`).classList.toggle('hidden',timed); document.querySelector(`#time-label-${index}`).classList.toggle('hidden',!timed); }
     function updateAgentFields() {
       for (const player of [0, 1]) document.querySelector(`#mcts-${player}`).classList.toggle('hidden', document.querySelector(`#player-${player}`).value !== 'mcts');
     }
@@ -184,7 +191,7 @@ PAGE = r"""<!doctype html>
     async function start() {
       errorBox.textContent = '';
       try {
-        state = await api('/api/start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({first:playerConfig(0), second:playerConfig(1), seed:Number(document.querySelector('#seed').value), minimum_move_seconds:Number(pace.value)})});
+        state = await api('/api/start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({first:playerConfig(0), second:playerConfig(1), seed:Number(document.querySelector('#seed').value), minimum_move_seconds:Number(pace.value), save_trace:document.querySelector('#save-trace').checked})});
         render();
       } catch (error) { errorBox.textContent = error.message; }
     }
@@ -222,7 +229,7 @@ PAGE = r"""<!doctype html>
     }
     function translateMessage(value) {
       if (value.status === 'idle') return 'Configura y comienza una partida';
-      if (value.status === 'finished') return value.winner == null ? 'Tablas' : `Gana el jugador ${value.winner + 1}`;
+      if (value.status === 'finished') { const result=value.winner==null?'Tablas':`Gana el jugador ${value.winner+1}`; return value.trace_error?`${result} · Error al guardar: ${value.trace_error}`:value.trace_path?`${result} · Guardada en ${value.trace_path}`:result; }
       if (value.status === 'error') return `Error: ${value.message}`;
       if (value.status === 'waiting_human') return `Turno del jugador ${value.active_player + 1}: elige una columna`;
       return `Pensando: jugador ${value.active_player + 1}`;
@@ -233,6 +240,7 @@ PAGE = r"""<!doctype html>
       window.setTimeout(poll, 120);
     }
     updateAgentFields();
+    for (const player of [0, 1]) updateBudgetFields(player);
     poll();
   </script>
 </body>

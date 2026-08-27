@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Any
 
 from ....gui.player import parse_gui_player
@@ -12,9 +13,10 @@ from .controller import BoopGui
 class BoopApplication:
     """Own the current Boop match and validate browser commands."""
 
-    def __init__(self) -> None:
+    def __init__(self, trace_dir: Path = Path("results/gui/boop")) -> None:
         self._lock = threading.Lock()
-        self._game = BoopGui()
+        self._trace_dir = trace_dir
+        self._game = BoopGui(trace_dir=trace_dir)
 
     def start(self, payload: dict[str, Any]) -> dict[str, object]:
         first = parse_gui_player(
@@ -33,13 +35,14 @@ class BoopApplication:
         delay = payload.get("minimum_move_seconds", 0.6)
         with self._lock:
             previous = self._game
-            self._game = BoopGui()
+            self._game = BoopGui(trace_dir=self._trace_dir)
             previous.cancel()
             self._game.start(
                 first,
                 second,
                 seed=seed,
                 minimum_move_seconds=delay,
+                save_trace=payload.get("save_trace", False),
             )
             return self._game.snapshot()
 

@@ -566,12 +566,14 @@ do not interpret the aggregate win rate as though every agent had faced an ident
 The default output is `results/tournaments/boop-study/data/`. Use `--output-dir PATH` to override
 it. Existing known outputs are protected unless `--overwrite` is supplied.
 
-Extraction is registered for Boop and SPOTF. It starts with four generic study tables:
+Extraction is available for every supported game. It starts with five generic study tables:
 
 - `manifest.json`: sources, schemas, completeness, table names, and row counts;
 - `studies.csv`: one row per source trace, including whether it came from a batch or tournament;
 - `agents.csv`: one row per configured agent;
 - `matches.csv`: game-independent outcomes, seats, durations, and utilities.
+- `moves.csv`: one row per ply with its player, agent, outcome, action JSON, decision time,
+  search iterations/nodes, root diagnostics, and tree-reuse metrics.
 
 Boop additionally produces:
 
@@ -601,8 +603,8 @@ Extraction streams the trace and accepts interrupted studies. It marks the manif
 fewer matches than declared are available. A truncated final JSONL line is ignored and reported;
 malformed records elsewhere are rejected.
 
-Tournaments can still record Connect Four and tic-tac-toe traces, but `extract` rejects them until
-their analyzers are implemented.
+Connect Four and tic-tac-toe currently use these generic tables. Games with richer analyzers add
+domain-specific tables without changing the common extraction contract.
 
 ### 3. Generate a tournament report
 
