@@ -12,13 +12,13 @@ tree_reuse = false
 # Optional tree-selection prior. The condition is checked on the state where the action is chosen,
 # while the evaluator scores its child state. Set root_diagnostics=true to trace root visits,
 # utilities, cached heuristic values, and final bias terms.
-# progressive_bias = { weight = 0.25, evaluator = { kind = "game_heuristic", index = 2 }, condition = { kind = "turn_phase", phase = "collect" } }
+# progressive_bias = { weight = 0.25, evaluator = { kind = "game_heuristic", index = 0 }, condition = { kind = "turn_phase", phase = "collect" } }
 # root_diagnostics = true
 
 # Informed-rollout example, independent from cutoff evaluation:
 # rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 0 } }
 
 # SPOTF phase-scoped example: informed during Collect, uniform during gemstone placement:
-# rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "collect" }, primary = { kind = "epsilon_greedy", epsilon = 0.25, evaluator = { kind = "game_heuristic", index = 2 } }, fallback = { kind = "uniform_random" } }
+# rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "collect" }, primary = { kind = "epsilon_greedy", epsilon = 0.25, evaluator = { kind = "game_heuristic", index = 0 } }, fallback = { kind = "uniform_random" } }
 
 # Legacy profiles using use_heuristic/heuristic_index and flat rollout fields remain supported.

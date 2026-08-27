@@ -32,16 +32,16 @@ exploration = 1.4142135623730951
 use_heuristic = false
 self_play = true
 
-# Uniform-random rollout with heuristic 1 used only when the rollout reaches its depth cutoff.
+# Uniform-random rollout with H0 used only when the rollout reaches its depth cutoff.
 # Because the rollout policy is uniform, the heuristic does not influence intermediate actions.
 # Tree reuse keeps and prunes the reached subtree after both own and opponent actions.
 [[agents]]
-name = "mcts-cutoff-h1"
+name = "mcts-cutoff-h0"
 kind = "mcts"
 iterations = 250
 rollout_depth = 32
 exploration = 1.4142135623730951
-cutoff_evaluator = { kind = "game_heuristic", index = 1 }
+cutoff_evaluator = { kind = "game_heuristic", index = 0 }
 rollout_policy = { kind = "uniform_random" }
 tree_reuse = true
 
@@ -56,54 +56,54 @@ exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "epsilon_greedy", epsilon = 0.10, evaluator = { kind = "game_heuristic", index = 0 } }
 
-# Both mechanisms enabled with independent configuration. Cutoff uses H0 while rollout uses the
-# reachable-progress H2 evaluator.
+# Both mechanisms enabled with independent configuration. The same H0 evaluator is configured
+# independently for cutoff evaluation and rollout action selection.
 [[agents]]
-name = "mcts-cutoff-h0-rollout-h2"
+name = "mcts-cutoff-h0-rollout-h0"
 kind = "mcts"
 iterations = 250
 rollout_depth = 32
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "game_heuristic", index = 0 }
-rollout_policy = { kind = "greedy", evaluator = { kind = "game_heuristic", index = 2 } }
+rollout_policy = { kind = "greedy", evaluator = { kind = "game_heuristic", index = 0 } }
 
-# Epsilon sweep using heuristic 1 only for informed action selection.
+# Epsilon sweep using H0 only for informed action selection.
 # The array creates four agents named with -e0.0, -e0.1, -e0.25, and -e1.0 suffixes:
 #   epsilon 0.0  -> fully greedy rollout;
 #   epsilon 0.1  -> 90% greedy, 10% random;
 #   epsilon 0.25 -> 75% greedy, 25% random;
 #   epsilon 1.0  -> fully random rollout (the evaluator is not consulted for selection).
 [[agents]]
-name = "mcts-epsilon-h1"
+name = "mcts-epsilon-h0"
 kind = "mcts"
 iterations = 250
 rollout_depth = 32
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
-rollout_policy = { kind = "epsilon_greedy", epsilon = [0.0, 0.1, 0.25, 1.0], evaluator = { kind = "game_heuristic", index = 1 } }
+rollout_policy = { kind = "epsilon_greedy", epsilon = [0.0, 0.1, 0.25, 1.0], evaluator = { kind = "game_heuristic", index = 0 } }
 
-# Conditional informed rollout: H2 guides Collect decisions, while gemstone decisions remain
+# Conditional informed rollout: H0 guides Collect decisions, while gemstone decisions remain
 # uniform random. The nested epsilon array is expanded exactly like a top-level policy grid.
 [[agents]]
-name = "mcts-collect-rollout-h2"
+name = "mcts-collect-rollout-h0"
 kind = "mcts"
 iterations = 250
 rollout_depth = 32
 exploration = 1.4142135623730951
-cutoff_evaluator = { kind = "game_heuristic", index = 2 }
-rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "collect" }, primary = { kind = "epsilon_greedy", epsilon = [0.0, 0.25, 0.5, 0.75], evaluator = { kind = "game_heuristic", index = 2 } }, fallback = { kind = "uniform_random" } }
+cutoff_evaluator = { kind = "game_heuristic", index = 0 }
+rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "collect" }, primary = { kind = "epsilon_greedy", epsilon = [0.0, 0.25, 0.5, 0.75], evaluator = { kind = "game_heuristic", index = 0 } }, fallback = { kind = "uniform_random" } }
 
-# Progressive Bias keeps uniform rollouts but adds a cached, decaying H2 prior to UCT selection
+# Progressive Bias keeps uniform rollouts but adds a cached, decaying H0 prior to UCT selection
 # only for Collect decisions. The weight array expands to five agents with -pb... suffixes.
 [[agents]]
-name = "mcts-collect-progressive-h2"
+name = "mcts-collect-progressive-h0"
 kind = "mcts"
 time_budget = 0.05
 rollout_depth = 130
 exploration = 1.4142135623730951
-cutoff_evaluator = { kind = "game_heuristic", index = 2 }
+cutoff_evaluator = { kind = "game_heuristic", index = 0 }
 rollout_policy = { kind = "uniform_random" }
-progressive_bias = { weight = [0.0, 0.1, 0.25, 0.5, 1.0], evaluator = { kind = "game_heuristic", index = 2 }, condition = { kind = "turn_phase", phase = "collect" } }
+progressive_bias = { weight = [0.0, 0.1, 0.25, 0.5, 1.0], evaluator = { kind = "game_heuristic", index = 0 }, condition = { kind = "turn_phase", phase = "collect" } }
 root_diagnostics = true
 
 # Cartesian-product example for comparing search width and horizon. These two arrays create four

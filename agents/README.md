@@ -163,7 +163,7 @@ by the root player maximize it and opponent nodes minimize it, including games w
 actions by the same player. Weight zero takes the exact baseline path and does not call the evaluator.
 
 Conditions are checked on the parent state where the action is selected, while the evaluator scores
-the resulting child. For SPOTF this allows H2 to guide only Collect without affecting gemstone
+the resulting child. For SPOTF this allows H0 to guide only Collect without affecting gemstone
 decisions:
 
 ```python
@@ -172,9 +172,9 @@ from meeple_bots import GameHeuristic, MctsAgent, ProgressiveBias, TurnPhaseIs, 
 agent = MctsAgent(
     time_budget=0.5,
     rollout_depth=130,
-    cutoff_evaluator=GameHeuristic(2),
+    cutoff_evaluator=GameHeuristic(0),
     rollout_policy=UniformRandom(),
-    progressive_bias=ProgressiveBias(0.25, GameHeuristic(2), TurnPhaseIs("collect")),
+    progressive_bias=ProgressiveBias(0.25, GameHeuristic(0), TurnPhaseIs("collect")),
     root_diagnostics=True,
 )
 ```
@@ -197,9 +197,8 @@ Boop currently exposes two evaluators:
 
 See the [Boop guide](../games/boop/README.md#mcts-heuristics) for their exact interpretation.
 
-Spirits of the Forest exposes heuristic `0`, heuristic `1` with stronger early- and mid-game
-gemstone conservation, and heuristic `2` based on category progress that can still reach a scoring
-threshold. See its
+Spirits of the Forest exposes only heuristic `0`, based on category progress that can still reach a
+scoring threshold and stronger early- and mid-game gemstone conservation. See its
 [game guide](../games/spirits-of-the-forest/README.md#mcts-heuristic).
 
 ### Reusable profiles

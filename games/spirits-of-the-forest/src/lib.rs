@@ -679,30 +679,20 @@ impl Game for SpiritsOfTheForest {
 
 impl HeuristicGame for SpiritsOfTheForest {
     fn heuristic_count(&self) -> u32 {
-        3
+        1
     }
 
     fn heuristic_utility(&self, index: u32, state: &Self::State, player: PlayerId) -> Option<f32> {
-        if player.index() >= 2 {
+        if index != 0 || player.index() >= 2 {
             return None;
         }
-        let gemstone_weight = match index {
-            0 => 0.5,
-            1 | 2 => {
-                let remaining_fraction = state.remaining_tiles() as f32 / TILE_COUNT as f32;
-                0.5 + 4.0 * remaining_fraction * remaining_fraction
-            }
-            _ => return None,
-        };
         if let Some(utility) = self.terminal_utility(state, player) {
             return Some(utility);
         }
+        let remaining_fraction = state.remaining_tiles() as f32 / TILE_COUNT as f32;
+        let gemstone_weight = 0.5 + 4.0 * remaining_fraction * remaining_fraction;
         let opponent = <Self as TwoPlayerZeroSumGame>::opponent(player)?;
-        let scores = if index == 2 {
-            self.reachable_progress_scores(state)
-        } else {
-            self.scores(state)
-        };
+        let scores = self.reachable_progress_scores(state);
         let player_pool = state.gemstone_pools[player.index()];
         let opponent_pool = state.gemstone_pools[opponent.index()];
         let raw = f32::from(scores[player.index()] - scores[opponent.index()])
@@ -1223,7 +1213,7 @@ mod tests {
     fn heuristics_are_bounded_and_zero_sum() {
         let game = SpiritsOfTheForest::from_tiles(SPIRIT_TILES);
         let state = game.initial_state();
-        assert_eq!(game.heuristic_count(), 3);
+        assert_eq!(game.heuristic_count(), 1);
         for index in 0..game.heuristic_count() {
             let first = game
                 .heuristic_utility(index, &state, PlayerId::FIRST)
@@ -1234,7 +1224,8 @@ mod tests {
             assert!((-1.0..=1.0).contains(&first));
             assert_eq!(first, -second);
         }
-        assert_eq!(game.heuristic_utility(3, &state, PlayerId::FIRST), None);
+        assert_eq!(game.heuristic_utility(1, &state, PlayerId::FIRST), None);
+        assert_eq!(game.heuristic_utility(2, &state, PlayerId::FIRST), None);
     }
 
     #[test]
@@ -1253,37 +1244,29 @@ mod tests {
     }
 
     #[test]
-    fn reachable_progress_reduces_early_provisional_majority_value() {
+    fn heuristic_zero_uses_reachable_progress() {
         let game = SpiritsOfTheForest::from_tiles(SPIRIT_TILES);
         let mut state = game.initial_state();
         state.remaining[0] = false;
         state.collections[0].add(game.tiles[0]);
 
-        let provisional = game.heuristic_utility(1, &state, PlayerId::FIRST).unwrap();
-        let reachable = game.heuristic_utility(2, &state, PlayerId::FIRST).unwrap();
+        let reachable = game.heuristic_utility(0, &state, PlayerId::FIRST).unwrap();
 
         assert!(reachable > 0.0);
-        assert!(reachable < provisional);
     }
 
     #[test]
-    fn conservation_heuristic_penalizes_early_gemstone_sacrifices_more() {
+    fn heuristic_zero_penalizes_early_gemstone_sacrifices_more() {
         let game = SpiritsOfTheForest::from_tiles(SPIRIT_TILES);
         let mut early = game.initial_state();
         early.gemstone_pools[0].available = 2;
         early.gemstone_pools[0].removed = 1;
 
-        let baseline = game.heuristic_utility(0, &early, PlayerId::FIRST).unwrap();
-        let early_conservation = game.heuristic_utility(1, &early, PlayerId::FIRST).unwrap();
-        let early_reachable = game.heuristic_utility(2, &early, PlayerId::FIRST).unwrap();
-        assert!(early_conservation < baseline);
-        assert_eq!(early_reachable, early_conservation);
+        let early_conservation = game.heuristic_utility(0, &early, PlayerId::FIRST).unwrap();
 
         let mut late = early.clone();
         late.remaining[..TILE_COUNT - ROWS].fill(false);
-        let late_conservation = game.heuristic_utility(1, &late, PlayerId::FIRST).unwrap();
-        let late_reachable = game.heuristic_utility(2, &late, PlayerId::FIRST).unwrap();
+        let late_conservation = game.heuristic_utility(0, &late, PlayerId::FIRST).unwrap();
         assert!(early_conservation < late_conservation);
-        assert_eq!(late_reachable, late_conservation);
     }
 }

@@ -6,6 +6,6 @@ name = "spotf-baseline"
 time_budget = 2.0
 rollout_depth = 130
 exploration = 1.0
-cutoff_evaluator = { kind = "game_heuristic", index = 2 }
+cutoff_evaluator = { kind = "game_heuristic", index = 0 }
 rollout_policy = { kind = "uniform_random" }
 tree_reuse = true

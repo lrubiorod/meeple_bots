@@ -50,7 +50,9 @@ class SpotfGuiInteractionTests(unittest.TestCase):
         self.assertIn("Reserva rival: elige una gema propia", PAGE)
         self.assertIn(".players{display:grid;grid-template-columns:1fr", PAGE)
         self.assertIn("grid-template-columns:repeat(12,minmax(0,1fr))", PAGE)
-        self.assertIn('value="2">H2 · Progreso alcanzable', PAGE)
+        self.assertEqual(PAGE.count('value="0">H0 · Progreso alcanzable'), 2)
+        self.assertNotIn("H1 ·", PAGE)
+        self.assertNotIn("H2 ·", PAGE)
         self.assertEqual(PAGE.count('value="none" selected>Ninguna'), 2)
         self.assertIn("heuristic==='none'?null:Number(heuristic)", PAGE)
 
@@ -157,12 +159,12 @@ class SpotfGuiTraceTests(unittest.TestCase):
                 "time_budget": 0.01,
                 "exploration": 1.0,
                 "rollout_depth": 13,
-                "heuristic": 2,
+                "heuristic": 0,
                 "tree_reuse": True,
             },
             "second",
             default_rollout_depth=64,
-            available_heuristics=(0, 1, 2),
+            available_heuristics=(0,),
         )
 
         self.assertIsNone(player.iterations)
@@ -186,7 +188,7 @@ class SpotfGuiTraceTests(unittest.TestCase):
                 iterations=8,
                 rollout_depth=4,
                 exploration=1.0,
-                heuristic=2,
+                heuristic=0,
                 tree_reuse=True,
             ),
         )
@@ -197,7 +199,7 @@ class SpotfGuiTraceTests(unittest.TestCase):
                 iterations=8,
                 rollout_depth=4,
                 exploration=1.0,
-                heuristic=2,
+                heuristic=0,
                 tree_reuse=True,
             ),
             seed=42,

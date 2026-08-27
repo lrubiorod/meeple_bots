@@ -207,9 +207,8 @@ Each seat can be human, Random, or MCTS. Before a match, the page configures pla
 budget, seed, and minimum display interval. Boop also exposes both cutoff heuristics and asks humans
 to choose a graduation or recovery when a placement has several legal resolutions.
 Spirits of the Forest presents collection and gemstone decisions as separate phases, derives its
-face-up forest from the match seed, and exposes heuristics `0` with constant gemstone value, `1`
-with stronger early- and mid-game gemstone conservation, and `2` with reachable category progress
-plus the same gemstone conservation as `1`.
+face-up forest from the match seed, and exposes only heuristic `0`, with reachable category progress
+and stronger early- and mid-game gemstone conservation.
 
 The server binds to `127.0.0.1:8765` by default. Use `--host`, `--port`, or `--no-browser` to change
 startup behavior, and `Ctrl+C` to stop it. Automated native matches release Python's GIL, keeping
@@ -307,8 +306,8 @@ meeple-bots analyze --game spotf --target-time 1 --seed 42 \
   --agent \
   --agent 'i=5000,d=120' \
   --agent 'name=equal-time-random,t=1,d=120,p=random' \
-  --agent 'name=rollout-h1,i=20000,d=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
-  --agent 'name=collect-h2,i=5000,d=32,h=2,p=epsilon,rh=2,e=0.25,phase=collect' \
+  --agent 'name=rollout-h0,i=20000,d=32,ce=neutral,p=epsilon,rh=0,e=0.1' \
+  --agent 'name=collect-h0,i=5000,d=32,h=0,p=epsilon,rh=0,e=0.25,phase=collect' \
   --agent-config configs/mcts/heuristic.toml
 ```
 
@@ -419,10 +418,10 @@ An MCTS entry independently configures cutoff evaluation and rollout action sele
 
 ```toml
 cutoff_evaluator = { kind = "neutral" }
-rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 1 } }
+rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 0 } }
 ```
 
-This example uses heuristic 1 during rollout selection but not at the depth cutoff. The inverse and
+This example uses heuristic 0 during rollout selection but not at the depth cutoff. The inverse and
 combined configurations are valid too. `uniform_random`, `greedy`, and `epsilon_greedy` are the
 built-in policies. Informed iterations cost more because they evaluate every legal successor, so
 compare policies with the same `time_budget` as well as with equal iterations. A timed decision
@@ -432,20 +431,20 @@ time, iterations, and nodes in the JSONL move. See the executable
 examples.
 
 A conditional policy can restrict informed selection to a game phase. This SPOTF example evaluates
-H2 only for `TakeTile` and `EndCollection`; gemstone actions use the uniform fallback:
+H0 only for `TakeTile` and `EndCollection`; gemstone actions use the uniform fallback:
 
 ```toml
-rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "collect" }, primary = { kind = "epsilon_greedy", epsilon = 0.25, evaluator = { kind = "game_heuristic", index = 2 } }, fallback = { kind = "uniform_random" } }
+rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "collect" }, primary = { kind = "epsilon_greedy", epsilon = 0.25, evaluator = { kind = "game_heuristic", index = 0 } }, fallback = { kind = "uniform_random" } }
 ```
 
 Conditional rollout configuration is preserved in JSONL and `agents.csv`. Turn-phase conditions
 are currently supported by SPOTF; other games reject them explicitly.
 
 Progressive Bias can guide UCT while preserving uniform rollouts. This example evaluates each new
-child once with H2 during Collect, caches that value, and lets its influence decay with visits:
+child once with H0 during Collect, caches that value, and lets its influence decay with visits:
 
 ```toml
-progressive_bias = { weight = 0.25, evaluator = { kind = "game_heuristic", index = 2 }, condition = { kind = "turn_phase", phase = "collect" } }
+progressive_bias = { weight = 0.25, evaluator = { kind = "game_heuristic", index = 0 }, condition = { kind = "turn_phase", phase = "collect" } }
 root_diagnostics = true
 ```
 
@@ -487,7 +486,7 @@ An informed-rollout epsilon sweep remains fully structured:
 
 ```toml
 cutoff_evaluator = { kind = "neutral" }
-rollout_policy = { kind = "epsilon_greedy", epsilon = [0.0, 0.1, 0.25, 1.0], evaluator = { kind = "game_heuristic", index = 1 } }
+rollout_policy = { kind = "epsilon_greedy", epsilon = [0.0, 0.1, 0.25, 1.0], evaluator = { kind = "game_heuristic", index = 0 } }
 ```
 
 The flat compatibility fields `heuristic_index`, `rollout_heuristic_index`, and
@@ -587,7 +586,7 @@ SPOTF additionally produces:
 
 - `spotf_matches.csv`: final scores, tile counts, physical turns, and gemstone totals;
 - `actions.csv`: every internal ply with phase, branching, timing/search work, surrounding state,
-  reachable H2 progress, category viability, gemstone state, and both ply/tile progress;
+  reachable H0 progress, category viability, gemstone state, and both ply/tile progress;
 - `player_turns.csv`: actions grouped into actual player turns, including aggregate decision cost,
   score/progress deltas, category viability, and gemstone attrition;
 - `tile_takes.csv`: spirit, power source, reservation, sacrifice, search cost, and strategic deltas

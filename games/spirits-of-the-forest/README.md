@@ -67,21 +67,17 @@ The public action union contains `TakeSpiritTile`, `EndSpiritCollection`,
 `PlaceSpiritGemstone`, `MoveSpiritGemstone`, and `SkipSpiritGemstone`. Human selectors receive
 only currently legal instances of these types.
 
-## MCTS heuristics
+## MCTS heuristic
 
-Three state evaluators are available for cutoff evaluation or informed rollouts:
+One state evaluator is available for cutoff evaluation, informed rollouts, and selection bias:
 
-- Index `0` combines provisional score difference, remaining usable gemstones, and a small
-  reservation bonus. Every usable gemstone has a constant weight of `0.5`.
-- Index `1` keeps the same score and reservation terms but values each usable gemstone according to
-  the fraction of forest tiles remaining: `0.5 + 4 * remaining_fraction^2`. A sacrificed gemstone
-  therefore costs `4.5` raw heuristic points at the start, `1.5` halfway through the forest, and
-  approaches the index `0` cost near the end.
-- Index `2` keeps the gemstone terms from index `1`, but replaces provisional majority scoring
-  with reachable progress. For each spirit and power source, every collected symbol is worth one
-  raw point only while `collected + remaining >= ceil(total / 2)`. A mathematically lost category
-  is worth zero; once no symbol remains, a player with none receives the real `-3` penalty. All
-  forest symbols are treated as potentially reachable, including reservations.
+- Index `0` values reachable category progress and phase-dependent gemstone conservation. For each
+  spirit and power source, every collected symbol is worth one raw point only while
+  `collected + remaining >= ceil(total / 2)`. A mathematically lost category is worth zero; once no
+  symbol remains, a player with none receives the real `-3` penalty. All forest symbols are treated
+  as potentially reachable, including reservations. Each usable gemstone is weighted by
+  `0.5 + 4 * remaining_fraction^2`, so sacrificing one is substantially more expensive early than
+  late in the game. Placed reservations also receive a small bonus.
 
 All results are normalized to `[-1, 1]`; terminal states always use exact match utility. Neutral
 terminal rollouts remain available by leaving `heuristic=None`.
@@ -99,7 +95,7 @@ meeple-bots report --input results/tournaments/spotf-study/data
 The native replay analyzer reconstructs the shuffled forest from the match seed and validates every
 recorded action. It separates engine plies from physical turns, records tile collection and gemstone
 behavior, and breaks the final score down across the nine spirits and three power sources. State
-snapshots also track the H2 reachable-progress score, viable and led categories, and gemstone
+snapshots also track the H0 reachable-progress score, viable and led categories, and gemstone
 attrition. The report aggregates actual MCTS latency, iterations/nodes per second, budget use, and
 strategic evolution by game quarter. See the
 [Python guide](../../python/README.md#2-extract-analysis-tables) for the generated table list.

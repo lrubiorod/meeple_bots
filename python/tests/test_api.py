@@ -514,7 +514,7 @@ class MatchApiTests(unittest.TestCase):
     def test_conditional_rollout_runs_on_spotf_and_is_rejected_elsewhere(self) -> None:
         policy = ConditionalRollout(
             condition=TurnPhaseIs("collect"),
-            primary=EpsilonGreedy(0.25, GameHeuristic(2)),
+            primary=EpsilonGreedy(0.25, GameHeuristic(0)),
             fallback=UniformRandom(),
         )
         result = Match(
@@ -531,13 +531,13 @@ class MatchApiTests(unittest.TestCase):
     def test_conditional_rollout_is_preserved_in_extracted_agent_metadata(self) -> None:
         policy = ConditionalRollout(
             TurnPhaseIs("collect"),
-            EpsilonGreedy(0.25, GameHeuristic(2)),
+            EpsilonGreedy(0.25, GameHeuristic(0)),
             UniformRandom(),
         )
 
         row = _agent_row(
             _batch_agent_dict(
-                "collect-h2",
+                "collect-h0",
                 MctsAgent(iterations=5, rollout_depth=2, rollout_policy=policy),
             )
         )
@@ -550,14 +550,14 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(row["rollout_fallback_policy"], "uniform_random")
         description = _serialized_rollout_policy_description(
             _batch_agent_dict(
-                "collect-h2",
+                "collect-h0",
                 MctsAgent(iterations=5, rollout_depth=2, rollout_policy=policy),
             )
         )
         self.assertEqual(
             description,
             "conditional(collect ? epsilon_greedy(epsilon=0.25), "
-            "evaluator=game_heuristic(2) : uniform_random)",
+            "evaluator=game_heuristic(0) : uniform_random)",
         )
 
     def test_progressive_bias_is_preserved_in_extracted_agent_metadata(self) -> None:
@@ -566,7 +566,7 @@ class MatchApiTests(unittest.TestCase):
             rollout_depth=2,
             progressive_bias=ProgressiveBias(
                 0.25,
-                GameHeuristic(2),
+                GameHeuristic(0),
                 TurnPhaseIs("collect"),
             ),
             root_diagnostics=True,
@@ -576,7 +576,7 @@ class MatchApiTests(unittest.TestCase):
 
         self.assertEqual(row["progressive_bias_weight"], 0.25)
         self.assertEqual(row["progressive_bias_evaluator"], "game_heuristic")
-        self.assertEqual(row["progressive_bias_heuristic"], 2)
+        self.assertEqual(row["progressive_bias_heuristic"], 0)
         self.assertEqual(row["progressive_bias_condition"], "turn_phase")
         self.assertEqual(row["progressive_bias_condition_phase"], "collect")
         self.assertTrue(row["root_diagnostics"])
@@ -587,7 +587,7 @@ class MatchApiTests(unittest.TestCase):
             rollout_depth=2,
             rollout_policy=ConditionalRollout(
                 TurnPhaseIs("collect"),
-                EpsilonGreedy(0.25, GameHeuristic(2)),
+                EpsilonGreedy(0.25, GameHeuristic(0)),
                 UniformRandom(),
             ),
         )
@@ -600,13 +600,13 @@ class MatchApiTests(unittest.TestCase):
         self.assertGreater(benchmark.milliseconds_per_iteration, 0.0)
 
     def test_conditional_progressive_bias_records_root_diagnostics(self) -> None:
-        bias = ProgressiveBias(0.25, GameHeuristic(2), TurnPhaseIs("collect"))
+        bias = ProgressiveBias(0.25, GameHeuristic(0), TurnPhaseIs("collect"))
         result = Match(
             game=SpiritsOfTheForest(),
             first=MctsAgent(
                 iterations=16,
                 rollout_depth=2,
-                cutoff_evaluator=GameHeuristic(2),
+                cutoff_evaluator=GameHeuristic(0),
                 rollout_policy=UniformRandom(),
                 progressive_bias=bias,
                 root_diagnostics=True,
@@ -784,14 +784,14 @@ class MatchApiTests(unittest.TestCase):
 
     def test_inline_mcts_profile_accepts_collect_scoped_rollout(self) -> None:
         profile = _parse_inline_mcts_profile(
-            "i=5000,d=32,h=2,p=epsilon,rh=2,e=0.25,phase=collect"
+            "i=5000,d=32,h=0,p=epsilon,rh=0,e=0.25,phase=collect"
         )
 
         self.assertEqual(
             profile.agent.rollout_policy,
             ConditionalRollout(
                 TurnPhaseIs("collect"),
-                EpsilonGreedy(0.25, GameHeuristic(2)),
+                EpsilonGreedy(0.25, GameHeuristic(0)),
                 UniformRandom(),
             ),
         )
@@ -809,12 +809,12 @@ class MatchApiTests(unittest.TestCase):
 
     def test_inline_mcts_profile_accepts_progressive_bias(self) -> None:
         profile = _parse_inline_mcts_profile(
-            "i=100,d=130,h=2,pb=0.25,pbh=2,pbphase=collect,rd=true"
+            "i=100,d=130,h=0,pb=0.25,pbh=0,pbphase=collect,rd=true"
         )
 
         self.assertEqual(
             profile.agent.progressive_bias,
-            ProgressiveBias(0.25, GameHeuristic(2), TurnPhaseIs("collect")),
+            ProgressiveBias(0.25, GameHeuristic(0), TurnPhaseIs("collect")),
         )
         self.assertTrue(profile.agent.root_diagnostics)
         self.assertIn("pb0.25", profile.name)
@@ -939,18 +939,18 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(turn.gemstone_pools[0].available, 3)
 
     def test_spirits_mcts_heuristics_and_gui_are_available(self) -> None:
-        for heuristic in (0, 1, 2):
-            result = Match(
-                game=SpiritsOfTheForest(),
-                first=MctsAgent(iterations=2, rollout_depth=2, heuristic=heuristic),
-                second=RandomAgent(),
-                seed=9,
-                max_plies=256,
-            ).run()
-            self.assertIsNotNone(result.scores)
+        result = Match(
+            game=SpiritsOfTheForest(),
+            first=MctsAgent(iterations=2, rollout_depth=2, heuristic=0),
+            second=RandomAgent(),
+            seed=9,
+            max_plies=256,
+        ).run()
+        self.assertIsNotNone(result.scores)
 
-        with self.assertRaisesRegex(ValueError, "available indices: 0..2"):
-            Match(game=SpiritsOfTheForest(), first=MctsAgent(heuristic=3))
+        for heuristic in (1, 2):
+            with self.assertRaisesRegex(ValueError, "available index: 0"):
+                Match(game=SpiritsOfTheForest(), first=MctsAgent(heuristic=heuristic))
 
         gui = SpiritsOfTheForestGui()
         gui.start(
@@ -2288,7 +2288,7 @@ class MatchApiTests(unittest.TestCase):
                         'kind = "mcts"',
                         "iterations = 1",
                         "rollout_depth = 1",
-                        'cutoff_evaluator = { kind = "game_heuristic", index = 1 }',
+                        'cutoff_evaluator = { kind = "game_heuristic", index = 0 }',
                         'rollout_policy = { kind = "uniform_random" }',
                         "[[agents]]",
                         'name = "rollout-only"',
@@ -2305,7 +2305,7 @@ class MatchApiTests(unittest.TestCase):
                         "rollout_depth = 1",
                         'cutoff_evaluator = { kind = "game_heuristic", index = 0 }',
                         'rollout_policy = { kind = "greedy", '
-                        'evaluator = { kind = "game_heuristic", index = 1 } }',
+                        'evaluator = { kind = "game_heuristic", index = 0 } }',
                     ]
                 ),
                 encoding="utf-8",
@@ -2318,7 +2318,7 @@ class MatchApiTests(unittest.TestCase):
         ]
         self.assertIsInstance(neutral.cutoff_evaluator, NeutralEvaluator)
         self.assertIsInstance(neutral.rollout_policy, UniformRandom)
-        self.assertEqual(cutoff_only.cutoff_evaluator, GameHeuristic(1))
+        self.assertEqual(cutoff_only.cutoff_evaluator, GameHeuristic(0))
         self.assertIsInstance(cutoff_only.rollout_policy, UniformRandom)
         self.assertIsInstance(rollout_only.cutoff_evaluator, NeutralEvaluator)
         self.assertEqual(
@@ -2326,7 +2326,7 @@ class MatchApiTests(unittest.TestCase):
             EpsilonGreedy(0.2, GameHeuristic(0)),
         )
         self.assertEqual(both.cutoff_evaluator, GameHeuristic(0))
-        self.assertEqual(both.rollout_policy, Greedy(GameHeuristic(1)))
+        self.assertEqual(both.rollout_policy, Greedy(GameHeuristic(0)))
 
     def test_tournament_agent_grid_can_vary_rollout_epsilon(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2371,7 +2371,7 @@ class MatchApiTests(unittest.TestCase):
             config_path.write_text(
                 "\n".join(
                     [
-                        'game = "spotf"',
+                        'game = "boop"',
                         "matches_per_pair = 1",
                         "[[agents]]",
                         'name = "random"',
@@ -2436,11 +2436,11 @@ class MatchApiTests(unittest.TestCase):
                         'kind = "mcts"',
                         "iterations = 1",
                         "rollout_depth = 1",
-                        'cutoff_evaluator = { kind = "game_heuristic", index = 2 }',
+                        'cutoff_evaluator = { kind = "game_heuristic", index = 0 }',
                         'rollout_policy = { kind = "conditional", condition = { '
                         'kind = "turn_phase", phase = "collect" }, primary = { '
                         'kind = "epsilon_greedy", epsilon = [0.0, 0.25], evaluator = { '
-                        'kind = "game_heuristic", index = 2 } }, fallback = { '
+                        'kind = "game_heuristic", index = 0 } }, fallback = { '
                         'kind = "uniform_random" } }',
                     ]
                 ),
@@ -2481,10 +2481,10 @@ class MatchApiTests(unittest.TestCase):
                         'kind = "mcts"',
                         "iterations = 4",
                         "rollout_depth = 2",
-                        'cutoff_evaluator = { kind = "game_heuristic", index = 2 }',
+                        'cutoff_evaluator = { kind = "game_heuristic", index = 0 }',
                         'rollout_policy = { kind = "uniform_random" }',
                         'progressive_bias = { weight = [0.0, 0.25], evaluator = { '
-                        'kind = "game_heuristic", index = 2 }, condition = { '
+                        'kind = "game_heuristic", index = 0 }, condition = { '
                         'kind = "turn_phase", phase = "collect" } }',
                         "root_diagnostics = true",
                     ]

@@ -293,6 +293,11 @@ impl fmt::Display for CatalogError {
                 let name = game_name(*game);
                 if *available == 0 {
                     write!(formatter, "{name} does not provide MCTS heuristics")
+                } else if *available == 1 {
+                    write!(
+                        formatter,
+                        "{name} does not provide MCTS heuristic {index}; available index: 0"
+                    )
                 } else {
                     write!(
                         formatter,
@@ -1814,16 +1819,16 @@ mod tests {
         let error = configured_boop_mcts(invalid_rollout_heuristic).unwrap_err();
         assert!(error.to_string().contains("available indices: 0..1"));
 
-        let AgentConfig::Mcts(spirits_h2) = mcts(Some(2)) else {
+        let AgentConfig::Mcts(spirits_h0) = mcts(Some(0)) else {
             unreachable!();
         };
-        configured_spirits_of_the_forest_mcts(spirits_h2).unwrap();
+        configured_spirits_of_the_forest_mcts(spirits_h0).unwrap();
 
-        let AgentConfig::Mcts(spirits_h3) = mcts(Some(3)) else {
+        let AgentConfig::Mcts(spirits_h1) = mcts(Some(1)) else {
             unreachable!();
         };
-        let error = configured_spirits_of_the_forest_mcts(spirits_h3).unwrap_err();
-        assert!(error.to_string().contains("available indices: 0..2"));
+        let error = configured_spirits_of_the_forest_mcts(spirits_h1).unwrap_err();
+        assert!(error.to_string().contains("available index: 0"));
     }
 
     #[test]
@@ -1914,7 +1919,7 @@ mod tests {
                     condition: RolloutConditionConfig::TurnPhase(CatalogTurnPhase::Collect),
                     primary: RolloutPolicyConfig::EpsilonGreedy {
                         epsilon: 1.0,
-                        evaluator: EvaluatorConfig::GameHeuristic { index: 2 },
+                        evaluator: EvaluatorConfig::GameHeuristic { index: 0 },
                     },
                     fallback: RolloutPolicyConfig::UniformRandom,
                 },

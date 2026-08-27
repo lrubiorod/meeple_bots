@@ -147,9 +147,9 @@ meeple-bots analyze --game spotf \
   --agent 'i=5000,d=120' \
   --agent 'name=timed,t=1,d=120' \
   --agent 'name=horizon,i=20000,d=32,h=0' \
-  --agent 'name=informed,i=10000,d=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
-  --agent 'name=collect-h2,i=5000,d=32,h=2,p=epsilon,rh=2,e=0.25,phase=collect' \
-  --agent 'name=collect-pb-h2,t=0.5,d=130,h=2,pb=0.25,pbh=2,pbphase=collect,rd=true' \
+  --agent 'name=informed,i=10000,d=32,ce=neutral,p=epsilon,rh=0,e=0.1' \
+  --agent 'name=collect-h0,i=5000,d=32,h=0,p=epsilon,rh=0,e=0.25,phase=collect' \
+  --agent 'name=collect-pb-h0,t=0.5,d=130,h=0,pb=0.25,pbh=0,pbphase=collect,rd=true' \
   --agent 'iterations=10000,exploration=0.8'
 ```
 
@@ -162,7 +162,7 @@ accepts `neutral` or `hINDEX`. Missing values default to 1000 iterations, depth 
 square-root-of-two exploration, uniform-random rollouts, neutral cutoff evaluation, no Progressive
 Bias, and disabled root diagnostics. A bare `--agent` uses every default. Automatic names encode
 the effective configuration, for example `mcts-i5000-d120`, `mcts-h0-i20000-d32`, and
-`mcts-h2-t0.5-d130-pb0.25-pbh2-pbphase-collect`; a non-default exploration constant is appended as
+`mcts-h0-t0.5-d130-pb0.25-pbh0-pbphase-collect`; a non-default exploration constant is appended as
 `-cVALUE`.
 
 `p=random` and `p=uniform` abbreviate uniform-random rollout. `p=greedy` and `p=epsilon` require
