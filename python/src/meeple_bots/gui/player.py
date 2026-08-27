@@ -15,10 +15,12 @@ class GuiPlayer:
     """Configuration for one player shown in a graphical interface."""
 
     kind: PlayerKind
-    iterations: int = 1_000
+    iterations: int | None = 1_000
+    time_budget: float | None = None
     exploration: float = 2.0**0.5
     rollout_depth: int = 256
     heuristic: int | None = None
+    tree_reuse: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in ("human", "random", "mcts"):
@@ -26,9 +28,11 @@ class GuiPlayer:
         if self.kind == "mcts":
             MctsAgent(
                 iterations=self.iterations,
+                time_budget=self.time_budget,
                 exploration=self.exploration,
                 rollout_depth=self.rollout_depth,
                 heuristic=self.heuristic,
+                tree_reuse=self.tree_reuse,
             )
 
     def as_dict(self) -> dict[str, object]:
@@ -37,9 +41,11 @@ class GuiPlayer:
         return {
             "kind": self.kind,
             "iterations": self.iterations,
+            "time_budget": self.time_budget,
             "exploration": self.exploration,
             "rollout_depth": self.rollout_depth,
             "heuristic": self.heuristic,
+            "tree_reuse": self.tree_reuse,
         }
 
 
@@ -64,7 +70,9 @@ def parse_gui_player(
     return GuiPlayer(
         kind=raw.get("kind"),
         iterations=raw.get("iterations", 1_000),
+        time_budget=raw.get("time_budget"),
         exploration=raw.get("exploration", 2.0**0.5),
         rollout_depth=raw.get("rollout_depth", default_rollout_depth),
         heuristic=heuristic,
+        tree_reuse=raw.get("tree_reuse", False),
     )

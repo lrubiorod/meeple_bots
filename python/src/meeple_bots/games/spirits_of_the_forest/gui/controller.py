@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from time import monotonic
 
 from ....api import (
@@ -25,10 +26,11 @@ from ....api import (
     _initial_spirits_state,
 )
 from ....gui.player import GuiPlayer
+from .trace import write_gui_trace
 
 
 class SpiritsOfTheForestGui:
-    def __init__(self) -> None:
+    def __init__(self, trace_dir: Path = Path("results/gui/spotf")) -> None:
         self._condition = threading.Condition()
         self._cancelled = threading.Event()
         self._thread: threading.Thread | None = None
@@ -39,6 +41,8 @@ class SpiritsOfTheForestGui:
             GuiPlayer("mcts", rollout_depth=64, heuristic=0),
         )
         self._minimum_move_seconds = 0.4
+        self._trace_dir = trace_dir
+        self._save_trace = False
         self._last_published = monotonic()
         self._state = self._empty_state()
 
@@ -49,6 +53,7 @@ class SpiritsOfTheForestGui:
         *,
         seed: int = 0,
         minimum_move_seconds: float = 0.4,
+        save_trace: bool = False,
     ) -> None:
         if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**64:
             raise ValueError("seed must be an integer between 0 and 2^64 - 1")
@@ -58,6 +63,8 @@ class SpiritsOfTheForestGui:
             or not 0 <= minimum_move_seconds <= 10
         ):
             raise ValueError("minimum_move_seconds must be between 0 and 10")
+        if not isinstance(save_trace, bool):
+            raise ValueError("save_trace must be a boolean")
         self.cancel()
         board, collections, gems, phase, active, scores = _initial_spirits_state(seed)
         with self._condition:
@@ -66,6 +73,7 @@ class SpiritsOfTheForestGui:
             self._legal_actions = ()
             self._players = (first, second)
             self._minimum_move_seconds = float(minimum_move_seconds)
+            self._save_trace = save_trace
             self._last_published = monotonic()
             self._state = self._empty_state()
             self._state.update(
@@ -81,6 +89,7 @@ class SpiritsOfTheForestGui:
                     "seed": seed,
                     "minimum_move_seconds": self._minimum_move_seconds,
                     "players": [first.as_dict(), second.as_dict()],
+                    "save_trace": save_trace,
                     "initial": {
                         "forest": _serialize_board(board),
                         "collections": _serialize_collections(collections),
@@ -156,6 +165,7 @@ class SpiritsOfTheForestGui:
             self._condition.notify_all()
 
     def _run_match(self, seed: int) -> None:
+        started = monotonic()
         try:
             result = Match(
                 game=SpiritsOfTheForest(),
@@ -175,6 +185,18 @@ class SpiritsOfTheForestGui:
             return
         if self._cancelled.is_set():
             return
+        trace_path = None
+        trace_error = None
+        if self._save_trace:
+            try:
+                trace_path = write_gui_trace(
+                    self._trace_dir,
+                    result=result,
+                    players=self._players,
+                    duration_seconds=monotonic() - started,
+                )
+            except Exception as error:
+                trace_error = str(error)
         with self._condition:
             self._state.update(
                 status="finished",
@@ -187,6 +209,8 @@ class SpiritsOfTheForestGui:
                     else f"Gana el jugador {result.winner + 1}"
                 ),
                 legal_actions=[],
+                trace_path=None if trace_path is None else str(trace_path),
+                trace_error=trace_error,
             )
             self._condition.notify_all()
 
@@ -198,9 +222,11 @@ class SpiritsOfTheForestGui:
             return RandomAgent()
         return MctsAgent(
             iterations=configured.iterations,
+            time_budget=configured.time_budget,
             exploration=configured.exploration,
             rollout_depth=configured.rollout_depth,
             heuristic=configured.heuristic,
+            tree_reuse=configured.tree_reuse,
         )
 
     def _select_human_action(self, turn: HumanTurn) -> SpiritsOfTheForestAction:
@@ -294,6 +320,9 @@ class SpiritsOfTheForestGui:
             "last_decision_seconds": None,
             "seed": 0,
             "minimum_move_seconds": self._minimum_move_seconds,
+            "save_trace": self._save_trace,
+            "trace_path": None,
+            "trace_error": None,
             "initial": None,
         }
 

@@ -11,7 +11,7 @@ PAGE = r"""<!doctype html>
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#dbe9d1,#f2e3c2);color:var(--ink);font:15px system-ui,sans-serif}
 .shell{max-width:1500px;margin:auto;padding:20px}h1{margin:0;font-family:Georgia,serif;font-size:clamp(1.8rem,4vw,3.4rem)}
 .subtitle{margin:.2rem 0 1rem;color:#536257}.panel{background:var(--panel);border:1px solid #cabf9f;border-radius:16px;box-shadow:0 8px 24px #32402a1c;padding:16px;margin-bottom:14px}
-.config{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.config label{display:grid;gap:4px;font-size:.82rem}.config input,.config select,.config button{font:inherit;padding:8px;border:1px solid #a99e80;border-radius:8px;background:white}.config button,.action{cursor:pointer;background:#315f44;color:white;border:0}
+.config{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.config label,.mcts-config label{display:grid;gap:4px;font-size:.82rem}.config input,.config select,.config button,.mcts-config input,.mcts-config select{font:inherit;padding:8px;border:1px solid #a99e80;border-radius:8px;background:white}.config button,.action{cursor:pointer;background:#315f44;color:white;border:0}[hidden]{display:none!important}.mcts-configs{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:16px}.mcts-config{display:flex;gap:10px;align-items:end;flex-wrap:wrap;border:1px solid #c8bea4;border-radius:12px;padding:12px;background:#f7f1e4}.mcts-config strong{flex-basis:100%}
 .players{display:grid;grid-template-columns:1fr;gap:12px}.player{border-left:5px solid var(--color);padding:10px;background:#f6f2e8;border-radius:8px}.player.active{outline:2px solid var(--color)}.score{font-size:1.5rem;font-weight:800}
 .counts{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:5px;font-size:.75rem;margin-top:6px}.count{background:#fff;padding:5px;border-radius:6px;border-left:5px solid var(--counter);display:flex;justify-content:space-between;gap:5px}.count i{width:9px;height:9px;border-radius:50%;background:var(--counter);display:inline-block;margin-right:3px}
 .forest-wrap{overflow-x:auto;padding:8px 0}.forest{display:grid;grid-template-columns:repeat(12,minmax(72px,1fr));gap:7px;min-width:920px}.tile{position:relative;min-height:82px;border:2px solid #ffffff99;border-radius:12px;background:var(--tile);color:#1f211e;box-shadow:0 3px 7px #0003;padding:6px;cursor:default}.tile.legal{cursor:pointer;outline:4px solid #2a8b52;transform:translateY(-2px)}.tile.source-option{outline-color:#2374ab}.tile.payment-option{outline-color:#d07a16}.tile.selected{outline:5px solid #2d2930;transform:translateY(-3px)}.tile.empty{visibility:hidden}.tile strong{display:block;font-size:.8rem;text-transform:uppercase}.symbols{font:700 1.35rem Georgia,serif;margin-top:7px}.source{position:absolute;right:6px;bottom:5px;font-size:1.3rem}.gem{position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;background:var(--gem);border:2px solid white;box-shadow:0 1px 3px #000}
@@ -25,12 +25,32 @@ PAGE = r"""<!doctype html>
 <section class="panel config">
 <label>Jugador 1<select id="player-0"><option value="human">Humano</option><option value="random">Random</option><option value="mcts">MCTS</option></select></label>
 <label>Jugador 2<select id="player-1"><option value="mcts">MCTS</option><option value="human">Humano</option><option value="random">Random</option></select></label>
-<label>Iteraciones MCTS<input id="iterations" type="number" min="1" value="500"></label>
-<label>Profundidad<input id="depth" type="number" min="1" value="64"></label>
-<label>Heurística<select id="heuristic"><option value="0">H0 · Puntuación provisional y gemas</option><option value="1">H1 · Conservación de gemas</option><option value="2">H2 · Progreso alcanzable</option><option value="none">Ninguna</option></select></label>
+<label><input id="save-trace" type="checkbox" checked> Guardar JSONL</label>
 <label>Semilla<input id="seed" type="number" min="0" value="0"></label>
 <label>Ritmo (s)<input id="pace" type="number" min="0" max="10" step="0.1" value="0.4"></label>
 <button id="start">Nueva partida</button><div class="error" id="error"></div>
+</section>
+<section class="mcts-configs">
+<div class="mcts-config" id="mcts-config-0" hidden>
+<strong>MCTS · Jugador 1</strong>
+<label>Presupuesto<select id="budget-mode-0"><option value="time">Tiempo</option><option value="iterations">Iteraciones</option></select></label>
+<label id="time-budget-label-0">Tiempo por decisión (s)<input id="time-budget-0" type="number" min="0.001" step="0.1" value="1"></label>
+<label id="iterations-label-0" hidden>Iteraciones por decisión<input id="iterations-0" type="number" min="1" value="500"></label>
+<label>Profundidad<input id="depth-0" type="number" min="1" value="130"></label>
+<label>Exploración<input id="exploration-0" type="number" min="0" step="0.1" value="1"></label>
+<label>Heurística<select id="heuristic-0"><option value="0">H0 · Puntuación provisional y gemas</option><option value="1">H1 · Conservación de gemas</option><option value="2" selected>H2 · Progreso alcanzable</option><option value="none">Ninguna</option></select></label>
+<label><input id="tree-reuse-0" type="checkbox" checked> Reutilizar árbol</label>
+</div>
+<div class="mcts-config" id="mcts-config-1">
+<strong>MCTS · Jugador 2</strong>
+<label>Presupuesto<select id="budget-mode-1"><option value="time">Tiempo</option><option value="iterations">Iteraciones</option></select></label>
+<label id="time-budget-label-1">Tiempo por decisión (s)<input id="time-budget-1" type="number" min="0.001" step="0.1" value="1"></label>
+<label id="iterations-label-1" hidden>Iteraciones por decisión<input id="iterations-1" type="number" min="1" value="500"></label>
+<label>Profundidad<input id="depth-1" type="number" min="1" value="130"></label>
+<label>Exploración<input id="exploration-1" type="number" min="0" step="0.1" value="1"></label>
+<label>Heurística<select id="heuristic-1"><option value="0">H0 · Puntuación provisional y gemas</option><option value="1">H1 · Conservación de gemas</option><option value="2" selected>H2 · Progreso alcanzable</option><option value="none">Ninguna</option></select></label>
+<label><input id="tree-reuse-1" type="checkbox" checked> Reutilizar árbol</label>
+</div>
 </section>
 <section class="players" id="players"></section>
 <section class="panel">
@@ -131,8 +151,16 @@ function initializeGui(){
     const button=document.createElement('button');button.className='tile empty';button.addEventListener('click',()=>chooseTile(i));forest.appendChild(button);
   }
   async function api(path,options={}){const response=await fetch(path,options),payload=await response.json();if(!response.ok)throw Error(payload.error||'Error');return payload}
-  function playerConfig(index){const heuristic=document.querySelector('#heuristic').value;return{kind:document.querySelector(`#player-${index}`).value,iterations:Number(document.querySelector('#iterations').value),rollout_depth:Number(document.querySelector('#depth').value),heuristic:heuristic==='none'?null:Number(heuristic)}}
-  document.querySelector('#start').onclick=async()=>{try{review=null;selection=null;document.querySelector('#error').textContent='';state=await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({first:playerConfig(0),second:playerConfig(1),seed:Number(document.querySelector('#seed').value),minimum_move_seconds:Number(document.querySelector('#pace').value)})});render()}catch(error){document.querySelector('#error').textContent=error.message}};
+  function playerConfig(index){
+    const kind=document.querySelector(`#player-${index}`).value;
+    if(kind!=='mcts')return{kind};
+    const heuristic=document.querySelector(`#heuristic-${index}`).value,mode=document.querySelector(`#budget-mode-${index}`).value;
+    return{kind,iterations:mode==='iterations'?Number(document.querySelector(`#iterations-${index}`).value):null,time_budget:mode==='time'?Number(document.querySelector(`#time-budget-${index}`).value):null,exploration:Number(document.querySelector(`#exploration-${index}`).value),rollout_depth:Number(document.querySelector(`#depth-${index}`).value),heuristic:heuristic==='none'?null:Number(heuristic),tree_reuse:document.querySelector(`#tree-reuse-${index}`).checked};
+  }
+  function updateBudget(index){const timed=document.querySelector(`#budget-mode-${index}`).value==='time';document.querySelector(`#time-budget-label-${index}`).hidden=!timed;document.querySelector(`#iterations-label-${index}`).hidden=timed}
+  function updateMctsConfig(index){document.querySelector(`#mcts-config-${index}`).hidden=document.querySelector(`#player-${index}`).value!=='mcts'}
+  for(const index of [0,1]){document.querySelector(`#player-${index}`).onchange=()=>updateMctsConfig(index);document.querySelector(`#budget-mode-${index}`).onchange=()=>updateBudget(index);updateMctsConfig(index);updateBudget(index)}
+  document.querySelector('#start').onclick=async()=>{try{review=null;selection=null;document.querySelector('#error').textContent='';state=await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({first:playerConfig(0),second:playerConfig(1),seed:Number(document.querySelector('#seed').value),minimum_move_seconds:Number(document.querySelector('#pace').value),save_trace:document.querySelector('#save-trace').checked})});render()}catch(error){document.querySelector('#error').textContent=error.message}};
   setInterval(async()=>{if(!state||!['playing','waiting_human'].includes(state.status))return;try{state=await api('/api/state');render()}catch(error){}},250);
   function frame(){if(review===null)return state;if(review===0)return state.initial||state;return state.moves[review-1]}
   function liveActions(){return review===null&&state?.status==='waiting_human'?(state.legal_actions||[]):[]}
@@ -149,7 +177,7 @@ function initializeGui(){
   function render(){
     if(!state)return;
     const current=frame(),actions=liveActions();selection=reconcileSelection(actions,selection);
-    document.querySelector('#status').textContent=review===null?state.message:`Revisando acción ${review}`;
+    document.querySelector('#status').textContent=review===null?(state.trace_error?`${state.message} · Error al guardar: ${state.trace_error}`:state.trace_path?`${state.message} · Guardada en ${state.trace_path}`:state.message):`Revisando acción ${review}`;
     document.querySelector('#phase').textContent=current.phase==='collect'?'Recogida':'Gemas';
     renderPlayers(current);renderForest(current,actions);renderActions(actions);renderHistory();
   }
