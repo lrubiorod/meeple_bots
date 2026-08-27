@@ -365,6 +365,7 @@ game = "boop"
 output = "../../results/tournaments/boop-study.jsonl"
 matches_per_pair = 20
 pairing_mode = "round_robin"
+seat_mode = "paired"
 seed = 42
 max_plies = 10000
 workers = "auto"
@@ -386,9 +387,14 @@ heuristic_index = 0
 self_play = true
 ```
 
-The default `pairing_mode = "round_robin"` schedules every distinct pair of agents and alternates
-their seats. `self_play = true` adds one same-configuration pairing without including those games
-in competitive standings. Different names may intentionally use identical parameters.
+The default `pairing_mode = "round_robin"` schedules every distinct pair of agents. The independent
+default `seat_mode = "alternating"` alternates their seats while assigning a new seed to every
+match. Use `seat_mode = "paired"` to run each seed twice with opposite seats. In paired mode,
+`matches_per_pair` counts total games and must be even: `20` means ten distinct seeded positions and
+twenty games. Self-play keeps distinct seeds because swapping one configuration with itself would
+only duplicate the same match. `self_play = true` adds that same-configuration pairing without
+including its games in competitive standings. Different names may intentionally use identical
+parameters.
 
 For ordered parameter sweeps, `pairing_mode = "adjacent"` reduces only the internal pairings of
 each `[[agents]]` grid. Two variants from the same entry are paired when they differ in exactly one
@@ -406,7 +412,8 @@ meeple-bots tournament --config configs/tournaments/boop-study.toml --workers 6
 
 Only the main thread updates standings, reports progress, and writes JSONL. Match numbers, seeds,
 seats, and trace order therefore remain deterministic even when later matches finish computation
-first. The JSONL header records the effective worker count.
+first. The JSONL header records the effective worker count and seat mode. Extraction preserves the
+mode in `studies.csv`; paired games can also be identified by their shared pairing and seed.
 
 An MCTS entry independently configures cutoff evaluation and rollout action selection:
 

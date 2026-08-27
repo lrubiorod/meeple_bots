@@ -479,6 +479,7 @@ class _TournamentConfig:
     game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest
     output: Path | None
     pairing_mode: str
+    seat_mode: str
     matches_per_pair: int
     seed: int
     max_plies: int
@@ -572,6 +573,7 @@ def _run_tournament(args: argparse.Namespace) -> int:
                 "game": _game_name(config.game),
                 "output": str(output_path),
                 "pairing_mode": config.pairing_mode,
+                "seat_mode": config.seat_mode,
                 "matches_per_pair": config.matches_per_pair,
                 "seed": config.seed,
                 "max_plies": config.max_plies,
@@ -651,6 +653,7 @@ def _run_tournament(args: argparse.Namespace) -> int:
         "game": _game_name(config.game),
         "agents": len(config.agents),
         "pairing_mode": config.pairing_mode,
+        "seat_mode": config.seat_mode,
         "pairings": len(pairings),
         "matches": total_matches,
         "workers": worker_count,
@@ -698,9 +701,16 @@ def _tournament_match_jobs(
     config: _TournamentConfig,
 ) -> Iterator[_TournamentMatchJob]:
     match_number = 0
+    seed_offset = 0
     for pairing_number, (agent_a, agent_b) in enumerate(pairings, start=1):
+        paired_seats = config.seat_mode == "paired" and agent_a is not agent_b
         for pairing_match_number in range(1, config.matches_per_pair + 1):
             match_number += 1
+            pairing_seed_offset = (
+                (pairing_match_number - 1) // 2
+                if paired_seats
+                else pairing_match_number - 1
+            )
             yield _TournamentMatchJob(
                 match_number=match_number,
                 pairing_number=pairing_number,
@@ -709,8 +719,11 @@ def _tournament_match_jobs(
                 agent_b=agent_b,
                 self_play=agent_a is agent_b,
                 agent_a_player=(pairing_match_number - 1) % 2,
-                seed=(config.seed + match_number - 1) & (2**64 - 1),
+                seed=(config.seed + seed_offset + pairing_seed_offset) & (2**64 - 1),
             )
+        seed_offset += (
+            config.matches_per_pair // 2 if paired_seats else config.matches_per_pair
+        )
 
 
 def _tournament_pairing_result(
@@ -739,6 +752,7 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
         "game",
         "output",
         "pairing_mode",
+        "seat_mode",
         "matches_per_pair",
         "seed",
         "max_plies",
@@ -768,9 +782,16 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
         raise TypeError("tournament pairing_mode must be a string")
     if pairing_mode not in {"round_robin", "adjacent"}:
         raise ValueError("tournament pairing_mode must be round_robin or adjacent")
+    seat_mode = values.get("seat_mode", "alternating")
+    if not isinstance(seat_mode, str):
+        raise TypeError("tournament seat_mode must be a string")
+    if seat_mode not in {"alternating", "paired"}:
+        raise ValueError("tournament seat_mode must be alternating or paired")
     matches_per_pair = _positive_tournament_integer(
         "matches_per_pair", values.get("matches_per_pair")
     )
+    if seat_mode == "paired" and matches_per_pair % 2 != 0:
+        raise ValueError("tournament matches_per_pair must be even for paired seats")
     max_plies = _positive_tournament_integer(
         "max_plies", values.get("max_plies", 10_000)
     )
@@ -800,6 +821,7 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
         game=game,
         output=output,
         pairing_mode=pairing_mode,
+        seat_mode=seat_mode,
         matches_per_pair=matches_per_pair,
         seed=seed,
         max_plies=max_plies,
@@ -1140,6 +1162,7 @@ def _print_tournament_summary(summary: dict[str, object]) -> None:
     print(f"Game: {summary['game']}")
     print(f"Agents: {summary['agents']}")
     print(f"Pairings: {summary['pairings']}")
+    print(f"Seat mode: {summary['seat_mode']}")
     print(f"Matches: {summary['matches']}")
     print(f"Workers: {summary['workers']}")
     print(f"Total time: {summary['elapsed_seconds']:.3f}s")

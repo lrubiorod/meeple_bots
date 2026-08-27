@@ -1787,6 +1787,7 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(summary["pairings"], 2)
         self.assertEqual(summary["pairing_mode"], "round_robin")
+        self.assertEqual(summary["seat_mode"], "alternating")
         self.assertEqual(summary["matches"], 4)
         self.assertEqual(summary["workers"], 1)
         self.assertEqual(summary["output"], str(trace))
@@ -1796,6 +1797,7 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(records[0]["schema_version"], 1)
         self.assertEqual(records[0]["study_type"], "tournament")
         self.assertEqual(records[0]["pairing_mode"], "round_robin")
+        self.assertEqual(records[0]["seat_mode"], "alternating")
         self.assertEqual(records[0]["workers"], 1)
         self.assertEqual(len(records), 5)
         self.assertEqual(
@@ -1808,6 +1810,105 @@ class MatchApiTests(unittest.TestCase):
         )
         self.assertTrue(all(record["result"]["moves"] for record in records[1:]))
         self.assertIn("[4/4]", progress.getvalue())
+
+    def test_cli_tournament_pairs_seeds_with_opposite_seats(self) -> None:
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory, "tournament.toml")
+            trace = Path(directory, "matches.jsonl")
+            config.write_text(
+                "\n".join(
+                    [
+                        'game = "tic-tac-toe"',
+                        'output = "matches.jsonl"',
+                        "matches_per_pair = 4",
+                        'seat_mode = "paired"',
+                        "seed = 17",
+                        "max_plies = 9",
+                        "workers = 1",
+                        "",
+                        "[[agents]]",
+                        'name = "alpha"',
+                        'kind = "random"',
+                        "self_play = true",
+                        "",
+                        "[[agents]]",
+                        'name = "beta"',
+                        'kind = "random"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(output), redirect_stderr(io.StringIO()):
+                exit_code = main(
+                    ["tournament", "--config", str(config), "--json"]
+                )
+
+            records = [json.loads(line) for line in trace.read_text().splitlines()]
+
+        summary = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(summary["seat_mode"], "paired")
+        self.assertEqual(records[0]["seat_mode"], "paired")
+        self.assertEqual(
+            [record["result"]["seed"] for record in records[1:]],
+            [17, 17, 18, 18, 19, 20, 21, 22],
+        )
+        self.assertEqual(
+            [record["agent_a_player"] for record in records[1:]],
+            [0, 1, 0, 1, 0, 1, 0, 1],
+        )
+
+    def test_tournament_paired_seats_require_an_even_match_count(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory, "tournament.toml")
+            config.write_text(
+                "\n".join(
+                    [
+                        'game = "tic-tac-toe"',
+                        "matches_per_pair = 3",
+                        'seat_mode = "paired"',
+                        "",
+                        "[[agents]]",
+                        'name = "alpha"',
+                        'kind = "random"',
+                        "",
+                        "[[agents]]",
+                        'name = "beta"',
+                        'kind = "random"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "must be even"):
+                _load_tournament_config(config)
+
+    def test_tournament_rejects_unknown_seat_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory, "tournament.toml")
+            config.write_text(
+                "\n".join(
+                    [
+                        'game = "tic-tac-toe"',
+                        "matches_per_pair = 2",
+                        'seat_mode = "mirrored"',
+                        "",
+                        "[[agents]]",
+                        'name = "alpha"',
+                        'kind = "random"',
+                        "",
+                        "[[agents]]",
+                        'name = "beta"',
+                        'kind = "random"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "alternating or paired"):
+                _load_tournament_config(config)
 
     def test_cli_tournament_rejects_duplicate_agent_names(self) -> None:
         errors = io.StringIO()
@@ -2591,6 +2692,7 @@ class MatchApiTests(unittest.TestCase):
             self.assertEqual(summary["processed_matches"], 2)
             self.assertEqual(len(summary["inputs"]), 2)
             self.assertEqual(len(studies), 2)
+            self.assertEqual({row["seat_mode"] for row in studies}, {"alternating"})
             self.assertEqual(len(agents), 2)
             self.assertEqual([row["match_number"] for row in matches], ["1", "2"])
             self.assertEqual(

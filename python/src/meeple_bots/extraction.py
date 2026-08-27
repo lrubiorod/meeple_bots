@@ -100,6 +100,7 @@ _STUDY_FIELDS = (
     "truncated_last_line",
     "agents",
     "base_seed",
+    "seat_mode",
     "matches_per_pair",
 )
 
@@ -813,6 +814,10 @@ def extract_tournament(
                     "truncated_last_line": study_truncated,
                     "agents": len(study.raw_agents),
                     "base_seed": study.header.get("seed", ""),
+                    "seat_mode": study.header.get(
+                        "seat_mode",
+                        "alternating" if study.study_type == "tournament" else "",
+                    ),
                     "matches_per_pair": study.header.get("matches_per_pair", ""),
                 }
                 writers["studies"].writerow(source_summary)
