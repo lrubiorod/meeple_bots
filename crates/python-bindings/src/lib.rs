@@ -10,10 +10,11 @@ use meeple_bots_catalog::{
     AgentConfig, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution, CatalogError,
     CatalogGemstoneSacrifice, CatalogMatchReport, CatalogPieceKind, CatalogPowerSource,
     CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, CatalogTurnPhase,
-    ConfiguredRolloutPolicy, ConfiguredSelectionBias, EvaluationConfig, EvaluatorConfig, GameId,
-    MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, RolloutConditionConfig,
-    RolloutPolicyConfig, SearchBudget, analyze_seeded_trace, analyze_trace, benchmark_mcts_agent,
-    configured_boop_mcts, configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
+    ConfiguredRolloutPolicy, ConfiguredSelectionBias, ConnectFourMctsAgent, EvaluationConfig,
+    EvaluatorConfig, GameId, MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove,
+    RolloutConditionConfig, RolloutPolicyConfig, SearchBudget, TicTacToeMctsAgent,
+    analyze_seeded_trace, analyze_trace, benchmark_mcts_agent, configured_boop_mcts,
+    configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
     configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
     run_boop_match_with_trace, run_connect_four_match_with_observer,
     run_connect_four_match_with_trace, run_match_with_trace,
@@ -25,7 +26,6 @@ use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{
     Agent, AgentDecisionStats, AgentError, DecisionContext, Game, PlayerId, RandomSource,
 };
-use meeple_bots_mcts_agent::{MctsAgent, NeutralEvaluator, UniformRandom};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::MatchObserver;
 use meeple_bots_spirits_of_the_forest::{
@@ -82,6 +82,7 @@ impl PyAgentConfig {
         progressive_bias_heuristic=None,
         progressive_bias_condition_phase=None,
         root_diagnostics=false,
+        tree_reuse=false,
     ))]
     fn mcts(
         iterations: Option<u32>,
@@ -104,6 +105,7 @@ impl PyAgentConfig {
         progressive_bias_heuristic: Option<u32>,
         progressive_bias_condition_phase: Option<&str>,
         root_diagnostics: bool,
+        tree_reuse: bool,
     ) -> PyResult<Self> {
         if !exploration.is_finite() || exploration < 0.0 {
             return Err(PyValueError::new_err(
@@ -142,6 +144,7 @@ impl PyAgentConfig {
                     progressive_bias_condition_phase,
                 )?,
                 root_diagnostics,
+                tree_reuse,
             })),
         })
     }
@@ -189,13 +192,11 @@ struct PythonSpiritsMatchObserver<'a> {
     error: Option<String>,
 }
 
-enum PythonObservedAgent<'a> {
+enum PythonObservedAgent<'a, M> {
     Human(PythonHumanAgent<'a>),
-    Mcts(UninformedMctsAgent),
+    Mcts(M),
     Random(RandomAgent),
 }
-
-type UninformedMctsAgent = MctsAgent<NeutralEvaluator, UniformRandom>;
 
 enum PythonObservedBoopAgent<'a> {
     Human(PythonHumanAgent<'a>),
@@ -210,6 +211,17 @@ enum PythonObservedSpiritsAgent<'a> {
 }
 
 impl Agent<SpiritsOfTheForest> for PythonObservedSpiritsAgent<'_> {
+    fn on_match_start(
+        &mut self,
+        game: &SpiritsOfTheForest,
+        state: &SpiritsOfTheForestState,
+        player: PlayerId,
+    ) {
+        if let Self::Mcts(agent) = self {
+            agent.on_match_start(game, state, player);
+        }
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
         decision: DecisionContext<'_, SpiritsOfTheForest>,
@@ -229,9 +241,33 @@ impl Agent<SpiritsOfTheForest> for PythonObservedSpiritsAgent<'_> {
             Self::Random(_) => AgentDecisionStats::default(),
         }
     }
+
+    fn on_action_applied(
+        &mut self,
+        game: &SpiritsOfTheForest,
+        state: &SpiritsOfTheForestState,
+        player: PlayerId,
+        action: &SpiritsOfTheForestAction,
+    ) {
+        if let Self::Mcts(agent) = self {
+            agent.on_action_applied(game, state, player, action);
+        }
+    }
+
+    fn on_match_end(&mut self, game: &SpiritsOfTheForest, state: &SpiritsOfTheForestState) {
+        if let Self::Mcts(agent) = self {
+            agent.on_match_end(game, state);
+        }
+    }
 }
 
 impl Agent<Boop> for PythonObservedBoopAgent<'_> {
+    fn on_match_start(&mut self, game: &Boop, state: &<Boop as Game>::State, player: PlayerId) {
+        if let Self::Mcts(agent) = self {
+            agent.on_match_start(game, state, player);
+        }
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
         decision: DecisionContext<'_, Boop>,
@@ -251,9 +287,38 @@ impl Agent<Boop> for PythonObservedBoopAgent<'_> {
             Self::Random(_) => AgentDecisionStats::default(),
         }
     }
+
+    fn on_action_applied(
+        &mut self,
+        game: &Boop,
+        state: &<Boop as Game>::State,
+        player: PlayerId,
+        action: &BoopAction,
+    ) {
+        if let Self::Mcts(agent) = self {
+            agent.on_action_applied(game, state, player, action);
+        }
+    }
+
+    fn on_match_end(&mut self, game: &Boop, state: &<Boop as Game>::State) {
+        if let Self::Mcts(agent) = self {
+            agent.on_match_end(game, state);
+        }
+    }
 }
 
-impl Agent<TicTacToe> for PythonObservedAgent<'_> {
+impl Agent<TicTacToe> for PythonObservedAgent<'_, TicTacToeMctsAgent> {
+    fn on_match_start(
+        &mut self,
+        game: &TicTacToe,
+        state: &<TicTacToe as Game>::State,
+        player: PlayerId,
+    ) {
+        if let Self::Mcts(agent) = self {
+            agent.on_match_start(game, state, player);
+        }
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
         decision: DecisionContext<'_, TicTacToe>,
@@ -273,9 +338,38 @@ impl Agent<TicTacToe> for PythonObservedAgent<'_> {
             Self::Random(_) => AgentDecisionStats::default(),
         }
     }
+
+    fn on_action_applied(
+        &mut self,
+        game: &TicTacToe,
+        state: &<TicTacToe as Game>::State,
+        player: PlayerId,
+        action: &TicTacToeAction,
+    ) {
+        if let Self::Mcts(agent) = self {
+            agent.on_action_applied(game, state, player, action);
+        }
+    }
+
+    fn on_match_end(&mut self, game: &TicTacToe, state: &<TicTacToe as Game>::State) {
+        if let Self::Mcts(agent) = self {
+            agent.on_match_end(game, state);
+        }
+    }
 }
 
-impl Agent<ConnectFour> for PythonObservedAgent<'_> {
+impl Agent<ConnectFour> for PythonObservedAgent<'_, ConnectFourMctsAgent> {
+    fn on_match_start(
+        &mut self,
+        game: &ConnectFour,
+        state: &<ConnectFour as Game>::State,
+        player: PlayerId,
+    ) {
+        if let Self::Mcts(agent) = self {
+            agent.on_match_start(game, state, player);
+        }
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
         decision: DecisionContext<'_, ConnectFour>,
@@ -293,6 +387,24 @@ impl Agent<ConnectFour> for PythonObservedAgent<'_> {
             Self::Human(_) => AgentDecisionStats::default(),
             Self::Mcts(agent) => agent.decision_stats(),
             Self::Random(_) => AgentDecisionStats::default(),
+        }
+    }
+
+    fn on_action_applied(
+        &mut self,
+        game: &ConnectFour,
+        state: &<ConnectFour as Game>::State,
+        player: PlayerId,
+        action: &ConnectFourAction,
+    ) {
+        if let Self::Mcts(agent) = self {
+            agent.on_action_applied(game, state, player, action);
+        }
+    }
+
+    fn on_match_end(&mut self, game: &ConnectFour, state: &<ConnectFour as Game>::State) {
+        if let Self::Mcts(agent) = self {
+            agent.on_match_end(game, state);
         }
     }
 }
@@ -605,6 +717,7 @@ fn py_evaluate_game(
     progressive_bias_heuristic=None,
     progressive_bias_condition_phase=None,
     root_diagnostics=false,
+    tree_reuse=false,
 ))]
 fn py_benchmark_mcts_agent(
     py: Python<'_>,
@@ -631,6 +744,7 @@ fn py_benchmark_mcts_agent(
     progressive_bias_heuristic: Option<u32>,
     progressive_bias_condition_phase: Option<&str>,
     root_diagnostics: bool,
+    tree_reuse: bool,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     if !exploration.is_finite() || exploration < 0.0 {
@@ -670,6 +784,7 @@ fn py_benchmark_mcts_agent(
                 progressive_bias_condition_phase,
             )?,
             root_diagnostics,
+            tree_reuse,
         },
         median_depth,
         seed,
@@ -1296,6 +1411,21 @@ fn py_run_match(
             root_actions.append(item)?;
         }
         movement.set_item("root_actions", root_actions)?;
+        if let Some(tree_reuse) = recorded.tree_reuse {
+            let reuse = PyDict::new(py);
+            reuse.set_item("transition_attempts", tree_reuse.transition_attempts)?;
+            reuse.set_item("transition_hits", tree_reuse.transition_hits)?;
+            reuse.set_item("transition_misses", tree_reuse.transition_misses)?;
+            reuse.set_item("own_action_hits", tree_reuse.own_action_hits)?;
+            reuse.set_item("opponent_action_hits", tree_reuse.opponent_action_hits)?;
+            reuse.set_item("reused_root_visits", tree_reuse.reused_root_visits)?;
+            reuse.set_item("reused_nodes", tree_reuse.reused_nodes)?;
+            reuse.set_item("pruned_nodes", tree_reuse.pruned_nodes)?;
+            reuse.set_item("resets", tree_reuse.resets)?;
+            movement.set_item("tree_reuse", reuse)?;
+        } else {
+            movement.set_item("tree_reuse", py.None())?;
+        }
         moves.append(movement)?;
     }
     result.set_item("moves", moves)?;
@@ -1382,6 +1512,7 @@ fn py_analyze_trace(
                     search_iterations: None,
                     search_nodes: None,
                     root_actions: Vec::new(),
+                    tree_reuse: None,
                 })
             })
             .collect::<PyResult<Vec<_>>>()?,
@@ -1396,6 +1527,7 @@ fn py_analyze_trace(
                     search_iterations: None,
                     search_nodes: None,
                     root_actions: Vec::new(),
+                    tree_reuse: None,
                 })
             })
             .collect::<PyResult<Vec<_>>>()?,
@@ -1877,13 +2009,13 @@ fn run_observed_spirits_match(
     Ok(report)
 }
 
-fn configured_tic_tac_toe_mcts_for_python(
-    config: MctsAgentConfig,
-) -> PyResult<UninformedMctsAgent> {
+fn configured_tic_tac_toe_mcts_for_python(config: MctsAgentConfig) -> PyResult<TicTacToeMctsAgent> {
     configured_tic_tac_toe_mcts(config).map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
 
-fn python_tic_tac_toe_agent(configured: &PythonAgentConfig) -> PyResult<PythonObservedAgent<'_>> {
+fn python_tic_tac_toe_agent(
+    configured: &PythonAgentConfig,
+) -> PyResult<PythonObservedAgent<'_, TicTacToeMctsAgent>> {
     match configured {
         PythonAgentConfig::Automated(AgentConfig::Random) => {
             Ok(PythonObservedAgent::Random(RandomAgent))
@@ -1900,7 +2032,9 @@ fn python_tic_tac_toe_agent(configured: &PythonAgentConfig) -> PyResult<PythonOb
     }
 }
 
-fn python_connect_four_agent(configured: &PythonAgentConfig) -> PyResult<PythonObservedAgent<'_>> {
+fn python_connect_four_agent(
+    configured: &PythonAgentConfig,
+) -> PyResult<PythonObservedAgent<'_, ConnectFourMctsAgent>> {
     match configured {
         PythonAgentConfig::Automated(AgentConfig::Random) => {
             Ok(PythonObservedAgent::Random(RandomAgent))

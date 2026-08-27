@@ -2,6 +2,7 @@
 
 use std::{
     cmp::Ordering,
+    fmt,
     num::NonZeroU32,
     time::{Duration, Instant},
 };
@@ -9,7 +10,7 @@ use std::{
 use meeple_bots_core::{
     Agent, AgentDecisionStats, AgentError, DecisionContext, DeterministicGame, HeuristicGame,
     PerfectInformationGame, PlayerId, PositionStatus, RandomSource, RootActionStats,
-    TwoPlayerZeroSumGame,
+    TreeReuseStats, TwoPlayerZeroSumGame,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -619,6 +620,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 search_iterations: Some(stats.iterations),
                 search_nodes: Some(stats.nodes),
                 root_actions: self.last_root_actions.clone(),
+                tree_reuse: None,
             })
     }
 
@@ -655,18 +657,57 @@ impl<C, P, B> MctsAgent<C, P, B> {
         if root.unexpanded.is_empty() {
             return Err(AgentError::NoLegalActions);
         }
-        let mut root_unexpanded_action_indices = if self.root_diagnostics {
+        let root_unexpanded_action_indices = if self.root_diagnostics {
             let root_action_count = u32::try_from(root.unexpanded.len())
                 .map_err(|_| AgentError::message("MCTS root has too many legal actions"))?;
             (0..root_action_count).collect()
         } else {
             Vec::new()
         };
-        let mut root_child_action_indices = if self.root_diagnostics {
-            Vec::with_capacity(root.unexpanded.len())
+        let root_action_indices = if self.root_diagnostics {
+            Some(RootActionIndices {
+                unexpanded: root_unexpanded_action_indices,
+                children: Vec::with_capacity(root.unexpanded.len()),
+            })
         } else {
-            Vec::new()
+            None
         };
+        let mut nodes = vec![root];
+        let selected_index = self.search_tree(
+            game,
+            root_state,
+            root_player,
+            &mut nodes,
+            root_action_indices,
+            true,
+            rng,
+        )?;
+
+        nodes[selected_index]
+            .action
+            .take()
+            .ok_or(AgentError::NoLegalActions)
+    }
+
+    fn search_tree<G, R>(
+        &mut self,
+        game: &G,
+        root_state: &G::State,
+        root_player: PlayerId,
+        nodes: &mut Vec<Node<G::Action>>,
+        mut root_action_indices: Option<RootActionIndices>,
+        count_existing_nodes: bool,
+        rng: &mut R,
+    ) -> Result<usize, AgentError>
+    where
+        G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
+        G::State: Clone,
+        C: StateEvaluator<G>,
+        P: RolloutPolicy<G>,
+        B: SelectionBias<G>,
+        R: RandomSource + ?Sized,
+    {
+        let nodes_before_search = nodes.len();
         let bias_weight = self.selection_bias.weight();
         if !bias_weight.is_finite() || bias_weight < 0.0 {
             return Err(AgentError::message(
@@ -674,7 +715,6 @@ impl<C, P, B> MctsAgent<C, P, B> {
             ));
         }
         let bias_enabled = bias_weight > 0.0;
-        let mut nodes = vec![root];
 
         let search_started = Instant::now();
         let mut completed_iterations = 0_u64;
@@ -723,8 +763,13 @@ impl<C, P, B> MctsAgent<C, P, B> {
                         .index(nodes[node_index].unexpanded.len())
                         .expect("non-empty actions");
                     let unexpanded = nodes[node_index].unexpanded.swap_remove(unexpanded_slot);
-                    let root_action_index = (self.root_diagnostics && node_index == 0)
-                        .then(|| root_unexpanded_action_indices.swap_remove(unexpanded_slot));
+                    let root_action_index = (node_index == 0)
+                        .then(|| {
+                            root_action_indices
+                                .as_mut()
+                                .map(|indices| indices.unexpanded.swap_remove(unexpanded_slot))
+                        })
+                        .flatten();
                     game.apply_action(&mut state, &unexpanded)
                         .map_err(|error| AgentError::message(error.to_string()))?;
 
@@ -748,7 +793,11 @@ impl<C, P, B> MctsAgent<C, P, B> {
                     nodes.push(child);
                     nodes[node_index].children.push(child_index);
                     if let Some(action_index) = root_action_index {
-                        root_child_action_indices.push(action_index);
+                        root_action_indices
+                            .as_mut()
+                            .expect("root action indices exist")
+                            .children
+                            .push(action_index);
                     }
                     node_index = child_index;
                     path.push(node_index);
@@ -812,11 +861,14 @@ impl<C, P, B> MctsAgent<C, P, B> {
             .ok_or(AgentError::NoLegalActions)?;
 
         self.last_root_actions = if self.root_diagnostics {
+            let indices = root_action_indices
+                .as_ref()
+                .expect("root diagnostics indices exist");
             nodes[0]
                 .children
                 .iter()
                 .copied()
-                .zip(root_child_action_indices.iter().copied())
+                .zip(indices.children.iter().copied())
                 .map(|(child_index, action_index)| {
                     let child = &nodes[child_index];
                     RootActionStats {
@@ -835,15 +887,134 @@ impl<C, P, B> MctsAgent<C, P, B> {
         };
         self.last_search_stats = Some(MctsSearchStats {
             iterations: completed_iterations,
-            nodes: nodes.len() as u64,
+            nodes: if count_existing_nodes {
+                nodes.len() as u64
+            } else {
+                nodes.len().saturating_sub(nodes_before_search) as u64
+            },
             elapsed: search_started.elapsed(),
         });
-
-        nodes[selected_index]
-            .action
-            .take()
-            .ok_or(AgentError::NoLegalActions)
+        Ok(selected_index)
     }
+}
+
+struct RootActionIndices {
+    unexpanded: Vec<u32>,
+    children: Vec<u32>,
+}
+
+/// Opt-in MCTS wrapper that retains the reachable subtree between match decisions.
+pub struct TreeReuseMctsAgent<
+    G: meeple_bots_core::Game,
+    C = NeutralEvaluator,
+    P = RolloutPolicyConfig<NeutralEvaluator>,
+    B = NoSelectionBias,
+> {
+    inner: MctsAgent<C, P, B>,
+    enabled: bool,
+    owner: Option<PlayerId>,
+    tree: Option<ReusableTree<G>>,
+    pending_reuse_stats: TreeReuseStats,
+    last_reuse_stats: Option<TreeReuseStats>,
+}
+
+impl<G, C, P, B> TreeReuseMctsAgent<G, C, P, B>
+where
+    G: meeple_bots_core::Game,
+{
+    pub const fn new(inner: MctsAgent<C, P, B>, enabled: bool) -> Self {
+        Self {
+            inner,
+            enabled,
+            owner: None,
+            tree: None,
+            pending_reuse_stats: TreeReuseStats {
+                transition_attempts: 0,
+                transition_hits: 0,
+                transition_misses: 0,
+                own_action_hits: 0,
+                opponent_action_hits: 0,
+                reused_root_visits: 0,
+                reused_nodes: 0,
+                pruned_nodes: 0,
+                resets: 0,
+            },
+            last_reuse_stats: None,
+        }
+    }
+
+    pub const fn tree_reuse_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub const fn inner(&self) -> &MctsAgent<C, P, B> {
+        &self.inner
+    }
+
+    pub const fn last_search_stats(&self) -> Option<MctsSearchStats> {
+        self.inner.last_search_stats()
+    }
+
+    pub fn decision_stats(&self) -> AgentDecisionStats {
+        let mut stats = self.inner.decision_stats();
+        if self.enabled {
+            stats.tree_reuse = self.last_reuse_stats;
+        }
+        stats
+    }
+
+    /// Mutable access invalidates retained search data because configuration may change.
+    pub fn inner_mut(&mut self) -> &mut MctsAgent<C, P, B> {
+        self.reset_tree();
+        &mut self.inner
+    }
+
+    fn reset_tree(&mut self) {
+        self.tree = None;
+        self.owner = None;
+        self.pending_reuse_stats = TreeReuseStats::default();
+        self.last_reuse_stats = None;
+    }
+
+    fn record_transition_miss(&mut self) {
+        self.tree = None;
+        self.pending_reuse_stats.transition_misses += 1;
+        self.pending_reuse_stats.resets += 1;
+    }
+}
+
+impl<G, C, P, B> Clone for TreeReuseMctsAgent<G, C, P, B>
+where
+    G: meeple_bots_core::Game,
+    MctsAgent<C, P, B>: Clone,
+{
+    fn clone(&self) -> Self {
+        Self::new(self.inner.clone(), self.enabled)
+    }
+}
+
+impl<G, C, P, B> fmt::Debug for TreeReuseMctsAgent<G, C, P, B>
+where
+    G: meeple_bots_core::Game,
+    MctsAgent<C, P, B>: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TreeReuseMctsAgent")
+            .field("inner", &self.inner)
+            .field("enabled", &self.enabled)
+            .field("owner", &self.owner)
+            .field("has_tree", &self.tree.is_some())
+            .field("pending_reuse_stats", &self.pending_reuse_stats)
+            .field("last_reuse_stats", &self.last_reuse_stats)
+            .finish()
+    }
+}
+
+struct ReusableTree<G: meeple_bots_core::Game> {
+    game: G,
+    state: G::State,
+    nodes: Vec<Node<G::Action>>,
 }
 
 struct Node<A> {
@@ -853,6 +1024,244 @@ struct Node<A> {
     unexpanded: Vec<A>,
     visits: u32,
     total_utility: f64,
+}
+
+impl<G, C, P, B> Agent<G> for TreeReuseMctsAgent<G, C, P, B>
+where
+    G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame + Clone + PartialEq,
+    G::State: Clone + PartialEq,
+    G::Action: Clone + PartialEq,
+    C: StateEvaluator<G>,
+    P: RolloutPolicy<G>,
+    B: SelectionBias<G>,
+{
+    fn on_match_start(&mut self, _game: &G, _state: &G::State, player: PlayerId) {
+        self.reset_tree();
+        self.owner = Some(player);
+    }
+
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, G>,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        if !self.enabled {
+            return self.inner.select_action(decision, rng);
+        }
+
+        self.inner.last_search_stats = None;
+        self.inner.last_root_actions.clear();
+        self.inner.config.validate().map_err(AgentError::message)?;
+        self.inner.config.rollout_policy.validate()?;
+
+        let game = decision.game();
+        let root_state = decision.state();
+        let root_player = decision.player();
+        if game.status(root_state) != PositionStatus::PlayerTurn(root_player) {
+            return Err(AgentError::message(
+                "MCTS received a position for the wrong player",
+            ));
+        }
+        if self.owner.is_none() {
+            self.owner = Some(root_player);
+        }
+        if self.owner != Some(root_player) {
+            self.pending_reuse_stats.resets += 1;
+            self.tree = None;
+            self.owner = Some(root_player);
+        }
+
+        let tree_matches = self
+            .tree
+            .as_ref()
+            .is_some_and(|tree| tree.game == *game && tree.state == *root_state);
+        if self.tree.is_some() && !tree_matches {
+            self.record_transition_miss();
+        }
+
+        let fresh_tree = self.tree.is_none();
+        if fresh_tree {
+            let root = Node::new(None, 0.0, game.legal_actions(root_state));
+            if root.unexpanded.is_empty() {
+                return Err(AgentError::NoLegalActions);
+            }
+            self.tree = Some(ReusableTree {
+                game: game.clone(),
+                state: root_state.clone(),
+                nodes: vec![root],
+            });
+        }
+
+        let mut reuse_stats = std::mem::take(&mut self.pending_reuse_stats);
+        if !fresh_tree {
+            let tree = self.tree.as_ref().expect("tree was initialized");
+            reuse_stats.reused_root_visits = tree.nodes[0].visits;
+            reuse_stats.reused_nodes = tree.nodes.len() as u64;
+        }
+
+        let root_action_indices = if self.inner.root_diagnostics {
+            let tree = self.tree.as_ref().expect("tree was initialized");
+            match map_root_action_indices(game, root_state, &tree.nodes) {
+                Ok(indices) => Some(indices),
+                Err(error) => {
+                    self.tree = None;
+                    reuse_stats.resets += 1;
+                    self.last_reuse_stats = Some(reuse_stats);
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+
+        let tree = self.tree.as_mut().expect("tree was initialized");
+        let selected = self.inner.search_tree(
+            game,
+            root_state,
+            root_player,
+            &mut tree.nodes,
+            root_action_indices,
+            fresh_tree,
+            rng,
+        );
+        let selected_index = match selected {
+            Ok(index) => index,
+            Err(error) => {
+                self.tree = None;
+                reuse_stats.resets += 1;
+                self.last_reuse_stats = Some(reuse_stats);
+                return Err(error);
+            }
+        };
+        let action = tree.nodes[selected_index]
+            .action
+            .as_ref()
+            .cloned()
+            .ok_or(AgentError::NoLegalActions)?;
+        self.last_reuse_stats = Some(reuse_stats);
+        Ok(action)
+    }
+
+    fn last_decision_stats(&self) -> AgentDecisionStats {
+        self.decision_stats()
+    }
+
+    fn on_action_applied(
+        &mut self,
+        game: &G,
+        state: &G::State,
+        player: PlayerId,
+        action: &G::Action,
+    ) {
+        if !self.enabled || self.tree.is_none() {
+            return;
+        }
+        self.pending_reuse_stats.transition_attempts += 1;
+
+        let transition = self.tree.as_mut().and_then(|tree| {
+            if tree.game != *game {
+                return None;
+            }
+            let mut expected_state = tree.state.clone();
+            if game.apply_action(&mut expected_state, action).is_err() || expected_state != *state {
+                return None;
+            }
+            let child_index = tree.nodes[0]
+                .children
+                .iter()
+                .copied()
+                .find(|index| tree.nodes[*index].action.as_ref() == Some(action))?;
+            let (retained, pruned) = compact_to_subtree(&mut tree.nodes, child_index);
+            tree.state = state.clone();
+            Some((retained, pruned))
+        });
+
+        if let Some((retained, pruned)) = transition {
+            self.pending_reuse_stats.transition_hits += 1;
+            self.pending_reuse_stats.reused_nodes = retained as u64;
+            self.pending_reuse_stats.pruned_nodes += pruned as u64;
+            if self.owner == Some(player) {
+                self.pending_reuse_stats.own_action_hits += 1;
+            } else {
+                self.pending_reuse_stats.opponent_action_hits += 1;
+            }
+        } else {
+            self.record_transition_miss();
+        }
+    }
+
+    fn on_match_end(&mut self, _game: &G, _state: &G::State) {
+        self.tree = None;
+        self.owner = None;
+    }
+}
+
+fn map_root_action_indices<G>(
+    game: &G,
+    state: &G::State,
+    nodes: &[Node<G::Action>],
+) -> Result<RootActionIndices, AgentError>
+where
+    G: DeterministicGame,
+    G::Action: PartialEq,
+{
+    let legal_actions: Vec<_> = game.legal_actions(state).collect();
+    let action_index = |action: &G::Action| {
+        legal_actions
+            .iter()
+            .position(|candidate| candidate == action)
+            .and_then(|index| u32::try_from(index).ok())
+            .ok_or_else(|| AgentError::message("reused MCTS root does not match legal actions"))
+    };
+    let unexpanded = nodes[0]
+        .unexpanded
+        .iter()
+        .map(&action_index)
+        .collect::<Result<Vec<_>, _>>()?;
+    let children = nodes[0]
+        .children
+        .iter()
+        .map(|index| {
+            nodes[*index]
+                .action
+                .as_ref()
+                .ok_or_else(|| AgentError::message("reused MCTS child has no action"))
+                .and_then(&action_index)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(RootActionIndices {
+        unexpanded,
+        children,
+    })
+}
+
+fn compact_to_subtree<A>(nodes: &mut Vec<Node<A>>, new_root: usize) -> (usize, usize) {
+    let old_len = nodes.len();
+    let mut reachable = Vec::new();
+    let mut stack = vec![new_root];
+    while let Some(index) = stack.pop() {
+        reachable.push(index);
+        stack.extend(nodes[index].children.iter().rev().copied());
+    }
+
+    let mut remap = vec![usize::MAX; old_len];
+    for (new_index, old_index) in reachable.iter().copied().enumerate() {
+        remap[old_index] = new_index;
+    }
+    let mut old_nodes: Vec<_> = std::mem::take(nodes).into_iter().map(Some).collect();
+    nodes.reserve(reachable.len());
+    for old_index in reachable.iter().copied() {
+        let mut node = old_nodes[old_index]
+            .take()
+            .expect("reachable node is unique");
+        for child in &mut node.children {
+            *child = remap[*child];
+        }
+        nodes.push(node);
+    }
+    nodes[0].action = None;
+    nodes[0].heuristic_value = 0.0;
+    (nodes.len(), old_len.saturating_sub(nodes.len()))
 }
 
 impl<A> Node<A> {
@@ -1270,7 +1679,7 @@ mod tests {
         Draw,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct ChainedDecisionGame {
         continuation_player: PlayerId,
     }
@@ -2149,5 +2558,199 @@ mod tests {
 
         assert_eq!(agent.config.rollout_policy.validations.get(), 1);
         assert!(agent.config.rollout_policy.selections.get() > 1);
+    }
+
+    #[test]
+    fn disabled_tree_reuse_matches_the_baseline_search() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let config = MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(64).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 4,
+            rollout_policy: RolloutPolicyConfig::<NeutralEvaluator>::UniformRandom,
+        };
+        let mut baseline = MctsAgent::new(config);
+        let mut wrapped = TreeReuseMctsAgent::<TicTacToe>::new(MctsAgent::new(config), false);
+        let mut baseline_rng = SplitMix64::new(91);
+        let mut wrapped_rng = SplitMix64::new(91);
+
+        let baseline_action = baseline
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut baseline_rng,
+            )
+            .unwrap();
+        let wrapped_action = wrapped
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut wrapped_rng,
+            )
+            .unwrap();
+
+        assert_eq!(wrapped_action, baseline_action);
+        assert_eq!(wrapped.decision_stats(), baseline.decision_stats());
+        assert!(wrapped.tree.is_none());
+    }
+
+    #[test]
+    fn reuses_tree_across_consecutive_decisions_by_the_same_player() {
+        let game = ChainedDecisionGame {
+            continuation_player: PlayerId::FIRST,
+        };
+        let mut state = game.initial_state();
+        let config = MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(128).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 4,
+            rollout_policy: RolloutPolicyConfig::<NeutralEvaluator>::UniformRandom,
+        };
+        let inner = MctsAgent::new(config).with_root_diagnostics(true);
+        let mut agent = TreeReuseMctsAgent::new(inner, true);
+        let mut rng = SplitMix64::new(7);
+        agent.on_match_start(&game, &state, PlayerId::FIRST);
+
+        let first = agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut rng,
+            )
+            .unwrap();
+        assert_eq!(first, ChainedAction::Risk);
+        game.apply_action(&mut state, &first).unwrap();
+        agent.on_action_applied(&game, &state, PlayerId::FIRST, &first);
+
+        let second = agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut rng,
+            )
+            .unwrap();
+        let reuse = agent.decision_stats().tree_reuse.unwrap();
+
+        assert_eq!(second, ChainedAction::Win);
+        assert_eq!(reuse.transition_attempts, 1);
+        assert_eq!(reuse.transition_hits, 1);
+        assert_eq!(reuse.own_action_hits, 1);
+        assert!(reuse.reused_root_visits > 0);
+        assert!(reuse.reused_nodes > 0);
+        assert_eq!(agent.decision_stats().root_actions.len(), 2);
+    }
+
+    #[test]
+    fn follows_expanded_opponent_actions_before_reusing_the_tree() {
+        let game = TicTacToe;
+        let mut state = game.initial_state();
+        let config = MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(512).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 9,
+            rollout_policy: RolloutPolicyConfig::<NeutralEvaluator>::UniformRandom,
+        };
+        let mut agent = TreeReuseMctsAgent::<TicTacToe>::new(MctsAgent::new(config), true);
+        let mut rng = SplitMix64::new(12);
+        agent.on_match_start(&game, &state, PlayerId::FIRST);
+
+        let own_action = agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut rng,
+            )
+            .unwrap();
+        game.apply_action(&mut state, &own_action).unwrap();
+        agent.on_action_applied(&game, &state, PlayerId::FIRST, &own_action);
+
+        let opponent_action = agent.tree.as_ref().unwrap().nodes[0].children[0];
+        let opponent_action = agent.tree.as_ref().unwrap().nodes[opponent_action]
+            .action
+            .unwrap();
+        game.apply_action(&mut state, &opponent_action).unwrap();
+        agent.on_action_applied(&game, &state, PlayerId::SECOND, &opponent_action);
+
+        agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut rng,
+            )
+            .unwrap();
+        let reuse = agent.decision_stats().tree_reuse.unwrap();
+        assert_eq!(reuse.transition_attempts, 2);
+        assert_eq!(reuse.transition_hits, 2);
+        assert_eq!(reuse.own_action_hits, 1);
+        assert_eq!(reuse.opponent_action_hits, 1);
+        assert!(reuse.reused_root_visits > 0);
+    }
+
+    #[test]
+    fn resets_when_an_observed_action_was_not_expanded() {
+        let game = TicTacToe;
+        let mut state = game.initial_state();
+        let config = MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 1,
+            rollout_policy: RolloutPolicyConfig::<NeutralEvaluator>::UniformRandom,
+        };
+        let mut agent = TreeReuseMctsAgent::<TicTacToe>::new(MctsAgent::new(config), true);
+        agent.on_match_start(&game, &state, PlayerId::FIRST);
+        agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut SplitMix64::new(3),
+            )
+            .unwrap();
+        let expanded = agent.tree.as_ref().unwrap().nodes[0].children[0];
+        let expanded = agent.tree.as_ref().unwrap().nodes[expanded].action.unwrap();
+        let unexpanded = game
+            .legal_actions(&state)
+            .find(|action| *action != expanded)
+            .unwrap();
+        game.apply_action(&mut state, &unexpanded).unwrap();
+
+        agent.on_action_applied(&game, &state, PlayerId::FIRST, &unexpanded);
+
+        assert!(agent.tree.is_none());
+        assert_eq!(agent.pending_reuse_stats.transition_attempts, 1);
+        assert_eq!(agent.pending_reuse_stats.transition_hits, 0);
+        assert_eq!(agent.pending_reuse_stats.transition_misses, 1);
+        assert_eq!(agent.pending_reuse_stats.resets, 1);
+    }
+
+    #[test]
+    fn subtree_compaction_remaps_children_and_drops_unreachable_nodes() {
+        let mut root = Node::new(None, 0.0, Vec::<u8>::new());
+        root.children = vec![1, 2];
+        let mut retained = Node::new(Some(10), 0.5, Vec::new());
+        retained.children = vec![3];
+        let discarded = Node::new(Some(20), -0.5, Vec::new());
+        let leaf = Node::new(Some(30), 0.25, Vec::new());
+        let mut nodes = vec![root, retained, discarded, leaf];
+
+        let (retained_count, pruned_count) = compact_to_subtree(&mut nodes, 1);
+
+        assert_eq!((retained_count, pruned_count), (2, 2));
+        assert_eq!(nodes[0].action, None);
+        assert_eq!(nodes[0].children, vec![1]);
+        assert_eq!(nodes[1].action, Some(30));
+    }
+
+    #[test]
+    fn starting_a_new_match_discards_the_retained_tree() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let mut agent = TreeReuseMctsAgent::<TicTacToe>::new(MctsAgent::default(), true);
+        agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut SplitMix64::new(5),
+            )
+            .unwrap();
+        assert!(agent.tree.is_some());
+
+        agent.on_match_start(&game, &state, PlayerId::SECOND);
+
+        assert!(agent.tree.is_none());
+        assert_eq!(agent.owner, Some(PlayerId::SECOND));
+        assert_eq!(agent.pending_reuse_stats, TreeReuseStats::default());
     }
 }

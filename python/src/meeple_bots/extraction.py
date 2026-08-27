@@ -29,6 +29,7 @@ from .api import (
     SpiritsOfTheForest,
     TakeSpiritTile,
     TicTacToe,
+    TreeReuseDiagnostic,
     _analyze_trace,
 )
 
@@ -86,6 +87,7 @@ _AGENT_FIELDS = (
     "progressive_bias_condition",
     "progressive_bias_condition_phase",
     "root_diagnostics",
+    "tree_reuse",
     "self_play",
 )
 
@@ -140,6 +142,18 @@ _BOOP_MATCH_FIELDS = (
     "first_graduation_agent",
 )
 
+_TREE_REUSE_FIELDS = (
+    "reuse_transition_attempts",
+    "reuse_transition_hits",
+    "reuse_transition_misses",
+    "reuse_own_action_hits",
+    "reuse_opponent_action_hits",
+    "reused_root_visits",
+    "reused_nodes",
+    "pruned_nodes",
+    "reuse_resets",
+)
+
 _TURN_BASE_FIELDS = (
     "match_number",
     "ply",
@@ -150,6 +164,7 @@ _TURN_BASE_FIELDS = (
     "decision_seconds",
     "search_iterations",
     "search_nodes",
+    *_TREE_REUSE_FIELDS,
     "progress_fraction",
     "game_quarter",
     "strategic_phase",
@@ -282,6 +297,7 @@ _SPOTF_ACTION_BASE_FIELDS = (
     "decision_seconds",
     "search_iterations",
     "search_nodes",
+    *_TREE_REUSE_FIELDS,
     "progress_fraction",
     "game_quarter",
     "tile_progress_fraction",
@@ -634,6 +650,7 @@ def _agent_signature(row: dict[str, object]) -> dict[str, object]:
             "progressive_bias_heuristic",
             "progressive_bias_condition",
             "progressive_bias_condition_phase",
+            "tree_reuse",
         )
     }
 
@@ -1198,6 +1215,7 @@ def _write_spotf_action(
             "decision_seconds": move.decision_seconds,
             "search_iterations": move.search_iterations,
             "search_nodes": move.search_nodes,
+            **_tree_reuse_row(move.tree_reuse),
             "progress_fraction": turn["ply"] / context.plies,
             "game_quarter": _game_quarter(turn["ply"], context.plies),
             "tile_progress_fraction": _tile_progress(turn["before"]),
@@ -1550,6 +1568,7 @@ def _write_turn(
         "decision_seconds": move.decision_seconds,
         "search_iterations": move.search_iterations,
         "search_nodes": move.search_nodes,
+        **_tree_reuse_row(move.tree_reuse),
         "progress_fraction": turn["ply"] / total_plies,
         "game_quarter": f"q{min(3, ((turn['ply'] - 1) * 4) // total_plies) + 1}",
         "strategic_phase": turn["phase"],
@@ -1629,6 +1648,9 @@ def _trace_move(raw: object, match_number: int, expected_ply: int) -> Move:
         search_nodes=raw.get("search_nodes", ""),
         root_actions=_trace_root_actions(
             raw.get("root_actions"), f"match {match_number} ply {ply}"
+        ),
+        tree_reuse=_trace_tree_reuse(
+            raw.get("tree_reuse"), f"match {match_number} ply {ply}"
         ),
         action=BoopAction(
             piece=BoopPieceKind(_string_field(action, "piece", "boop action")),
@@ -1711,6 +1733,9 @@ def _trace_spotf_move(raw: object, match_number: int, expected_ply: int) -> Move
         root_actions=_trace_root_actions(
             raw.get("root_actions"), f"match {match_number} ply {ply}"
         ),
+        tree_reuse=_trace_tree_reuse(
+            raw.get("tree_reuse"), f"match {match_number} ply {ply}"
+        ),
     )
 
 
@@ -1720,6 +1745,40 @@ def _trace_position(raw: object) -> BoopPosition:
     return BoopPosition(
         _integer_field(raw, "row", "graduation position"),
         _integer_field(raw, "column", "graduation position"),
+    )
+
+
+def _tree_reuse_row(diagnostic: TreeReuseDiagnostic | None) -> dict[str, object]:
+    if diagnostic is None:
+        return {field: "" for field in _TREE_REUSE_FIELDS}
+    return {
+        "reuse_transition_attempts": diagnostic.transition_attempts,
+        "reuse_transition_hits": diagnostic.transition_hits,
+        "reuse_transition_misses": diagnostic.transition_misses,
+        "reuse_own_action_hits": diagnostic.own_action_hits,
+        "reuse_opponent_action_hits": diagnostic.opponent_action_hits,
+        "reused_root_visits": diagnostic.reused_root_visits,
+        "reused_nodes": diagnostic.reused_nodes,
+        "pruned_nodes": diagnostic.pruned_nodes,
+        "reuse_resets": diagnostic.resets,
+    }
+
+
+def _trace_tree_reuse(raw: object, context: str) -> TreeReuseDiagnostic | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError(f"{context} tree_reuse must be an object or null")
+    return TreeReuseDiagnostic(
+        transition_attempts=_integer_field(raw, "transition_attempts", context),
+        transition_hits=_integer_field(raw, "transition_hits", context),
+        transition_misses=_integer_field(raw, "transition_misses", context),
+        own_action_hits=_integer_field(raw, "own_action_hits", context),
+        opponent_action_hits=_integer_field(raw, "opponent_action_hits", context),
+        reused_root_visits=_integer_field(raw, "reused_root_visits", context),
+        reused_nodes=_integer_field(raw, "reused_nodes", context),
+        pruned_nodes=_integer_field(raw, "pruned_nodes", context),
+        resets=_integer_field(raw, "resets", context),
     )
 
 
@@ -1848,6 +1907,7 @@ def _agent_row(raw: object) -> dict[str, object]:
             raw.get("progressive_bias_condition_phase") or ""
         ),
         "root_diagnostics": bool(raw.get("root_diagnostics", False)),
+        "tree_reuse": bool(raw.get("tree_reuse", False)),
         "self_play": self_play,
     }
 

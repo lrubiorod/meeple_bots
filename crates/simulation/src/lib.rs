@@ -319,6 +319,8 @@ where
     let mut first_rng = SplitMix64::new(config.seed ^ 0xA076_1D64_78BD_642F);
     let mut second_rng = SplitMix64::new(config.seed ^ 0xE703_7ED1_A0B4_28DB);
     let mut plies = 0;
+    first.on_match_start(game, &state, PlayerId::FIRST);
+    second.on_match_start(game, &state, PlayerId::SECOND);
     observer.on_start(game, &state);
 
     loop {
@@ -336,6 +338,8 @@ where
                     plies,
                     utilities,
                 };
+                first.on_match_end(game, &state);
+                second.on_match_end(game, &state);
                 observer.on_finish(game, &state, &result);
                 return Ok(result);
             }
@@ -367,6 +371,8 @@ where
                 game.apply_action(&mut state, &action)
                     .map_err(|source| MatchError::IllegalAction { player, source })?;
                 plies += 1;
+                first.on_action_applied(game, &state, player, &action);
+                second.on_action_applied(game, &state, player, &action);
                 observer.on_action(game, &state, player, &action, decision_time, decision_stats);
             }
             PositionStatus::Chance => return Err(MatchError::UnexpectedChance),
@@ -416,6 +422,97 @@ where
 mod tests {
     use super::*;
 
+    #[derive(Clone, Copy)]
+    struct LifecycleGame;
+
+    impl Game for LifecycleGame {
+        type State = u8;
+        type Action = ();
+        type Observation<'a> = &'a u8;
+        type LegalActions<'a> = std::option::IntoIter<()>;
+
+        fn player_count(&self) -> u8 {
+            2
+        }
+
+        fn initial_state(&self) -> Self::State {
+            0
+        }
+
+        fn status(&self, state: &Self::State) -> PositionStatus {
+            match *state {
+                0 => PositionStatus::PlayerTurn(PlayerId::FIRST),
+                1 => PositionStatus::PlayerTurn(PlayerId::SECOND),
+                _ => PositionStatus::Terminal,
+            }
+        }
+
+        fn legal_actions<'a>(&'a self, state: &'a Self::State) -> Self::LegalActions<'a> {
+            (*state < 2).then_some(()).into_iter()
+        }
+
+        fn apply_action(
+            &self,
+            state: &mut Self::State,
+            _action: &Self::Action,
+        ) -> Result<(), IllegalAction> {
+            if *state >= 2 {
+                return Err(IllegalAction::new("game is terminal"));
+            }
+            *state += 1;
+            Ok(())
+        }
+
+        fn observation<'a>(
+            &'a self,
+            state: &'a Self::State,
+            _player: PlayerId,
+        ) -> Self::Observation<'a> {
+            state
+        }
+
+        fn terminal_utility(&self, state: &Self::State, _player: PlayerId) -> Option<f32> {
+            (*state == 2).then_some(0.0)
+        }
+    }
+
+    impl DeterministicGame for LifecycleGame {}
+
+    #[derive(Default)]
+    struct LifecycleAgent {
+        seat: Option<PlayerId>,
+        observed_players: Vec<PlayerId>,
+        ended: bool,
+    }
+
+    impl Agent<LifecycleGame> for LifecycleAgent {
+        fn on_match_start(&mut self, _game: &LifecycleGame, _state: &u8, player: PlayerId) {
+            self.seat = Some(player);
+        }
+
+        fn select_action<R: RandomSource + ?Sized>(
+            &mut self,
+            _decision: DecisionContext<'_, LifecycleGame>,
+            _rng: &mut R,
+        ) -> Result<(), AgentError> {
+            Ok(())
+        }
+
+        fn on_action_applied(
+            &mut self,
+            _game: &LifecycleGame,
+            _state: &u8,
+            player: PlayerId,
+            _action: &(),
+        ) {
+            self.observed_players.push(player);
+        }
+
+        fn on_match_end(&mut self, _game: &LifecycleGame, _state: &u8) {
+            self.ended = true;
+        }
+    }
+
     #[test]
     fn split_mix_is_reproducible_and_streams_differ() {
         let mut first = SplitMix64::new(42);
@@ -424,5 +521,30 @@ mod tests {
 
         assert_eq!(first.next_u64(), repeated.next_u64());
         assert_ne!(first.next_u64(), other.next_u64());
+    }
+
+    #[test]
+    fn match_lifecycle_is_delivered_to_both_agents() {
+        let mut first = LifecycleAgent::default();
+        let mut second = LifecycleAgent::default();
+
+        let result = play_match(
+            &LifecycleGame,
+            &mut first,
+            &mut second,
+            MatchConfig::new(4, NonZeroU32::new(2).unwrap()),
+        )
+        .unwrap();
+
+        assert_eq!(result.plies, 2);
+        assert_eq!(first.seat, Some(PlayerId::FIRST));
+        assert_eq!(second.seat, Some(PlayerId::SECOND));
+        assert_eq!(
+            first.observed_players,
+            vec![PlayerId::FIRST, PlayerId::SECOND]
+        );
+        assert_eq!(second.observed_players, first.observed_players);
+        assert!(first.ended);
+        assert!(second.ended);
     }
 }

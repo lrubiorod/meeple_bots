@@ -86,6 +86,36 @@ class MatchApiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             wilson_interval(2, 1)
 
+    def test_tree_reuse_requires_a_boolean(self) -> None:
+        with self.assertRaisesRegex(TypeError, "tree_reuse must be a boolean"):
+            MctsAgent(tree_reuse=1)
+
+    def test_inline_tree_reuse_alias_is_preserved_in_trace_configuration(self) -> None:
+        profile = _parse_inline_mcts_profile("name=reuse,i=8,d=4,tr=true")
+
+        self.assertTrue(profile.agent.tree_reuse)
+        self.assertTrue(_batch_agent_dict(profile.name, profile.agent)["tree_reuse"])
+
+    def test_tree_reuse_match_records_retained_search_metrics(self) -> None:
+        agent = MctsAgent(iterations=128, rollout_depth=9, tree_reuse=True)
+
+        result = Match(
+            game=TicTacToe(),
+            first=agent,
+            second=RandomAgent(),
+            seed=23,
+        ).run()
+        reuse = [
+            move.tree_reuse
+            for move in result.moves
+            if move.player == 0 and move.tree_reuse is not None
+        ]
+
+        self.assertGreaterEqual(len(reuse), 2)
+        self.assertTrue(any(item.transition_attempts > 0 for item in reuse[1:]))
+        self.assertTrue(any(item.own_action_hits > 0 for item in reuse[1:]))
+        self.assertTrue(any(item.reused_root_visits > 0 for item in reuse[1:]))
+
     def test_batch_alternates_sides_and_aggregates_results(self) -> None:
         events = []
         callback_threads = []

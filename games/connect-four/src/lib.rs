@@ -10,7 +10,7 @@ pub const COLUMNS: usize = 7;
 const CELL_COUNT: usize = ROWS * COLUMNS;
 const CONNECTED: usize = 4;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ConnectFour;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

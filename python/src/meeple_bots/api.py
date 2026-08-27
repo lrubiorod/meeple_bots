@@ -177,6 +177,7 @@ class MctsAgent:
     time_budget: float | None = None
     progressive_bias: ProgressiveBias | None = None
     root_diagnostics: bool = False
+    tree_reuse: bool = False
 
     def __post_init__(self) -> None:
         if self.iterations is None and self.time_budget is None:
@@ -231,6 +232,8 @@ class MctsAgent:
             raise TypeError("progressive_bias must be ProgressiveBias or None")
         if not isinstance(self.root_diagnostics, bool):
             raise TypeError("root_diagnostics must be a boolean")
+        if not isinstance(self.tree_reuse, bool):
+            raise TypeError("tree_reuse must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -695,6 +698,21 @@ class RootActionDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
+class TreeReuseDiagnostic:
+    """Subtree reuse observed before one MCTS decision."""
+
+    transition_attempts: int
+    transition_hits: int
+    transition_misses: int
+    own_action_hits: int
+    opponent_action_hits: int
+    reused_root_visits: int
+    reused_nodes: int
+    pruned_nodes: int
+    resets: int
+
+
+@dataclass(frozen=True, slots=True)
 class Move:
     """One action selected by one player."""
 
@@ -706,6 +724,7 @@ class Move:
     root_actions: tuple[RootActionDiagnostic, ...] = field(
         default=(), compare=False
     )
+    tree_reuse: TreeReuseDiagnostic | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -850,6 +869,11 @@ class Match:
                         selected=root["selected"],
                     )
                     for root in item.get("root_actions", ())
+                ),
+                tree_reuse=(
+                    None
+                    if item.get("tree_reuse") is None
+                    else TreeReuseDiagnostic(**item["tree_reuse"])
                 ),
             )
             for item in raw["moves"]
@@ -1165,6 +1189,7 @@ def benchmark_mcts_agent(
         fallback_rollout_epsilon,
         *_native_progressive_bias(agent.progressive_bias),
         agent.root_diagnostics,
+        agent.tree_reuse,
     )
     return MctsAgentBenchmark(
         game=game,
@@ -1319,6 +1344,7 @@ def _native_agent(agent: Agent, game: Game):
             fallback_epsilon,
             *_native_progressive_bias(agent.progressive_bias),
             agent.root_diagnostics,
+            agent.tree_reuse,
         )
     return _native.AgentConfig.human(
         _human_selector(agent, game),

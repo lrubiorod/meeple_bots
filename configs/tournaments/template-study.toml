@@ -34,6 +34,7 @@ self_play = true
 
 # Uniform-random rollout with heuristic 1 used only when the rollout reaches its depth cutoff.
 # Because the rollout policy is uniform, the heuristic does not influence intermediate actions.
+# Tree reuse keeps and prunes the reached subtree after both own and opponent actions.
 [[agents]]
 name = "mcts-cutoff-h1"
 kind = "mcts"
@@ -42,6 +43,7 @@ rollout_depth = 32
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "game_heuristic", index = 1 }
 rollout_policy = { kind = "uniform_random" }
+tree_reuse = true
 
 # Informed rollout only: cutoff states are neutral, while heuristic 0 selects rollout actions.
 # With epsilon 0.10, approximately 10% are random and 90% choose a best-rated successor.

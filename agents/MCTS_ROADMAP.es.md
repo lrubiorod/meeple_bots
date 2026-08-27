@@ -112,12 +112,10 @@ Evitar descartar trabajo válido dentro de una partida y entre caminos de búsqu
 
 ### Posible trabajo
 
-- Conservar el subárbol seleccionado después de ejecutar una acción real.
-- Cambiar la raíz después de observar la acción real del oponente.
-- Verificar que una raíz reutilizada coincide con el contexto de búsqueda actual y reiniciarla de
-  forma segura cuando no coincida.
-- Definir un ciclo de vida explícito para la sesión de búsqueda, de modo que los agentes no puedan
-  reutilizar accidentalmente un árbol en una partida nueva.
+- Implementado: conservar y podar el subárbol seleccionado después de una acción aceptada.
+- Implementado: cambiar la raíz después de observar la acción real del oponente.
+- Implementado: verificar juego y estado, y reiniciar de forma segura si no coinciden.
+- Implementado: usar un ciclo de vida explícito para que una partida nueva no herede un árbol.
 - Añadir tablas de transposición para caminos que llegan al mismo estado completo.
 - Añadir límites configurables de memoria y políticas de poda.
 

@@ -29,8 +29,8 @@ configuration and seed reproduce the same decisions.
 
 ## Monte Carlo Tree Search
 
-`MctsAgent` supports deterministic, perfect-information, two-player, zero-sum games. For every real
-decision it builds a new tree and repeats four steps:
+`MctsAgent` supports deterministic, perfect-information, two-player, zero-sum games. By default it
+builds a new tree for every real decision and repeats four steps:
 
 1. Select children with UCT until reaching a node with an unexpanded action.
 2. Expand one randomly selected action.
@@ -47,9 +47,11 @@ alternate maximize and minimize by tree depth. A game may therefore represent on
 as several consecutive engine actions without changing the search semantics. Uniform rollout is
 the default; informed policies use the same active-player perspective when ranking actions.
 
-The current agent builds a fresh tree for every real engine action. A later decision in the same
-physical turn is considered by earlier simulations, then searched again from its authoritative
-state when that decision is actually reached; tree reuse is not implemented yet.
+With `tree_reuse=True`, the configured wrapper follows every accepted own and opponent action,
+re-roots at the matching expanded child, and discards nodes outside that subtree. This also works
+when one player makes several consecutive engine actions. A missing child or any game/state
+mismatch resets to a fresh tree rather than risking stale statistics. Cloning an agent for another
+match and the explicit match-start lifecycle both discard retained data.
 
 ```python
 from meeple_bots import Match, MctsAgent, RandomAgent
@@ -58,6 +60,7 @@ agent = MctsAgent(
     iterations=1_000,
     exploration=2.0**0.5,
     rollout_depth=256,
+    tree_reuse=True,
 )
 result = Match(first=agent, second=RandomAgent(), seed=42).run()
 ```
@@ -74,6 +77,7 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 | `rollout_policy` | `UniformRandom()` | Policy used to select simulated actions outside the tree. |
 | `progressive_bias` | `None` | Optional decaying heuristic prior added to UCT tree selection. |
 | `root_diagnostics` | `false` | Record visits, utility, cached heuristic, and bias for expanded root actions. |
+| `tree_reuse` | `false` | Retain the reachable subtree across decisions in the same match. |
 
 The legacy `heuristic=INDEX` argument remains available as shorthand for
 `cutoff_evaluator=GameHeuristic(INDEX)`.
@@ -94,6 +98,24 @@ runs at least one, so elapsed time can exceed the requested duration by one expe
 Time-budget searches retain seeded randomness but are not exactly reproducible: CPU load and machine
 speed change how many iterations finish. Match traces record the actual decision time, completed
 iterations, and created nodes.
+
+### Tree reuse
+
+Tree reuse is deliberately optional. The unwrapped baseline `MctsAgent` keeps the original search
+path and supports non-cloneable actions. The enabled reuse wrapper requires the concrete
+perfect-information game, state, and action to be cloneable and comparable, but does not require
+hashing or a transposition key. Utilities remain in the agent owner's perspective, while MAX/MIN
+still follows the real active player stored in each state.
+
+Per-move traces record transition attempts, hits and misses, own/opponent hits, retained root visits and
+nodes, pruned nodes, and safe resets. `search_iterations` is always the new work performed for that
+decision. On a reused root, `search_nodes` counts newly expanded nodes; retained nodes are reported
+separately. Transition metrics are attached to the next decision because the observed action occurs
+after the previous decision statistics were captured.
+
+`analyze` benchmarks independent sampled positions. It accepts a profile containing `tree_reuse`,
+but those timings do not estimate the accumulated benefit of reuse inside a continuous match. Use
+paired tournaments with equal budgets to measure that benefit.
 
 ### Rollout policies
 
@@ -193,11 +215,13 @@ rollout_depth = 16
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 0 } }
+tree_reuse = true
 ```
 
 Exactly one of `iterations` or `time_budget` is required, together with `rollout_depth`.
 `time_budget` is expressed in seconds. `exploration` defaults to `sqrt(2)`,
-`cutoff_evaluator` defaults to neutral, and `rollout_policy` defaults to uniform random. Evaluator
+`cutoff_evaluator` defaults to neutral, `rollout_policy` defaults to uniform random, and
+`tree_reuse` defaults to false. Evaluator
 kinds currently supported by the catalog are `neutral` and `game_heuristic`. Rollout policy kinds
 are `uniform_random`, `greedy`, and `epsilon_greedy`. The legacy `use_heuristic`,
 `heuristic_index`, `rollout_heuristic_index`, and flat rollout fields remain accepted.
@@ -221,8 +245,9 @@ candidate agents at equal wall-clock time whenever possible. The
 
 ### Current limits and future work
 
-The current implementation does not support chance transitions, hidden information, tree reuse,
-transpositions, parallel search, or learned policies and values. The possible development stages
+The current implementation does not support chance transitions, hidden information,
+transpositions, parallel search, or learned policies and values. Tree reuse is available for
+compatible perfect-information games, without transposition sharing. The possible development stages
 are recorded in the [MCTS roadmap](MCTS_ROADMAP.md) and its
 [Spanish translation](MCTS_ROADMAP.es.md).
 

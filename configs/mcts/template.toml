@@ -6,6 +6,8 @@ rollout_depth = 16
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "uniform_random" }
+# Keep the reachable subtree after accepted match actions. Disabled by default.
+tree_reuse = false
 
 # Optional tree-selection prior. The condition is checked on the state where the action is chosen,
 # while the evaluator scores its child state. Set root_diagnostics=true to trace root visits,

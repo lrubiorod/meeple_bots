@@ -7,7 +7,7 @@ mod game;
 mod player;
 mod random;
 
-pub use agent::{Agent, AgentDecisionStats, DecisionContext, RootActionStats};
+pub use agent::{Agent, AgentDecisionStats, DecisionContext, RootActionStats, TreeReuseStats};
 pub use capabilities::{
     DeterministicGame, HeuristicGame, PerfectInformationGame, TwoPlayerZeroSumGame,
 };

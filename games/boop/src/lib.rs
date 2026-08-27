@@ -19,7 +19,7 @@ const CELL_COUNT: usize = ROWS * COLUMNS;
 const PIECES_PER_PLAYER: u8 = 8;
 const LINE_COUNT: usize = 80;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Boop;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

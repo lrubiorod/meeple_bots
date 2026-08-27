@@ -106,11 +106,10 @@ Avoid discarding valid work within a match and across equivalent search paths.
 
 ### Possible work
 
-- Preserve the selected subtree after a real action.
-- Re-root after observing the opponent's actual action.
-- Verify that a reused root matches the current search context; reset safely when it does not.
-- Define an explicit search-session lifecycle so agents cannot accidentally reuse a tree in a new
-  match.
+- Implemented: preserve and prune the selected subtree after accepted actions.
+- Implemented: re-root after observing the opponent's actual action.
+- Implemented: verify the game and state, and reset safely on a mismatch.
+- Implemented: use an explicit match lifecycle so a new match cannot inherit a tree.
 - Add transposition tables for paths that reach the same complete state.
 - Add configurable memory limits and pruning policies.
 

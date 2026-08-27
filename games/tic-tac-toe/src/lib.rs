@@ -16,7 +16,7 @@ const WINNING_LINES: [[usize; 3]; 8] = [
     [2, 4, 6],
 ];
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TicTacToe;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

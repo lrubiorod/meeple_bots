@@ -5,6 +5,20 @@ pub struct AgentDecisionStats {
     pub search_iterations: Option<u64>,
     pub search_nodes: Option<u64>,
     pub root_actions: Vec<RootActionStats>,
+    pub tree_reuse: Option<TreeReuseStats>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TreeReuseStats {
+    pub transition_attempts: u32,
+    pub transition_hits: u32,
+    pub transition_misses: u32,
+    pub own_action_hits: u32,
+    pub opponent_action_hits: u32,
+    pub reused_root_visits: u32,
+    pub reused_nodes: u64,
+    pub pruned_nodes: u64,
+    pub resets: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,6 +73,9 @@ impl<'a, G: PerfectInformationGame> DecisionContext<'a, G> {
 
 /// A policy that selects strongly typed actions for G.
 pub trait Agent<G: Game> {
+    /// Starts a new match and assigns the seat controlled by this agent instance.
+    fn on_match_start(&mut self, _game: &G, _state: &G::State, _player: PlayerId) {}
+
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
         decision: DecisionContext<'_, G>,
@@ -68,4 +85,16 @@ pub trait Agent<G: Game> {
     fn last_decision_stats(&self) -> AgentDecisionStats {
         AgentDecisionStats::default()
     }
+
+    /// Observes an action after the game has accepted it and updated the state.
+    fn on_action_applied(
+        &mut self,
+        _game: &G,
+        _state: &G::State,
+        _player: PlayerId,
+        _action: &G::Action,
+    ) {
+    }
+
+    fn on_match_end(&mut self, _game: &G, _state: &G::State) {}
 }

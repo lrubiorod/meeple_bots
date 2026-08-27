@@ -9,7 +9,7 @@ use meeple_bots_boop::{
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{
     Agent, AgentError, DeterministicGame, Game, HeuristicGame, PlayerId, RandomSource,
-    RootActionStats,
+    RootActionStats, TreeReuseStats,
 };
 pub use meeple_bots_evaluation::{
     EvaluationConfig, EvaluationError, GameEvaluationReport, IterationBudgetEstimate,
@@ -20,7 +20,7 @@ use meeple_bots_evaluation::{
 };
 use meeple_bots_mcts_agent::{
     ConditionalRollout, GameHeuristic, MctsAgent, PolicyCondition, RolloutPolicy, SelectionBias,
-    StateEvaluator,
+    StateEvaluator, TreeReuseMctsAgent,
 };
 pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, SearchBudget, UniformRandom};
 use meeple_bots_random_agent::RandomAgent;
@@ -56,6 +56,7 @@ pub struct MctsAgentConfig {
     pub cutoff_evaluator: EvaluatorConfig,
     pub progressive_bias: ConfiguredSelectionBias,
     pub root_diagnostics: bool,
+    pub tree_reuse: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -238,6 +239,7 @@ pub struct RecordedMove {
     pub search_iterations: Option<u64>,
     pub search_nodes: Option<u64>,
     pub root_actions: Vec<RootActionStats>,
+    pub tree_reuse: Option<TreeReuseStats>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -523,10 +525,22 @@ fn catalog_boop_action(action: &CatalogAction) -> Result<BoopAction, &'static st
     Ok(BoopAction::new(piece, position, resolution))
 }
 
-pub type BoopMctsAgent =
-    MctsAgent<EvaluatorConfig, RolloutPolicyConfig<EvaluatorConfig>, ConfiguredSelectionBias>;
-pub type SpiritsOfTheForestMctsAgent =
-    MctsAgent<EvaluatorConfig, ConfiguredRolloutPolicy, ConfiguredSelectionBias>;
+pub type BoopMctsAgent = TreeReuseMctsAgent<
+    Boop,
+    EvaluatorConfig,
+    RolloutPolicyConfig<EvaluatorConfig>,
+    ConfiguredSelectionBias,
+>;
+pub type SpiritsOfTheForestMctsAgent = TreeReuseMctsAgent<
+    SpiritsOfTheForest,
+    EvaluatorConfig,
+    ConfiguredRolloutPolicy,
+    ConfiguredSelectionBias,
+>;
+pub type ConnectFourMctsAgent =
+    TreeReuseMctsAgent<ConnectFour, meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>;
+pub type TicTacToeMctsAgent =
+    TreeReuseMctsAgent<TicTacToe, meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>;
 
 #[derive(Clone, Copy, Debug)]
 struct SpiritsTurnPhaseCondition(CatalogTurnPhase);
@@ -668,12 +682,15 @@ where
 
 pub fn configured_boop_mcts(config: MctsAgentConfig) -> Result<BoopMctsAgent, CatalogError> {
     validate_agent_evaluators(GameId::Boop, &Boop, &config)?;
-    Ok(MctsAgent::with_progressive_bias(
-        standard_search_config(config.search)?,
-        config.cutoff_evaluator,
-        config.progressive_bias,
-    )
-    .with_root_diagnostics(config.root_diagnostics))
+    Ok(TreeReuseMctsAgent::new(
+        MctsAgent::with_progressive_bias(
+            standard_search_config(config.search)?,
+            config.cutoff_evaluator,
+            config.progressive_bias,
+        )
+        .with_root_diagnostics(config.root_diagnostics),
+        config.tree_reuse,
+    ))
 }
 
 pub fn configured_spirits_of_the_forest_mcts(
@@ -681,26 +698,35 @@ pub fn configured_spirits_of_the_forest_mcts(
 ) -> Result<SpiritsOfTheForestMctsAgent, CatalogError> {
     let game = spirits_of_the_forest_game(0);
     validate_agent_evaluators(GameId::SpiritsOfTheForest, &game, &config)?;
-    Ok(MctsAgent::with_progressive_bias(
-        config.search,
-        config.cutoff_evaluator,
-        config.progressive_bias,
-    )
-    .with_root_diagnostics(config.root_diagnostics))
+    Ok(TreeReuseMctsAgent::new(
+        MctsAgent::with_progressive_bias(
+            config.search,
+            config.cutoff_evaluator,
+            config.progressive_bias,
+        )
+        .with_root_diagnostics(config.root_diagnostics),
+        config.tree_reuse,
+    ))
 }
 
 pub fn configured_connect_four_mcts(
     config: MctsAgentConfig,
-) -> Result<MctsAgent<meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>, CatalogError> {
+) -> Result<ConnectFourMctsAgent, CatalogError> {
     validate_uninformed_agent(GameId::ConnectFour, &config)?;
-    Ok(MctsAgent::new(uniform_search_config(config.search)))
+    Ok(TreeReuseMctsAgent::new(
+        MctsAgent::new(uniform_search_config(config.search)),
+        config.tree_reuse,
+    ))
 }
 
 pub fn configured_tic_tac_toe_mcts(
     config: MctsAgentConfig,
-) -> Result<MctsAgent<meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>, CatalogError> {
+) -> Result<TicTacToeMctsAgent, CatalogError> {
     validate_uninformed_agent(GameId::TicTacToe, &config)?;
-    Ok(MctsAgent::new(uniform_search_config(config.search)))
+    Ok(TreeReuseMctsAgent::new(
+        MctsAgent::new(uniform_search_config(config.search)),
+        config.tree_reuse,
+    ))
 }
 
 fn validate_agent_evaluators<G: HeuristicGame>(
@@ -1298,6 +1324,7 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
             root_actions: traced_action.decision_stats.root_actions,
+            tree_reuse: traced_action.decision_stats.tree_reuse,
         })
         .collect();
 
@@ -1346,6 +1373,7 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
             root_actions: traced_action.decision_stats.root_actions,
+            tree_reuse: traced_action.decision_stats.tree_reuse,
         })
         .collect();
 
@@ -1407,6 +1435,7 @@ fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
             root_actions: traced_action.decision_stats.root_actions,
+            tree_reuse: traced_action.decision_stats.tree_reuse,
         })
         .collect();
     let pools = state.pools().map(|pool| CatalogPool {
@@ -1461,6 +1490,7 @@ fn spirits_of_the_forest_report(
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
             root_actions: traced_action.decision_stats.root_actions,
+            tree_reuse: traced_action.decision_stats.tree_reuse,
         })
         .collect();
     let spirit_forest = (0..meeple_bots_spirits_of_the_forest::TILE_COUNT)
@@ -1711,6 +1741,7 @@ mod tests {
             }),
             progressive_bias: ConfiguredSelectionBias::None,
             root_diagnostics: false,
+            tree_reuse: false,
         })
     }
 

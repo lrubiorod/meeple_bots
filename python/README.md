@@ -453,6 +453,18 @@ root_diagnostics = true
 the expanded root actions' indices, visits, mean utility, cached heuristic value, final Progressive
 Bias term, and selected flag. `extract` normalizes these records into `root_actions.csv`.
 
+Tree reuse is independently opt-in:
+
+```toml
+tree_reuse = true
+```
+
+During a match it follows accepted actions from both seats, retains only the reached subtree, and
+falls back to a fresh tree when the action was not expanded or the state does not match. JSONL moves
+record reuse hits, retained visits/nodes, pruning, and resets; `extract` writes these columns to
+Boop `turns.csv` and SPOTF `actions.csv`. The `analyze` command benchmarks isolated positions, so use
+a paired tournament to evaluate reuse latency or strength across a continuous game.
+
 An MCTS entry must define exactly one of `iterations` or `time_budget`, plus `rollout_depth`.
 Either budget can be an array; `rollout_depth` and `exploration` can also use arrays. Structured
 configuration also accepts arrays in `cutoff_evaluator.index`, `rollout_policy.evaluator.index`,
@@ -484,7 +496,8 @@ The flat compatibility fields `heuristic_index`, `rollout_heuristic_index`, and
 Generated names append only the fields written as arrays. The suffixes are `i` for iterations, `t`
 for time budget, `d`
 for rollout depth, `c` for exploration, `h` for cutoff heuristic index, `rh` for rollout heuristic
-index, `e` for rollout epsilon, and `pb` for Progressive Bias weight. The
+index, `e` for rollout epsilon, and `pb` for Progressive Bias weight. Inline `analyze` agents also
+accept `tr=true` as shorthand for `tree_reuse=true`. The
 example therefore creates names from `mcts-h0-i100-d8` through `mcts-h0-i10000-d32`. Scalar
 entries retain their original names, so existing tournament files remain compatible.
 

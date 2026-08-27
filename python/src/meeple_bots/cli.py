@@ -157,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="game heuristic used only to rank informed rollout actions",
     )
+    match.add_argument(
+        "--mcts-tree-reuse",
+        action="store_true",
+        help="reuse the reachable MCTS subtree across decisions in this match",
+    )
     match.add_argument("--first-mcts-config", type=Path)
     match.add_argument("--second-mcts-config", type=Path)
     match.add_argument(
@@ -854,6 +859,7 @@ def _load_tournament_agents(
         "rollout_epsilon",
         "progressive_bias",
         "root_diagnostics",
+        "tree_reuse",
         "self_play",
     }
     unknown = sorted(values.keys() - allowed)
@@ -886,6 +892,7 @@ def _load_tournament_agents(
         "rollout_epsilon",
         "progressive_bias",
         "root_diagnostics",
+        "tree_reuse",
     }
     if kind == "random":
         unexpected = sorted(values.keys() & mcts_fields)
@@ -1037,6 +1044,7 @@ def _build_tournament_mcts_agent(
         root_diagnostics=_configured_root_diagnostics(
             values, f"tournament agent {name}"
         ),
+        tree_reuse=_configured_tree_reuse(values, f"tournament agent {name}"),
     )
     Match(game=game, first=agent, second=RandomAgent())
     return agent
@@ -1345,6 +1353,7 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
         "rollout_epsilon",
         "progressive_bias",
         "root_diagnostics",
+        "tree_reuse",
     }
     unknown = sorted(values.keys() - allowed)
     if unknown:
@@ -1367,6 +1376,7 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
             rollout_policy=_configured_rollout_policy(values, "MCTS profile"),
             progressive_bias=_configured_progressive_bias(values, "MCTS profile"),
             root_diagnostics=_configured_root_diagnostics(values, "MCTS profile"),
+            tree_reuse=_configured_tree_reuse(values, "MCTS profile"),
         ),
     )
 
@@ -1430,6 +1440,8 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         "progressive_bias_phase": "progressive_bias_phase",
         "rd": "root_diagnostics",
         "root_diagnostics": "root_diagnostics",
+        "tr": "tree_reuse",
+        "tree_reuse": "tree_reuse",
     }
     if spec.strip():
         for raw_field in spec.split(","):
@@ -1538,6 +1550,9 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
     root_diagnostics_text = values.get("root_diagnostics", "false").lower()
     if root_diagnostics_text not in {"true", "false"}:
         raise ValueError("inline root_diagnostics must be true or false")
+    tree_reuse_text = values.get("tree_reuse", "false").lower()
+    if tree_reuse_text not in {"true", "false"}:
+        raise ValueError("inline tree_reuse must be true or false")
     agent = MctsAgent(
         iterations=iterations,
         time_budget=time_budget,
@@ -1547,6 +1562,7 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         rollout_policy=rollout_policy,
         progressive_bias=progressive_bias,
         root_diagnostics=root_diagnostics_text == "true",
+        tree_reuse=tree_reuse_text == "true",
     )
     name = values.get("name")
     if name is not None and not name.strip():
@@ -1610,6 +1626,8 @@ def _inline_agent_name(agent: MctsAgent) -> str:
             parts.append(f"pbh{bias_heuristic}")
         if agent.progressive_bias.condition is not None:
             parts.append(f"pbphase-{agent.progressive_bias.condition.phase}")
+    if agent.tree_reuse:
+        parts.append("reuse")
     return "-".join(parts)
 
 
@@ -1672,7 +1690,8 @@ def _batch_agent_description(name: str, agent: RandomAgent | MctsAgent) -> str:
         f"exploration={agent.exploration:.6f}, "
         f"cutoff={_evaluator_name(agent.cutoff_evaluator)}, "
         f"rollout={_rollout_policy_description(agent)}, "
-        f"progressive_bias={_progressive_bias_description(agent.progressive_bias)})"
+        f"progressive_bias={_progressive_bias_description(agent.progressive_bias)}, "
+        f"tree_reuse={'yes' if agent.tree_reuse else 'no'})"
     )
 
 
@@ -1696,6 +1715,7 @@ def _batch_agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, ob
         **_conditional_rollout_fields(agent.rollout_policy),
         **_progressive_bias_fields(agent.progressive_bias),
         "root_diagnostics": agent.root_diagnostics,
+        "tree_reuse": agent.tree_reuse,
     }
 
 
@@ -1860,6 +1880,7 @@ def _mcts_configuration(args: argparse.Namespace) -> MctsAgent:
             },
             "manual MCTS configuration",
         ),
+        tree_reuse=args.mcts_tree_reuse,
     )
 
 
@@ -1902,6 +1923,7 @@ def _agent(
             rollout_policy=mcts.rollout_policy,
             progressive_bias=mcts.progressive_bias,
             root_diagnostics=mcts.root_diagnostics,
+            tree_reuse=mcts.tree_reuse,
         )
     return RandomAgent()
 
@@ -1942,6 +1964,7 @@ def _agent_dict(name: str, agent) -> dict[str, object]:
         "root_diagnostics": (
             agent.root_diagnostics if isinstance(agent, MctsAgent) else False
         ),
+        "tree_reuse": agent.tree_reuse if isinstance(agent, MctsAgent) else False,
     }
 
 
@@ -2054,6 +2077,13 @@ def _configured_root_diagnostics(values: dict[str, object], context: str) -> boo
     enabled = values.get("root_diagnostics", False)
     if not isinstance(enabled, bool):
         raise TypeError(f"{context} root_diagnostics must be a boolean")
+    return enabled
+
+
+def _configured_tree_reuse(values: dict[str, object], context: str) -> bool:
+    enabled = values.get("tree_reuse", False)
+    if not isinstance(enabled, bool):
+        raise TypeError(f"{context} tree_reuse must be a boolean")
     return enabled
 
 
@@ -2372,6 +2402,21 @@ def _result_dict(result: MatchResult) -> dict[str, object]:
                     }
                     for root in move.root_actions
                 ],
+                "tree_reuse": (
+                    None
+                    if move.tree_reuse is None
+                    else {
+                        "transition_attempts": move.tree_reuse.transition_attempts,
+                        "transition_hits": move.tree_reuse.transition_hits,
+                        "transition_misses": move.tree_reuse.transition_misses,
+                        "own_action_hits": move.tree_reuse.own_action_hits,
+                        "opponent_action_hits": move.tree_reuse.opponent_action_hits,
+                        "reused_root_visits": move.tree_reuse.reused_root_visits,
+                        "reused_nodes": move.tree_reuse.reused_nodes,
+                        "pruned_nodes": move.tree_reuse.pruned_nodes,
+                        "resets": move.tree_reuse.resets,
+                    }
+                ),
             }
             for ply, move in enumerate(result.moves, start=1)
         ],
@@ -2682,6 +2727,7 @@ def _configured_benchmark_dicts(
                 **_conditional_rollout_fields(agent.rollout_policy),
                 **_progressive_bias_fields(agent.progressive_bias),
                 "root_diagnostics": agent.root_diagnostics,
+                "tree_reuse": agent.tree_reuse,
                 "sampled_positions": benchmark.sampled_positions,
                 "decision_time_mean_ms": benchmark.decision_time_mean_ms,
                 "decision_time_p50_ms": benchmark.decision_time_p50_ms,
