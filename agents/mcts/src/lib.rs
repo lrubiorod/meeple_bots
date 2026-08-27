@@ -606,7 +606,6 @@ impl<C, P, B> MctsAgent<C, P, B> {
     where
         G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
         G::State: Clone,
-        G::Action: Clone,
         C: StateEvaluator<G>,
         P: RolloutPolicy<G>,
         B: SelectionBias<G>,
@@ -740,9 +739,8 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 let action = nodes[selected]
                     .action
                     .as_ref()
-                    .expect("child has an action")
-                    .clone();
-                game.apply_action(&mut state, &action)
+                    .expect("child has an action");
+                game.apply_action(&mut state, action)
                     .map_err(|error| AgentError::message(error.to_string()))?;
                 node_index = selected;
                 path.push(node_index);
@@ -810,7 +808,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
 
         nodes[selected_index]
             .action
-            .clone()
+            .take()
             .ok_or(AgentError::NoLegalActions)
     }
 }
@@ -852,7 +850,6 @@ impl<G, C, P, B> Agent<G> for MctsAgent<C, P, B>
 where
     G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
     G::State: Clone,
-    G::Action: Clone,
     C: StateEvaluator<G>,
     P: RolloutPolicy<G>,
     B: SelectionBias<G>,
@@ -1100,6 +1097,67 @@ mod tests {
 
     impl DeterministicGame for FixedTerminalUtilityGame {}
 
+    #[derive(Debug, Eq, PartialEq)]
+    struct NonCloneAction;
+
+    #[derive(Clone, Copy)]
+    struct NonCloneActionGame;
+
+    impl Game for NonCloneActionGame {
+        type State = bool;
+        type Action = NonCloneAction;
+        type Observation<'a> = &'a bool;
+        type LegalActions<'a> = std::option::IntoIter<NonCloneAction>;
+
+        fn player_count(&self) -> u8 {
+            2
+        }
+
+        fn initial_state(&self) -> Self::State {
+            false
+        }
+
+        fn status(&self, state: &Self::State) -> PositionStatus {
+            if *state {
+                PositionStatus::Terminal
+            } else {
+                PositionStatus::PlayerTurn(PlayerId::FIRST)
+            }
+        }
+
+        fn legal_actions<'a>(&'a self, state: &'a Self::State) -> Self::LegalActions<'a> {
+            (!*state).then_some(NonCloneAction).into_iter()
+        }
+
+        fn apply_action(
+            &self,
+            state: &mut Self::State,
+            _action: &Self::Action,
+        ) -> Result<(), IllegalAction> {
+            if *state {
+                return Err(IllegalAction::new("game is already terminal"));
+            }
+            *state = true;
+            Ok(())
+        }
+
+        fn observation<'a>(
+            &'a self,
+            state: &'a Self::State,
+            _player: PlayerId,
+        ) -> Self::Observation<'a> {
+            state
+        }
+
+        fn terminal_utility(&self, state: &Self::State, player: PlayerId) -> Option<f32> {
+            state.then_some(if player == PlayerId::FIRST { 1.0 } else { -1.0 })
+        }
+    }
+
+    impl DeterministicGame for NonCloneActionGame {}
+    impl PerfectInformationGame for NonCloneActionGame {}
+    impl TwoPlayerZeroSumGame for NonCloneActionGame {}
+
     #[derive(Clone, Copy)]
     struct FixedCondition(bool);
 
@@ -1300,6 +1358,26 @@ mod tests {
             ChainedAction::Draw,
             "the opponent should minimize after control changes"
         );
+    }
+
+    #[test]
+    fn supports_actions_that_are_not_cloneable() {
+        let game = NonCloneActionGame;
+        let mut agent = MctsAgent::new(MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 0,
+            rollout_policy: UniformRandom,
+        });
+
+        let selected = agent
+            .select_action(
+                DecisionContext::new(&game, &game.initial_state(), PlayerId::FIRST),
+                &mut SplitMix64::new(7),
+            )
+            .unwrap();
+
+        assert_eq!(selected, NonCloneAction);
     }
 
     #[test]
