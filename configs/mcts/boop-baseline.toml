@@ -1,0 +1,9 @@
+# Baseline for boop. based on the exploration sweep in boop-study-6.
+# Reassess this profile when changing the heuristic, rollout policy, or search implementation.
+name = "boop-baseline"
+time_budget = 2.0
+rollout_depth = 16
+exploration = 0.25
+cutoff_evaluator = { kind = "game_heuristic", index = 0 }
+rollout_policy = { kind = "uniform_random" }
+tree_reuse = true
