@@ -1,0 +1,11 @@
+# Baseline for two-player Spirit of the Forest in the current implementation.
+# This version does not include the original game's hidden-information favor tokens.
+# The profile has shown good results in this specific setting; reassess it if that
+# hidden-information mechanic is added or when using a different player count.
+name = "spotf-baseline"
+time_budget = 2.0
+rollout_depth = 130
+exploration = 1.0
+cutoff_evaluator = { kind = "game_heuristic", index = 2 }
+rollout_policy = { kind = "uniform_random" }
+tree_reuse = true
