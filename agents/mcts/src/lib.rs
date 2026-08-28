@@ -2,7 +2,9 @@
 
 use std::{
     cmp::Ordering,
+    collections::HashMap,
     fmt,
+    hash::Hash,
     num::NonZeroU32,
     time::{Duration, Instant},
 };
@@ -896,6 +898,228 @@ impl<C, P, B> MctsAgent<C, P, B> {
         });
         Ok(selected_index)
     }
+
+    fn search_graph<G, R>(
+        &mut self,
+        game: &G,
+        root_player: PlayerId,
+        graph: &mut ReusableGraph<G>,
+        mut root_action_indices: Option<RootActionIndices>,
+        count_existing_nodes: bool,
+        rng: &mut R,
+    ) -> Result<usize, AgentError>
+    where
+        G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
+        G::State: Clone + Eq + Hash,
+        G::Action: Clone,
+        C: StateEvaluator<G>,
+        P: RolloutPolicy<G>,
+        B: SelectionBias<G>,
+        R: RandomSource + ?Sized,
+    {
+        let nodes_before_search = graph.nodes.len();
+        let bias_weight = self.selection_bias.weight();
+        if !bias_weight.is_finite() || bias_weight < 0.0 {
+            return Err(AgentError::message(
+                "MCTS progressive bias weight must be finite and non-negative",
+            ));
+        }
+        let bias_enabled = bias_weight > 0.0;
+
+        let search_started = Instant::now();
+        let mut completed_iterations = 0_u64;
+        let mut path_nodes = Vec::new();
+        let mut path_edges = Vec::new();
+        loop {
+            let budget_exhausted = match self.config.budget {
+                SearchBudget::Iterations(iterations) => {
+                    completed_iterations >= u64::from(iterations.get())
+                }
+                SearchBudget::Time(duration) => {
+                    completed_iterations > 0 && search_started.elapsed() >= duration
+                }
+            };
+            if budget_exhausted {
+                break;
+            }
+
+            let mut state = graph.nodes[0].state.clone();
+            let mut node_index = 0;
+            path_nodes.clear();
+            path_edges.clear();
+            path_nodes.push(0);
+
+            loop {
+                let status = game.status(&state);
+                if matches!(status, PositionStatus::Terminal) {
+                    break;
+                }
+
+                let active_player = match status {
+                    PositionStatus::PlayerTurn(player) => player,
+                    PositionStatus::Chance => {
+                        return Err(AgentError::message(
+                            "MCTS does not support chance transitions",
+                        ));
+                    }
+                    PositionStatus::Terminal => unreachable!(),
+                    _ => return Err(AgentError::message("unsupported position status")),
+                };
+
+                if !graph.nodes[node_index].unexpanded.is_empty() {
+                    let bias_applies = bias_enabled
+                        && self
+                            .selection_bias
+                            .applies(game, &state, active_player, root_player);
+                    let unexpanded_slot = rng
+                        .index(graph.nodes[node_index].unexpanded.len())
+                        .expect("non-empty actions");
+                    let action = graph.nodes[node_index]
+                        .unexpanded
+                        .swap_remove(unexpanded_slot);
+                    let root_action_index = (node_index == 0)
+                        .then(|| {
+                            root_action_indices
+                                .as_mut()
+                                .map(|indices| indices.unexpanded.swap_remove(unexpanded_slot))
+                        })
+                        .flatten();
+                    game.apply_action(&mut state, &action)
+                        .map_err(|error| AgentError::message(error.to_string()))?;
+
+                    let heuristic_value = if bias_applies {
+                        self.selection_bias
+                            .evaluate_child(game, &state, root_player)?
+                    } else {
+                        0.0
+                    };
+                    let child_index = if let Some(existing) = graph.state_indices.get(&state) {
+                        *existing
+                    } else {
+                        let child_index = graph.nodes.len();
+                        let child = if matches!(game.status(&state), PositionStatus::PlayerTurn(_))
+                        {
+                            GraphNode::new(state.clone(), game.legal_actions(&state))
+                        } else {
+                            GraphNode::new(state.clone(), std::iter::empty())
+                        };
+                        graph.nodes.push(child);
+                        graph.state_indices.insert(state.clone(), child_index);
+                        child_index
+                    };
+                    let edge_index = graph.nodes[node_index].edges.len();
+                    graph.nodes[node_index].edges.push(GraphEdge {
+                        action,
+                        child: child_index,
+                        visits: 0,
+                        heuristic_value,
+                    });
+                    if let Some(action_index) = root_action_index {
+                        root_action_indices
+                            .as_mut()
+                            .expect("root action indices exist")
+                            .children
+                            .push(action_index);
+                    }
+                    path_edges.push((node_index, edge_index));
+                    if !path_nodes.contains(&child_index) {
+                        path_nodes.push(child_index);
+                    }
+                    break;
+                }
+
+                if graph.nodes[node_index].edges.is_empty() {
+                    return Err(AgentError::message(
+                        "non-terminal MCTS node has no legal actions",
+                    ));
+                }
+
+                let maximizing = active_player == root_player;
+                let edge_index = best_graph_edge(
+                    &graph.nodes,
+                    node_index,
+                    maximizing,
+                    self.config.exploration,
+                    bias_weight,
+                );
+                let action = graph.nodes[node_index].edges[edge_index].action.clone();
+                let child_index = graph.nodes[node_index].edges[edge_index].child;
+                game.apply_action(&mut state, &action)
+                    .map_err(|error| AgentError::message(error.to_string()))?;
+                path_edges.push((node_index, edge_index));
+                if path_nodes.contains(&child_index) {
+                    break;
+                }
+                node_index = child_index;
+                path_nodes.push(node_index);
+            }
+
+            let utility = rollout(
+                game,
+                &mut state,
+                root_player,
+                self.config.rollout_depth,
+                &self.config.rollout_policy,
+                &self.cutoff_evaluator,
+                rng,
+            )?;
+            for &visited in &path_nodes {
+                graph.nodes[visited].visits += 1;
+                graph.nodes[visited].total_utility += utility;
+            }
+            for &(parent, edge) in &path_edges {
+                graph.nodes[parent].edges[edge].visits += 1;
+            }
+            completed_iterations += 1;
+        }
+
+        let selected_edge = graph.nodes[0]
+            .edges
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| {
+                left.visits.cmp(&right.visits).then_with(|| {
+                    graph.nodes[left.child]
+                        .mean_utility()
+                        .total_cmp(&graph.nodes[right.child].mean_utility())
+                })
+            })
+            .map(|(index, _)| index)
+            .ok_or(AgentError::NoLegalActions)?;
+
+        self.last_root_actions = if self.root_diagnostics {
+            let indices = root_action_indices
+                .as_ref()
+                .expect("root diagnostics indices exist");
+            graph.nodes[0]
+                .edges
+                .iter()
+                .enumerate()
+                .zip(indices.children.iter().copied())
+                .map(|((edge_index, edge), action_index)| RootActionStats {
+                    action_index,
+                    visits: edge.visits,
+                    mean_utility: graph.nodes[edge.child].mean_utility(),
+                    heuristic_value: bias_enabled.then_some(edge.heuristic_value),
+                    progressive_bias: bias_enabled
+                        .then(|| graph_progressive_bias_term(edge, true, bias_weight)),
+                    selected: edge_index == selected_edge,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.last_search_stats = Some(MctsSearchStats {
+            iterations: completed_iterations,
+            nodes: if count_existing_nodes {
+                graph.nodes.len() as u64
+            } else {
+                graph.nodes.len().saturating_sub(nodes_before_search) as u64
+            },
+            elapsed: search_started.elapsed(),
+        });
+        Ok(selected_edge)
+    }
 }
 
 struct RootActionIndices {
@@ -1015,6 +1239,27 @@ struct ReusableTree<G: meeple_bots_core::Game> {
     game: G,
     state: G::State,
     nodes: Vec<Node<G::Action>>,
+}
+
+struct ReusableGraph<G: meeple_bots_core::Game> {
+    game: G,
+    nodes: Vec<GraphNode<G::State, G::Action>>,
+    state_indices: HashMap<G::State, usize>,
+}
+
+struct GraphNode<S, A> {
+    state: S,
+    edges: Vec<GraphEdge<A>>,
+    unexpanded: Vec<A>,
+    visits: u32,
+    total_utility: f64,
+}
+
+struct GraphEdge<A> {
+    action: A,
+    child: usize,
+    visits: u32,
+    heuristic_value: f64,
 }
 
 struct Node<A> {
@@ -1196,6 +1441,320 @@ where
     }
 }
 
+/// Opt-in MCTS backend that merges nodes with exactly equal game states.
+pub struct TranspositionMctsAgent<
+    G: meeple_bots_core::Game,
+    C = NeutralEvaluator,
+    P = RolloutPolicyConfig<NeutralEvaluator>,
+    B = NoSelectionBias,
+> {
+    basic: TreeReuseMctsAgent<G, C, P, B>,
+    enabled: bool,
+    owner: Option<PlayerId>,
+    graph: Option<ReusableGraph<G>>,
+    pending_reuse_stats: TreeReuseStats,
+    last_reuse_stats: Option<TreeReuseStats>,
+}
+
+impl<G, C, P, B> TranspositionMctsAgent<G, C, P, B>
+where
+    G: meeple_bots_core::Game,
+{
+    pub const fn new(inner: MctsAgent<C, P, B>, tree_reuse: bool, transpositions: bool) -> Self {
+        Self {
+            basic: TreeReuseMctsAgent::new(inner, tree_reuse),
+            enabled: transpositions,
+            owner: None,
+            graph: None,
+            pending_reuse_stats: TreeReuseStats {
+                transition_attempts: 0,
+                transition_hits: 0,
+                transition_misses: 0,
+                own_action_hits: 0,
+                opponent_action_hits: 0,
+                reused_root_visits: 0,
+                reused_nodes: 0,
+                pruned_nodes: 0,
+                resets: 0,
+            },
+            last_reuse_stats: None,
+        }
+    }
+
+    pub const fn transpositions_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub const fn tree_reuse_enabled(&self) -> bool {
+        self.basic.tree_reuse_enabled()
+    }
+
+    pub const fn inner(&self) -> &MctsAgent<C, P, B> {
+        self.basic.inner()
+    }
+
+    pub const fn last_search_stats(&self) -> Option<MctsSearchStats> {
+        self.basic.last_search_stats()
+    }
+
+    pub fn decision_stats(&self) -> AgentDecisionStats {
+        if !self.enabled {
+            return self.basic.decision_stats();
+        }
+        let mut stats = self.basic.inner.decision_stats();
+        if self.basic.tree_reuse_enabled() {
+            stats.tree_reuse = self.last_reuse_stats;
+        }
+        stats
+    }
+
+    /// Mutable access invalidates retained search data because configuration may change.
+    pub fn inner_mut(&mut self) -> &mut MctsAgent<C, P, B> {
+        self.reset_graph();
+        self.basic.inner_mut()
+    }
+
+    fn reset_graph(&mut self) {
+        self.graph = None;
+        self.owner = None;
+        self.pending_reuse_stats = TreeReuseStats::default();
+        self.last_reuse_stats = None;
+    }
+
+    fn record_transition_miss(&mut self) {
+        self.graph = None;
+        self.pending_reuse_stats.transition_misses += 1;
+        self.pending_reuse_stats.resets += 1;
+    }
+}
+
+impl<G, C, P, B> Clone for TranspositionMctsAgent<G, C, P, B>
+where
+    G: meeple_bots_core::Game,
+    MctsAgent<C, P, B>: Clone,
+{
+    fn clone(&self) -> Self {
+        Self::new(
+            self.basic.inner.clone(),
+            self.basic.tree_reuse_enabled(),
+            self.enabled,
+        )
+    }
+}
+
+impl<G, C, P, B> fmt::Debug for TranspositionMctsAgent<G, C, P, B>
+where
+    G: meeple_bots_core::Game,
+    MctsAgent<C, P, B>: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TranspositionMctsAgent")
+            .field("inner", &self.basic.inner)
+            .field("tree_reuse", &self.basic.tree_reuse_enabled())
+            .field("enabled", &self.enabled)
+            .field("owner", &self.owner)
+            .field("has_graph", &self.graph.is_some())
+            .field("pending_reuse_stats", &self.pending_reuse_stats)
+            .field("last_reuse_stats", &self.last_reuse_stats)
+            .finish()
+    }
+}
+
+impl<G, C, P, B> Agent<G> for TranspositionMctsAgent<G, C, P, B>
+where
+    G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame + Clone + PartialEq,
+    G::State: Clone + Eq + Hash,
+    G::Action: Clone + PartialEq,
+    C: StateEvaluator<G>,
+    P: RolloutPolicy<G>,
+    B: SelectionBias<G>,
+{
+    fn on_match_start(&mut self, game: &G, state: &G::State, player: PlayerId) {
+        if !self.enabled {
+            self.basic.on_match_start(game, state, player);
+            return;
+        }
+        self.reset_graph();
+        self.owner = Some(player);
+    }
+
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, G>,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        if !self.enabled {
+            return self.basic.select_action(decision, rng);
+        }
+
+        self.basic.inner.last_search_stats = None;
+        self.basic.inner.last_root_actions.clear();
+        self.basic
+            .inner
+            .config
+            .validate()
+            .map_err(AgentError::message)?;
+        self.basic.inner.config.rollout_policy.validate()?;
+
+        let game = decision.game();
+        let root_state = decision.state();
+        let root_player = decision.player();
+        if game.status(root_state) != PositionStatus::PlayerTurn(root_player) {
+            return Err(AgentError::message(
+                "MCTS received a position for the wrong player",
+            ));
+        }
+        if self.owner.is_none() {
+            self.owner = Some(root_player);
+        }
+        if self.owner != Some(root_player) {
+            self.pending_reuse_stats.resets += 1;
+            self.graph = None;
+            self.owner = Some(root_player);
+        }
+
+        let graph_matches = self
+            .graph
+            .as_ref()
+            .is_some_and(|graph| graph.game == *game && graph.nodes[0].state == *root_state);
+        if self.graph.is_some() && !graph_matches {
+            self.record_transition_miss();
+        }
+
+        let fresh_graph = self.graph.is_none();
+        if fresh_graph {
+            let root = GraphNode::new(root_state.clone(), game.legal_actions(root_state));
+            if root.unexpanded.is_empty() {
+                return Err(AgentError::NoLegalActions);
+            }
+            self.graph = Some(ReusableGraph {
+                game: game.clone(),
+                nodes: vec![root],
+                state_indices: HashMap::from([(root_state.clone(), 0)]),
+            });
+        }
+
+        let mut reuse_stats = std::mem::take(&mut self.pending_reuse_stats);
+        if self.basic.tree_reuse_enabled() && !fresh_graph {
+            let graph = self.graph.as_ref().expect("graph was initialized");
+            reuse_stats.reused_root_visits = graph.nodes[0].visits;
+            reuse_stats.reused_nodes = graph.nodes.len() as u64;
+        }
+
+        let root_action_indices = if self.basic.inner.root_diagnostics {
+            let graph = self.graph.as_ref().expect("graph was initialized");
+            match map_graph_root_action_indices(game, root_state, &graph.nodes) {
+                Ok(indices) => Some(indices),
+                Err(error) => {
+                    self.graph = None;
+                    reuse_stats.resets += 1;
+                    self.last_reuse_stats = Some(reuse_stats);
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+
+        let graph = self.graph.as_mut().expect("graph was initialized");
+        let selected = self.basic.inner.search_graph(
+            game,
+            root_player,
+            graph,
+            root_action_indices,
+            fresh_graph,
+            rng,
+        );
+        let selected_edge = match selected {
+            Ok(index) => index,
+            Err(error) => {
+                self.graph = None;
+                reuse_stats.resets += 1;
+                self.last_reuse_stats = Some(reuse_stats);
+                return Err(error);
+            }
+        };
+        let action = graph.nodes[0].edges[selected_edge].action.clone();
+        if self.basic.tree_reuse_enabled() {
+            self.last_reuse_stats = Some(reuse_stats);
+        } else {
+            self.graph = None;
+            self.last_reuse_stats = None;
+        }
+        Ok(action)
+    }
+
+    fn last_decision_stats(&self) -> AgentDecisionStats {
+        self.decision_stats()
+    }
+
+    fn on_action_applied(
+        &mut self,
+        game: &G,
+        state: &G::State,
+        player: PlayerId,
+        action: &G::Action,
+    ) {
+        if !self.enabled {
+            self.basic.on_action_applied(game, state, player, action);
+            return;
+        }
+        if !self.basic.tree_reuse_enabled() || self.graph.is_none() {
+            return;
+        }
+        self.pending_reuse_stats.transition_attempts += 1;
+
+        let transition = self.graph.as_mut().and_then(|graph| {
+            if graph.game != *game {
+                return None;
+            }
+            let mut expected_state = graph.nodes[0].state.clone();
+            if game.apply_action(&mut expected_state, action).is_err() || expected_state != *state {
+                return None;
+            }
+            let child_index = graph.nodes[0]
+                .edges
+                .iter()
+                .find(|edge| &edge.action == action)
+                .map(|edge| edge.child)?;
+            let (retained, pruned) = compact_graph(&mut graph.nodes, child_index);
+            graph.nodes[0].state = state.clone();
+            graph.state_indices.clear();
+            graph.state_indices.extend(
+                graph
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, node)| (node.state.clone(), index)),
+            );
+            Some((retained, pruned))
+        });
+
+        if let Some((retained, pruned)) = transition {
+            self.pending_reuse_stats.transition_hits += 1;
+            self.pending_reuse_stats.reused_nodes = retained as u64;
+            self.pending_reuse_stats.pruned_nodes += pruned as u64;
+            if self.owner == Some(player) {
+                self.pending_reuse_stats.own_action_hits += 1;
+            } else {
+                self.pending_reuse_stats.opponent_action_hits += 1;
+            }
+        } else {
+            self.record_transition_miss();
+        }
+    }
+
+    fn on_match_end(&mut self, game: &G, state: &G::State) {
+        if !self.enabled {
+            self.basic.on_match_end(game, state);
+            return;
+        }
+        self.graph = None;
+        self.owner = None;
+    }
+}
+
 fn map_root_action_indices<G>(
     game: &G,
     state: &G::State,
@@ -1235,6 +1794,39 @@ where
     })
 }
 
+fn map_graph_root_action_indices<G>(
+    game: &G,
+    state: &G::State,
+    nodes: &[GraphNode<G::State, G::Action>],
+) -> Result<RootActionIndices, AgentError>
+where
+    G: DeterministicGame,
+    G::Action: PartialEq,
+{
+    let legal_actions: Vec<_> = game.legal_actions(state).collect();
+    let action_index = |action: &G::Action| {
+        legal_actions
+            .iter()
+            .position(|candidate| candidate == action)
+            .and_then(|index| u32::try_from(index).ok())
+            .ok_or_else(|| AgentError::message("reused MCTS root does not match legal actions"))
+    };
+    let unexpanded = nodes[0]
+        .unexpanded
+        .iter()
+        .map(&action_index)
+        .collect::<Result<Vec<_>, _>>()?;
+    let children = nodes[0]
+        .edges
+        .iter()
+        .map(|edge| action_index(&edge.action))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(RootActionIndices {
+        unexpanded,
+        children,
+    })
+}
+
 fn compact_to_subtree<A>(nodes: &mut Vec<Node<A>>, new_root: usize) -> (usize, usize) {
     let old_len = nodes.len();
     let mut reachable = Vec::new();
@@ -1264,6 +1856,38 @@ fn compact_to_subtree<A>(nodes: &mut Vec<Node<A>>, new_root: usize) -> (usize, u
     (nodes.len(), old_len.saturating_sub(nodes.len()))
 }
 
+fn compact_graph<S, A>(nodes: &mut Vec<GraphNode<S, A>>, new_root: usize) -> (usize, usize) {
+    let old_len = nodes.len();
+    let mut reachable = Vec::new();
+    let mut visited = vec![false; old_len];
+    let mut stack = vec![new_root];
+    while let Some(index) = stack.pop() {
+        if visited[index] {
+            continue;
+        }
+        visited[index] = true;
+        reachable.push(index);
+        stack.extend(nodes[index].edges.iter().rev().map(|edge| edge.child));
+    }
+
+    let mut remap = vec![usize::MAX; old_len];
+    for (new_index, old_index) in reachable.iter().copied().enumerate() {
+        remap[old_index] = new_index;
+    }
+    let mut old_nodes: Vec<_> = std::mem::take(nodes).into_iter().map(Some).collect();
+    nodes.reserve(reachable.len());
+    for old_index in reachable.iter().copied() {
+        let mut node = old_nodes[old_index]
+            .take()
+            .expect("reachable graph node is unique");
+        for edge in &mut node.edges {
+            edge.child = remap[edge.child];
+        }
+        nodes.push(node);
+    }
+    (nodes.len(), old_len.saturating_sub(nodes.len()))
+}
+
 impl<A> Node<A> {
     fn new<I>(action: Option<A>, heuristic_value: f64, unexpanded: I) -> Self
     where
@@ -1273,6 +1897,29 @@ impl<A> Node<A> {
             action,
             heuristic_value,
             children: Vec::new(),
+            unexpanded: unexpanded.into_iter().collect(),
+            visits: 0,
+            total_utility: 0.0,
+        }
+    }
+
+    fn mean_utility(&self) -> f64 {
+        if self.visits == 0 {
+            0.0
+        } else {
+            self.total_utility / f64::from(self.visits)
+        }
+    }
+}
+
+impl<S, A> GraphNode<S, A> {
+    fn new<I>(state: S, unexpanded: I) -> Self
+    where
+        I: IntoIterator<Item = A>,
+    {
+        Self {
+            state,
+            edges: Vec::new(),
             unexpanded: unexpanded.into_iter().collect(),
             visits: 0,
             total_utility: 0.0,
@@ -1338,6 +1985,71 @@ fn best_child<A>(
             ))
         })
         .expect("parent has children")
+}
+
+fn best_graph_edge<S, A>(
+    nodes: &[GraphNode<S, A>],
+    parent: usize,
+    maximizing: bool,
+    exploration: f64,
+    bias_weight: f64,
+) -> usize {
+    let parent_visits = f64::from(nodes[parent].visits.max(1));
+    nodes[parent]
+        .edges
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| {
+            graph_selection_score(
+                nodes,
+                left,
+                parent_visits,
+                maximizing,
+                exploration,
+                bias_weight,
+            )
+            .total_cmp(&graph_selection_score(
+                nodes,
+                right,
+                parent_visits,
+                maximizing,
+                exploration,
+                bias_weight,
+            ))
+        })
+        .map(|(index, _)| index)
+        .expect("parent has edges")
+}
+
+fn graph_selection_score<S, A>(
+    nodes: &[GraphNode<S, A>],
+    edge: &GraphEdge<A>,
+    parent_visits: f64,
+    maximizing: bool,
+    exploration: f64,
+    bias_weight: f64,
+) -> f64 {
+    if edge.visits == 0 {
+        return f64::INFINITY;
+    }
+    let child_mean = nodes[edge.child].mean_utility();
+    let exploitation = if maximizing { child_mean } else { -child_mean };
+    let exploration_term = exploration * (parent_visits.ln() / f64::from(edge.visits)).sqrt();
+    let bias = if bias_weight == 0.0 {
+        0.0
+    } else {
+        graph_progressive_bias_term(edge, maximizing, bias_weight)
+    };
+    exploitation + exploration_term + bias
+}
+
+fn graph_progressive_bias_term<A>(edge: &GraphEdge<A>, maximizing: bool, weight: f64) -> f64 {
+    let signed_heuristic = if maximizing {
+        edge.heuristic_value
+    } else {
+        -edge.heuristic_value
+    };
+    weight * signed_heuristic / (f64::from(edge.visits) + 1.0)
 }
 
 fn selection_score<A>(
@@ -1670,7 +2382,7 @@ mod tests {
         Lose,
     }
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     enum ChainedState {
         Root,
         Continuation,
@@ -1758,6 +2470,94 @@ mod tests {
     impl DeterministicGame for ChainedDecisionGame {}
     impl PerfectInformationGame for ChainedDecisionGame {}
     impl TwoPlayerZeroSumGame for ChainedDecisionGame {}
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum DiamondAction {
+        Left,
+        Right,
+        Merge,
+        Finish,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    enum DiamondState {
+        Root,
+        Left,
+        Right,
+        Merged,
+        Terminal,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct DiamondGame;
+
+    impl Game for DiamondGame {
+        type State = DiamondState;
+        type Action = DiamondAction;
+        type Observation<'a> = &'a DiamondState;
+        type LegalActions<'a> = std::vec::IntoIter<DiamondAction>;
+
+        fn player_count(&self) -> u8 {
+            2
+        }
+
+        fn initial_state(&self) -> Self::State {
+            DiamondState::Root
+        }
+
+        fn status(&self, state: &Self::State) -> PositionStatus {
+            match state {
+                DiamondState::Terminal => PositionStatus::Terminal,
+                DiamondState::Root
+                | DiamondState::Left
+                | DiamondState::Right
+                | DiamondState::Merged => PositionStatus::PlayerTurn(PlayerId::FIRST),
+            }
+        }
+
+        fn legal_actions<'a>(&'a self, state: &'a Self::State) -> Self::LegalActions<'a> {
+            match state {
+                DiamondState::Root => vec![DiamondAction::Left, DiamondAction::Right],
+                DiamondState::Left | DiamondState::Right => vec![DiamondAction::Merge],
+                DiamondState::Merged => vec![DiamondAction::Finish],
+                DiamondState::Terminal => Vec::new(),
+            }
+            .into_iter()
+        }
+
+        fn apply_action(
+            &self,
+            state: &mut Self::State,
+            action: &Self::Action,
+        ) -> Result<(), IllegalAction> {
+            *state = match (*state, *action) {
+                (DiamondState::Root, DiamondAction::Left) => DiamondState::Left,
+                (DiamondState::Root, DiamondAction::Right) => DiamondState::Right,
+                (DiamondState::Left | DiamondState::Right, DiamondAction::Merge) => {
+                    DiamondState::Merged
+                }
+                (DiamondState::Merged, DiamondAction::Finish) => DiamondState::Terminal,
+                _ => return Err(IllegalAction::new("action is not legal")),
+            };
+            Ok(())
+        }
+
+        fn observation<'a>(
+            &'a self,
+            state: &'a Self::State,
+            _player: PlayerId,
+        ) -> Self::Observation<'a> {
+            state
+        }
+
+        fn terminal_utility(&self, state: &Self::State, _player: PlayerId) -> Option<f32> {
+            (*state == DiamondState::Terminal).then_some(0.0)
+        }
+    }
+
+    impl DeterministicGame for DiamondGame {}
+    impl PerfectInformationGame for DiamondGame {}
+    impl TwoPlayerZeroSumGame for DiamondGame {}
 
     fn select_chained_action(continuation_player: PlayerId, seed: u64) -> ChainedAction {
         let game = ChainedDecisionGame {
@@ -2591,6 +3391,86 @@ mod tests {
         assert_eq!(wrapped_action, baseline_action);
         assert_eq!(wrapped.decision_stats(), baseline.decision_stats());
         assert!(wrapped.tree.is_none());
+    }
+
+    #[test]
+    fn disabled_transpositions_match_the_baseline_search() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let config = MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(64).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 4,
+            rollout_policy: RolloutPolicyConfig::<NeutralEvaluator>::UniformRandom,
+        };
+        let mut baseline = MctsAgent::new(config);
+        let mut wrapped =
+            TranspositionMctsAgent::<TicTacToe>::new(MctsAgent::new(config), false, false);
+        let mut baseline_rng = SplitMix64::new(91);
+        let mut wrapped_rng = SplitMix64::new(91);
+
+        let baseline_action = baseline
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut baseline_rng,
+            )
+            .unwrap();
+        let wrapped_action = wrapped
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut wrapped_rng,
+            )
+            .unwrap();
+
+        assert_eq!(wrapped_action, baseline_action);
+        assert_eq!(wrapped.decision_stats(), baseline.decision_stats());
+        assert!(wrapped.graph.is_none());
+    }
+
+    #[test]
+    fn merges_transpositions_and_reuses_the_resulting_graph() {
+        let game = DiamondGame;
+        let mut state = game.initial_state();
+        let config = MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(4).unwrap()),
+            exploration: std::f64::consts::SQRT_2,
+            rollout_depth: 4,
+            rollout_policy: RolloutPolicyConfig::<NeutralEvaluator>::UniformRandom,
+        };
+        let mut agent = TranspositionMctsAgent::new(MctsAgent::new(config), true, true);
+        let mut rng = SplitMix64::new(17);
+        agent.on_match_start(&game, &state, PlayerId::FIRST);
+
+        let selected = agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut rng,
+            )
+            .unwrap();
+
+        let graph = agent.graph.as_ref().unwrap();
+        assert_eq!(graph.nodes.len(), 4);
+        assert_eq!(agent.decision_stats().search_nodes, Some(4));
+        let branch_children: Vec<_> = graph.nodes[0].edges.iter().map(|edge| edge.child).collect();
+        let merged_children: Vec<_> = branch_children
+            .iter()
+            .map(|branch| graph.nodes[*branch].edges[0].child)
+            .collect();
+        assert_eq!(merged_children.len(), 2);
+        assert_eq!(merged_children[0], merged_children[1]);
+
+        game.apply_action(&mut state, &selected).unwrap();
+        agent.on_action_applied(&game, &state, PlayerId::FIRST, &selected);
+        agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut rng,
+            )
+            .unwrap();
+        let reuse = agent.decision_stats().tree_reuse.unwrap();
+        assert_eq!(reuse.transition_attempts, 1);
+        assert_eq!(reuse.transition_hits, 1);
+        assert!(reuse.reused_root_visits > 0);
     }
 
     #[test]

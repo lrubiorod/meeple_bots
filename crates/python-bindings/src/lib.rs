@@ -87,6 +87,7 @@ impl PyAgentConfig {
         progressive_bias_condition_phase=None,
         root_diagnostics=false,
         tree_reuse=false,
+        transpositions=false,
     ))]
     fn mcts(
         iterations: Option<u32>,
@@ -114,6 +115,7 @@ impl PyAgentConfig {
         progressive_bias_condition_phase: Option<&str>,
         root_diagnostics: bool,
         tree_reuse: bool,
+        transpositions: bool,
     ) -> PyResult<Self> {
         if !exploration.is_finite() || exploration < 0.0 {
             return Err(PyValueError::new_err(
@@ -160,6 +162,7 @@ impl PyAgentConfig {
                 )?,
                 root_diagnostics,
                 tree_reuse,
+                transpositions,
             })),
         })
     }
@@ -737,6 +740,7 @@ fn py_evaluate_game(
     progressive_bias_condition_phase=None,
     root_diagnostics=false,
     tree_reuse=false,
+    transpositions=false,
 ))]
 fn py_benchmark_mcts_agent(
     py: Python<'_>,
@@ -768,6 +772,7 @@ fn py_benchmark_mcts_agent(
     progressive_bias_condition_phase: Option<&str>,
     root_diagnostics: bool,
     tree_reuse: bool,
+    transpositions: bool,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     if !exploration.is_finite() || exploration < 0.0 {
@@ -811,6 +816,7 @@ fn py_benchmark_mcts_agent(
             )?,
             root_diagnostics,
             tree_reuse,
+            transpositions,
         },
         median_depth,
         seed,

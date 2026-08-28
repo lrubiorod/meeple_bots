@@ -89,6 +89,7 @@ _AGENT_FIELDS = (
     "progressive_bias_condition_phase",
     "root_diagnostics",
     "tree_reuse",
+    "transpositions",
     "self_play",
 )
 
@@ -673,6 +674,7 @@ def _agent_signature(row: dict[str, object]) -> dict[str, object]:
             "progressive_bias_condition",
             "progressive_bias_condition_phase",
             "tree_reuse",
+            "transpositions",
         )
     }
 
@@ -2004,6 +2006,7 @@ def _agent_row(raw: object) -> dict[str, object]:
         ),
         "root_diagnostics": bool(raw.get("root_diagnostics", False)),
         "tree_reuse": bool(raw.get("tree_reuse", False)),
+        "transpositions": bool(raw.get("transpositions", False)),
         "self_play": self_play,
     }
 

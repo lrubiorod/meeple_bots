@@ -53,6 +53,11 @@ when one player makes several consecutive engine actions. A missing child or any
 mismatch resets to a fresh tree rather than risking stale statistics. Cloning an agent for another
 match and the explicit match-start lifecycle both discard retained data.
 
+With `transpositions=True`, MCTS uses an exact-state graph instead of a tree. Different action
+sequences that produce equal states share visits and utility, while each incoming action keeps its
+own exploration count. This backend is independent from `tree_reuse`: it can build a fresh graph
+for every decision or retain and prune the reachable graph across match actions.
+
 ```python
 from meeple_bots import Match, MctsAgent, RandomAgent
 
@@ -61,6 +66,7 @@ agent = MctsAgent(
     exploration=2.0**0.5,
     rollout_depth=256,
     tree_reuse=True,
+    transpositions=True,
 )
 result = Match(first=agent, second=RandomAgent(), seed=42).run()
 ```
@@ -78,6 +84,7 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 | `progressive_bias` | `None` | Optional decaying heuristic prior added to UCT tree selection. |
 | `root_diagnostics` | `false` | Record visits, utility, cached heuristic, and bias for expanded root actions. |
 | `tree_reuse` | `false` | Retain the reachable subtree across decisions in the same match. |
+| `transpositions` | `false` | Merge exactly equal states reached through different action sequences. |
 
 The legacy `heuristic=INDEX` argument remains available as shorthand for
 `cutoff_evaluator=GameHeuristic(INDEX)`.
@@ -224,12 +231,13 @@ exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 0 } }
 tree_reuse = true
+transpositions = true
 ```
 
 Exactly one of `iterations` or `time_budget` is required, together with `rollout_depth`.
 `time_budget` is expressed in seconds. `exploration` defaults to `sqrt(2)`,
 `cutoff_evaluator` defaults to neutral, `rollout_policy` defaults to uniform random, and
-`tree_reuse` defaults to false. Evaluator
+`tree_reuse` and `transpositions` default to false. Evaluator
 kinds currently supported by the catalog are `neutral` and `game_heuristic`. Rollout policy kinds
 are `uniform_random`, `greedy`, and `epsilon_greedy`. The legacy `use_heuristic`,
 `heuristic_index`, `rollout_heuristic_index`, and flat rollout fields remain accepted.
@@ -253,10 +261,10 @@ candidate agents at equal wall-clock time whenever possible. The
 
 ### Current limits and future work
 
-The current implementation does not support chance transitions, hidden information,
-transpositions, parallel search, or learned policies and values. Tree reuse is available for
-compatible perfect-information games, without transposition sharing. The possible development stages
-are recorded in the [MCTS roadmap](MCTS_ROADMAP.md) and its
+The current implementation does not support chance transitions, hidden information, parallel
+search, or learned policies and values. Tree reuse and exact-state transpositions are optional for
+compatible perfect-information games. The possible development stages are recorded in the
+[MCTS roadmap](MCTS_ROADMAP.md) and its
 [Spanish translation](MCTS_ROADMAP.es.md).
 
 ## Human

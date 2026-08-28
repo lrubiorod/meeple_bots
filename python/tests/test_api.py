@@ -96,6 +96,18 @@ class MatchApiTests(unittest.TestCase):
         self.assertTrue(profile.agent.tree_reuse)
         self.assertTrue(_batch_agent_dict(profile.name, profile.agent)["tree_reuse"])
 
+    def test_transpositions_requires_a_boolean(self) -> None:
+        with self.assertRaisesRegex(TypeError, "transpositions must be a boolean"):
+            MctsAgent(transpositions=1)
+
+    def test_inline_transposition_alias_is_preserved_in_trace_configuration(self) -> None:
+        profile = _parse_inline_mcts_profile("name=graph,i=8,d=4,tp=true")
+
+        self.assertTrue(profile.agent.transpositions)
+        self.assertTrue(
+            _batch_agent_dict(profile.name, profile.agent)["transpositions"]
+        )
+
     def test_tree_reuse_match_records_retained_search_metrics(self) -> None:
         agent = MctsAgent(iterations=128, rollout_depth=9, tree_reuse=True)
 

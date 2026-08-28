@@ -464,6 +464,16 @@ record reuse hits, retained visits/nodes, pruning, and resets; `extract` writes 
 Boop `turns.csv` and SPOTF `actions.csv`. The `analyze` command benchmarks isolated positions, so use
 a paired tournament to evaluate reuse latency or strength across a continuous game.
 
+Exact-state transpositions are also independently opt-in and can be combined with tree reuse:
+
+```toml
+transpositions = true
+```
+
+When disabled, the original tree backend is used unchanged. When enabled, equal states share one
+node and its accumulated utility, while each action edge keeps an independent visit count for UCT
+exploration. `search_nodes` then counts unique states created by the graph search.
+
 An MCTS entry must define exactly one of `iterations` or `time_budget`, plus `rollout_depth`.
 Either budget can be an array; `rollout_depth` and `exploration` can also use arrays. Structured
 configuration also accepts arrays in `cutoff_evaluator.index`, `rollout_policy.evaluator.index`,
@@ -496,7 +506,8 @@ Generated names append only the fields written as arrays. The suffixes are `i` f
 for time budget, `d`
 for rollout depth, `c` for exploration, `h` for cutoff heuristic index, `rh` for rollout heuristic
 index, `e` for rollout epsilon, and `pb` for Progressive Bias weight. Inline `analyze` agents also
-accept `tr=true` as shorthand for `tree_reuse=true`. The
+accept `tr=true` as shorthand for `tree_reuse=true` and `tp=true` as shorthand for
+`transpositions=true`. The
 example therefore creates names from `mcts-h0-i100-d8` through `mcts-h0-i10000-d32`. Scalar
 entries retain their original names, so existing tournament files remain compatible.
 

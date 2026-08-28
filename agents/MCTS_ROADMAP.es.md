@@ -116,7 +116,8 @@ Evitar descartar trabajo válido dentro de una partida y entre caminos de búsqu
 - Implementado: cambiar la raíz después de observar la acción real del oponente.
 - Implementado: verificar juego y estado, y reiniciar de forma segura si no coinciden.
 - Implementado: usar un ciclo de vida explícito para que una partida nueva no herede un árbol.
-- Añadir tablas de transposición para caminos que llegan al mismo estado completo.
+- Implementado: añadir un grafo opcional de transposiciones por estado exacto para caminos que
+  llegan al mismo estado completo sin cambiar el backend básico de árbol.
 - Añadir límites configurables de memoria y políticas de poda.
 
 ### Restricciones de diseño

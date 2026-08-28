@@ -10,6 +10,8 @@ rollout_policy = { kind = "uniform_random" }
 # cutoff_evaluator = { kind = "game_heuristic", index = 0, params = { gemstone_early_bonus = 4.0 } }
 # Keep the reachable subtree after accepted match actions. Disabled by default.
 tree_reuse = false
+# Merge exactly equal states reached through different action sequences. Disabled by default.
+transpositions = false
 
 # Optional tree-selection prior. The condition is checked on the state where the action is chosen,
 # while the evaluator scores its child state. Set root_diagnostics=true to trace root visits,

@@ -218,13 +218,13 @@ pub enum SpiritsOfTheForestAction {
     SkipGemstone,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TurnPhase {
     Collect,
     PlaceGemstone,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PlayerCollection {
     spirit_symbols: [u8; 9],
     power_sources: [u8; 3],
@@ -259,7 +259,7 @@ impl PlayerCollection {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct GemstonePool {
     available: u8,
     removed: u8,
@@ -283,7 +283,7 @@ impl GemstonePool {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SpiritsOfTheForestState {
     remaining: [bool; TILE_COUNT],
     gemstones: [Option<PlayerId>; TILE_COUNT],

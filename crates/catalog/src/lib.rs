@@ -19,7 +19,8 @@ use meeple_bots_evaluation::{
     benchmark_mcts_agent as benchmark_typed_mcts_agent, evaluate_game as evaluate_typed_game,
 };
 use meeple_bots_mcts_agent::{
-    MctsAgent, PolicyCondition, RolloutPolicy, SelectionBias, StateEvaluator, TreeReuseMctsAgent,
+    MctsAgent, PolicyCondition, RolloutPolicy, SelectionBias, StateEvaluator,
+    TranspositionMctsAgent,
 };
 pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, SearchBudget, UniformRandom};
 use meeple_bots_random_agent::RandomAgent;
@@ -56,6 +57,7 @@ pub struct MctsAgentConfig {
     pub progressive_bias: ConfiguredSelectionBias,
     pub root_diagnostics: bool,
     pub tree_reuse: bool,
+    pub transpositions: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -553,22 +555,22 @@ fn catalog_boop_action(action: &CatalogAction) -> Result<BoopAction, &'static st
     Ok(BoopAction::new(piece, position, resolution))
 }
 
-pub type BoopMctsAgent = TreeReuseMctsAgent<
+pub type BoopMctsAgent = TranspositionMctsAgent<
     Boop,
     EvaluatorConfig,
     RolloutPolicyConfig<EvaluatorConfig>,
     ConfiguredSelectionBias,
 >;
-pub type SpiritsOfTheForestMctsAgent = TreeReuseMctsAgent<
+pub type SpiritsOfTheForestMctsAgent = TranspositionMctsAgent<
     SpiritsOfTheForest,
     EvaluatorConfig,
     ConfiguredRolloutPolicy,
     ConfiguredSelectionBias,
 >;
 pub type ConnectFourMctsAgent =
-    TreeReuseMctsAgent<ConnectFour, meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>;
+    TranspositionMctsAgent<ConnectFour, meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>;
 pub type TicTacToeMctsAgent =
-    TreeReuseMctsAgent<TicTacToe, meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>;
+    TranspositionMctsAgent<TicTacToe, meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>;
 
 #[derive(Clone, Copy, Debug)]
 struct SpiritsTurnPhaseCondition(CatalogTurnPhase);
@@ -727,7 +729,7 @@ where
 
 pub fn configured_boop_mcts(config: MctsAgentConfig) -> Result<BoopMctsAgent, CatalogError> {
     validate_agent_evaluators(GameId::Boop, &Boop, &config)?;
-    Ok(TreeReuseMctsAgent::new(
+    Ok(TranspositionMctsAgent::new(
         MctsAgent::with_progressive_bias(
             standard_search_config(config.search)?,
             config.cutoff_evaluator,
@@ -735,6 +737,7 @@ pub fn configured_boop_mcts(config: MctsAgentConfig) -> Result<BoopMctsAgent, Ca
         )
         .with_root_diagnostics(config.root_diagnostics),
         config.tree_reuse,
+        config.transpositions,
     ))
 }
 
@@ -743,7 +746,7 @@ pub fn configured_spirits_of_the_forest_mcts(
 ) -> Result<SpiritsOfTheForestMctsAgent, CatalogError> {
     let game = spirits_of_the_forest_game(0);
     validate_agent_evaluators(GameId::SpiritsOfTheForest, &game, &config)?;
-    Ok(TreeReuseMctsAgent::new(
+    Ok(TranspositionMctsAgent::new(
         MctsAgent::with_progressive_bias(
             config.search,
             config.cutoff_evaluator,
@@ -751,6 +754,7 @@ pub fn configured_spirits_of_the_forest_mcts(
         )
         .with_root_diagnostics(config.root_diagnostics),
         config.tree_reuse,
+        config.transpositions,
     ))
 }
 
@@ -758,9 +762,10 @@ pub fn configured_connect_four_mcts(
     config: MctsAgentConfig,
 ) -> Result<ConnectFourMctsAgent, CatalogError> {
     validate_uninformed_agent(GameId::ConnectFour, &config)?;
-    Ok(TreeReuseMctsAgent::new(
+    Ok(TranspositionMctsAgent::new(
         MctsAgent::new(uniform_search_config(config.search)),
         config.tree_reuse,
+        config.transpositions,
     ))
 }
 
@@ -768,9 +773,10 @@ pub fn configured_tic_tac_toe_mcts(
     config: MctsAgentConfig,
 ) -> Result<TicTacToeMctsAgent, CatalogError> {
     validate_uninformed_agent(GameId::TicTacToe, &config)?;
-    Ok(TreeReuseMctsAgent::new(
+    Ok(TranspositionMctsAgent::new(
         MctsAgent::new(uniform_search_config(config.search)),
         config.tree_reuse,
+        config.transpositions,
     ))
 }
 
@@ -1841,6 +1847,7 @@ mod tests {
             progressive_bias: ConfiguredSelectionBias::None,
             root_diagnostics: false,
             tree_reuse: false,
+            transpositions: false,
         })
     }
 

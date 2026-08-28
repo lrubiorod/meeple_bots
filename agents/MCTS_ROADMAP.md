@@ -110,7 +110,8 @@ Avoid discarding valid work within a match and across equivalent search paths.
 - Implemented: re-root after observing the opponent's actual action.
 - Implemented: verify the game and state, and reset safely on a mismatch.
 - Implemented: use an explicit match lifecycle so a new match cannot inherit a tree.
-- Add transposition tables for paths that reach the same complete state.
+- Implemented: add an optional exact-state transposition graph for paths that reach the same
+  complete state without changing the basic tree backend.
 - Add configurable memory limits and pruning policies.
 
 ### Design constraints

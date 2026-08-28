@@ -125,7 +125,7 @@ impl BoopAction {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Pool {
     kittens: u8,
     cats: u8,
@@ -162,7 +162,7 @@ impl Pool {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct BoopState {
     board: [Option<Piece>; CELL_COUNT],
     pools: [Pool; 2],

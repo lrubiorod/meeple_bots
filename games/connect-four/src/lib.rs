@@ -13,7 +13,7 @@ const CONNECTED: usize = 4;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ConnectFour;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ConnectFourState {
     board: [Option<PlayerId>; CELL_COUNT],
     next_player: PlayerId,

@@ -19,7 +19,7 @@ const WINNING_LINES: [[usize; 3]; 8] = [
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TicTacToe;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct TicTacToeState {
     board: [Option<PlayerId>; 9],
     next_player: PlayerId,

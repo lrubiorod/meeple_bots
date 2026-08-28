@@ -44,6 +44,7 @@ exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "game_heuristic", index = 0 }
 rollout_policy = { kind = "uniform_random" }
 tree_reuse = true
+transpositions = false
 
 # Informed rollout only: cutoff states are neutral, while heuristic 0 selects rollout actions.
 # With epsilon 0.10, approximately 10% are random and 90% choose a best-rated successor.
