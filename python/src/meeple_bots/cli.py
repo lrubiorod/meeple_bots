@@ -75,6 +75,13 @@ _TOURNAMENT_GRID_FIELDS = (
     (("rollout_policy", "primary", "epsilon"), "e"),
     (("progressive_bias", "weight"), "pb"),
 )
+_EVALUATOR_PARAM_GRID_PATHS = (
+    (("cutoff_evaluator", "params"), "hp-"),
+    (("rollout_policy", "evaluator", "params"), "rhp-"),
+    (("rollout_policy", "primary", "evaluator", "params"), "rhp-"),
+    (("rollout_policy", "fallback", "evaluator", "params"), "rfhp-"),
+    (("progressive_bias", "evaluator", "params"), "pbhp-"),
+)
 _MAX_AGENTS_PER_TOURNAMENT_GRID = 256
 _MISSING_GRID_VALUE = object()
 
@@ -930,7 +937,8 @@ def _load_tournament_agents(
     grid_options: list[list[object]] = []
     combination_count = 1
     used_suffixes: dict[str, tuple[str, ...]] = {}
-    for path, suffix in _TOURNAMENT_GRID_FIELDS:
+    all_grid_fields = (*_TOURNAMENT_GRID_FIELDS, *_heuristic_param_grid_fields(values))
+    for path, suffix in all_grid_fields:
         raw_options = _nested_tournament_value(values, path)
         if not isinstance(raw_options, list):
             continue
@@ -1007,6 +1015,22 @@ def _nested_tournament_value(
             return _MISSING_GRID_VALUE
         current = current[field]
     return current
+
+
+def _heuristic_param_grid_fields(
+    values: dict[str, object],
+) -> tuple[tuple[tuple[str, ...], str], ...]:
+    fields = []
+    for params_path, suffix_prefix in _EVALUATOR_PARAM_GRID_PATHS:
+        params = _nested_tournament_value(values, params_path)
+        if not isinstance(params, dict):
+            continue
+        fields.extend(
+            (params_path + (name,), suffix_prefix + name + "-")
+            for name in sorted(params)
+            if isinstance(params[name], list)
+        )
+    return tuple(fields)
 
 
 def _set_nested_tournament_value(
@@ -2003,7 +2027,7 @@ def _configured_evaluator(
         kind = value
         fields: dict[str, object] = {}
     elif isinstance(value, dict):
-        unknown = sorted(value.keys() - {"kind", "index"})
+        unknown = sorted(value.keys() - {"kind", "index", "params"})
         if unknown:
             raise ValueError(f"unknown {context} evaluator fields: {', '.join(unknown)}")
         kind = value.get("kind")
@@ -2015,15 +2039,21 @@ def _configured_evaluator(
         raise TypeError(f"{context} evaluator kind must be a string")
     normalized = kind.strip().lower().replace("-", "_")
     if normalized == "neutral":
-        if "index" in fields:
-            raise ValueError(f"{context} neutral evaluator cannot have an index")
+        unsupported = sorted({"index", "params"} & fields.keys())
+        if unsupported:
+            raise ValueError(
+                f"{context} neutral evaluator cannot use: {', '.join(unsupported)}"
+            )
         return NeutralEvaluator()
     if normalized not in {"game_heuristic", "heuristic"}:
         raise ValueError(f"{context} evaluator kind must be neutral or game_heuristic")
     index = fields.get("index")
     if isinstance(index, bool) or not isinstance(index, int):
         raise TypeError(f"{context} game_heuristic evaluator requires an integer index")
-    return GameHeuristic(index)
+    params = fields.get("params", {})
+    if not isinstance(params, dict):
+        raise TypeError(f"{context} game_heuristic params must be a TOML table")
+    return GameHeuristic(index, params)
 
 
 def _configured_progressive_bias(
@@ -2304,13 +2334,25 @@ def _evaluator_dict(
     if evaluator is None:
         return None
     if isinstance(evaluator, GameHeuristic):
-        return {"kind": "game_heuristic", "index": evaluator.index}
+        serialized: dict[str, object] = {
+            "kind": "game_heuristic",
+            "index": evaluator.index,
+        }
+        if evaluator.params:
+            serialized["params"] = dict(evaluator.params)
+        return serialized
     return {"kind": "neutral"}
 
 
 def _evaluator_name(evaluator: NeutralEvaluator | GameHeuristic | None) -> str:
     if isinstance(evaluator, GameHeuristic):
-        return f"game_heuristic({evaluator.index})"
+        params = ""
+        if evaluator.params:
+            assignments = ",".join(
+                f"{name}={value:g}" for name, value in evaluator.params.items()
+            )
+            params = f";{assignments}"
+        return f"game_heuristic({evaluator.index}{params})"
     return "neutral" if evaluator is not None else "none"
 
 
@@ -2321,7 +2363,14 @@ def _serialized_evaluator_name(evaluator: object) -> str:
         raise TypeError("serialized evaluator must be an object")
     kind = evaluator.get("kind")
     if kind == "game_heuristic":
-        return f"game_heuristic({evaluator.get('index')})"
+        params = evaluator.get("params")
+        suffix = ""
+        if isinstance(params, dict) and params:
+            assignments = ",".join(
+                f"{name}={value}" for name, value in params.items()
+            )
+            suffix = f";{assignments}"
+        return f"game_heuristic({evaluator.get('index')}{suffix})"
     return str(kind)
 
 

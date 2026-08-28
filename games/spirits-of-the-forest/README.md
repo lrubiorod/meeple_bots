@@ -76,8 +76,17 @@ One state evaluator is available for cutoff evaluation, informed rollouts, and s
   `collected + remaining >= ceil(total / 2)`. A mathematically lost category is worth zero; once no
   symbol remains, a player with none receives the real `-3` penalty. All forest symbols are treated
   as potentially reachable, including reservations. Each usable gemstone is weighted by
-  `0.5 + 4 * remaining_fraction^2`, so sacrificing one is substantially more expensive early than
-  late in the game. Placed reservations also receive a small bonus.
+  `0.5 + gemstone_early_bonus * remaining_fraction^2`, so sacrificing one is substantially more
+  expensive early than late in the game. `gemstone_early_bonus` defaults to `4.0`, preserving the
+  original H0 behavior. Placed reservations also receive a small bonus.
+
+The optional parameter uses the generic game-heuristic configuration:
+
+```toml
+cutoff_evaluator = { kind = "game_heuristic", index = 0, params = { gemstone_early_bonus = 2.0 } }
+```
+
+The value must be finite and non-negative. Omitting `params` uses `4.0`.
 
 All results are normalized to `[-1, 1]`; terminal states always use exact match utility. Neutral
 terminal rollouts remain available by leaving `heuristic=None`.

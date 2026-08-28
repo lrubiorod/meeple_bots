@@ -1,4 +1,22 @@
+use std::collections::BTreeMap;
+
 use crate::{Game, PlayerId};
+
+pub type HeuristicParameters = BTreeMap<String, f64>;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeuristicParameterSpec {
+    pub name: &'static str,
+    pub default: f64,
+    pub minimum: Option<f64>,
+    pub maximum: Option<f64>,
+}
+
+impl HeuristicParameterSpec {
+    pub fn resolve(&self, parameters: &HeuristicParameters) -> f64 {
+        parameters.get(self.name).copied().unwrap_or(self.default)
+    }
+}
 
 /// Contract: status never returns PositionStatus::Chance.
 pub trait DeterministicGame: Game {}
@@ -13,6 +31,25 @@ pub trait HeuristicGame: Game {
 
     /// Returns a normalized utility for `player`, or `None` for an unknown index.
     fn heuristic_utility(&self, index: u32, state: &Self::State, player: PlayerId) -> Option<f32>;
+
+    /// Describes the named numeric parameters accepted by one heuristic.
+    fn heuristic_parameter_specs(&self, index: u32) -> Option<&'static [HeuristicParameterSpec]> {
+        (index < self.heuristic_count()).then_some(&[])
+    }
+
+    /// Evaluates a state with named parameters validated against `heuristic_parameter_specs`.
+    fn heuristic_utility_with_parameters(
+        &self,
+        index: u32,
+        parameters: &HeuristicParameters,
+        state: &Self::State,
+        player: PlayerId,
+    ) -> Option<f32> {
+        parameters
+            .is_empty()
+            .then(|| self.heuristic_utility(index, state, player))
+            .flatten()
+    }
 }
 
 /// Contract used by the first MCTS implementation.

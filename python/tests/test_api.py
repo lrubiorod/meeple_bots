@@ -477,6 +477,53 @@ class MatchApiTests(unittest.TestCase):
             MctsAgent(time_budget=0)
         with self.assertRaises(TypeError):
             HumanAgent(observe_action="not callable")
+        with self.assertRaises(TypeError):
+            GameHeuristic(0, {"gemstone_early_bonus": "high"})
+        with self.assertRaisesRegex(ValueError, "must be at least 0"):
+            Match(
+                game=SpiritsOfTheForest(),
+                first=MctsAgent(
+                    cutoff_evaluator=GameHeuristic(
+                        0, {"gemstone_early_bonus": -1.0}
+                    )
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "does not accept parameter"):
+            Match(
+                game=Boop(),
+                first=MctsAgent(
+                    cutoff_evaluator=GameHeuristic(
+                        0, {"gemstone_early_bonus": 2.0}
+                    )
+                ),
+            )
+
+    def test_spotf_h0_accepts_a_named_gemstone_parameter(self) -> None:
+        evaluator = GameHeuristic(0, {"gemstone_early_bonus": 2})
+        result = Match(
+            game=SpiritsOfTheForest(),
+            first=MctsAgent(
+                iterations=2,
+                rollout_depth=2,
+                cutoff_evaluator=evaluator,
+            ),
+            second=RandomAgent(),
+            seed=19,
+        ).run()
+
+        self.assertEqual(evaluator.params, {"gemstone_early_bonus": 2.0})
+        self.assertEqual(
+            _batch_agent_dict(
+                "parameterized",
+                MctsAgent(cutoff_evaluator=evaluator),
+            )["cutoff_evaluator"],
+            {
+                "kind": "game_heuristic",
+                "index": 0,
+                "params": {"gemstone_early_bonus": 2.0},
+            },
+        )
+        self.assertGreater(result.plies, 0)
 
     def test_epsilon_greedy_rollout_does_not_require_a_cutoff_heuristic(self) -> None:
         result = Match(
@@ -2418,6 +2465,51 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(
             [agent.rollout_policy.epsilon for agent in agents],
             [0.0, 0.2, 0.0, 0.2, 0.0, 0.2, 0.0, 0.2],
+        )
+
+    def test_tournament_grid_expands_named_heuristic_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "heuristic-params-grid.toml")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'game = "spotf"',
+                        "matches_per_pair = 2",
+                        'seat_mode = "paired"',
+                        "[[agents]]",
+                        'name = "baseline"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 32",
+                        'cutoff_evaluator = { kind = "game_heuristic", index = 0 }',
+                        "[[agents]]",
+                        'name = "parameterized"',
+                        'kind = "mcts"',
+                        "iterations = 1",
+                        "rollout_depth = 32",
+                        'cutoff_evaluator = { kind = "game_heuristic", index = 0, '
+                        'params = { gemstone_early_bonus = [0.0, 4.0] } }',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = _load_tournament_config(config_path)
+
+        self.assertEqual(
+            [entry.name for entry in config.agents],
+            [
+                "baseline",
+                "parameterized-hp-gemstone_early_bonus-0.0",
+                "parameterized-hp-gemstone_early_bonus-4.0",
+            ],
+        )
+        self.assertEqual(
+            [entry.agent.cutoff_evaluator.params for entry in config.agents[1:]],
+            [
+                {"gemstone_early_bonus": 0.0},
+                {"gemstone_early_bonus": 4.0},
+            ],
         )
 
     def test_tournament_conditional_grid_expands_primary_epsilon(self) -> None:

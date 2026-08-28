@@ -1,6 +1,6 @@
 //! Private PyO3 boundary for the public Python package.
 
-use std::{num::NonZeroU32, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroU32, time::Duration};
 
 use meeple_bots_boop::{
     BoardZone, Boop, BoopAction, BoopInteractionOutcome, BoopReplayAnalysis, BoopStateMetrics,
@@ -67,19 +67,23 @@ impl PyAgentConfig {
         rollout_depth=256,
         cutoff_evaluator="neutral",
         cutoff_heuristic=None,
+        cutoff_params=None,
         rollout_policy="uniform_random",
         rollout_evaluator=None,
         rollout_heuristic=None,
+        rollout_params=None,
         rollout_epsilon=None,
         time_budget=None,
         rollout_condition_phase=None,
         fallback_rollout_policy=None,
         fallback_rollout_evaluator=None,
         fallback_rollout_heuristic=None,
+        fallback_rollout_params=None,
         fallback_rollout_epsilon=None,
         progressive_bias_weight=None,
         progressive_bias_evaluator=None,
         progressive_bias_heuristic=None,
+        progressive_bias_params=None,
         progressive_bias_condition_phase=None,
         root_diagnostics=false,
         tree_reuse=false,
@@ -90,19 +94,23 @@ impl PyAgentConfig {
         rollout_depth: u32,
         cutoff_evaluator: &str,
         cutoff_heuristic: Option<u32>,
+        cutoff_params: Option<BTreeMap<String, f64>>,
         rollout_policy: &str,
         rollout_evaluator: Option<&str>,
         rollout_heuristic: Option<u32>,
+        rollout_params: Option<BTreeMap<String, f64>>,
         rollout_epsilon: Option<f64>,
         time_budget: Option<f64>,
         rollout_condition_phase: Option<&str>,
         fallback_rollout_policy: Option<&str>,
         fallback_rollout_evaluator: Option<&str>,
         fallback_rollout_heuristic: Option<u32>,
+        fallback_rollout_params: Option<BTreeMap<String, f64>>,
         fallback_rollout_epsilon: Option<f64>,
         progressive_bias_weight: Option<f64>,
         progressive_bias_evaluator: Option<&str>,
         progressive_bias_heuristic: Option<u32>,
+        progressive_bias_params: Option<BTreeMap<String, f64>>,
         progressive_bias_condition_phase: Option<&str>,
         root_diagnostics: bool,
         tree_reuse: bool,
@@ -128,19 +136,26 @@ impl PyAgentConfig {
                         rollout_policy,
                         rollout_evaluator,
                         rollout_heuristic,
+                        rollout_params,
                         rollout_epsilon,
                         rollout_condition_phase,
                         fallback_rollout_policy,
                         fallback_rollout_evaluator,
                         fallback_rollout_heuristic,
+                        fallback_rollout_params,
                         fallback_rollout_epsilon,
                     )?,
                 },
-                cutoff_evaluator: parse_evaluator(cutoff_evaluator, cutoff_heuristic)?,
+                cutoff_evaluator: parse_evaluator(
+                    cutoff_evaluator,
+                    cutoff_heuristic,
+                    cutoff_params,
+                )?,
                 progressive_bias: parse_selection_bias(
                     progressive_bias_weight,
                     progressive_bias_evaluator,
                     progressive_bias_heuristic,
+                    progressive_bias_params,
                     progressive_bias_condition_phase,
                 )?,
                 root_diagnostics,
@@ -701,9 +716,11 @@ fn py_evaluate_game(
     rollout_depth,
     cutoff_evaluator,
     cutoff_heuristic,
+    cutoff_params,
     rollout_policy,
     rollout_evaluator,
     rollout_heuristic,
+    rollout_params,
     rollout_epsilon,
     median_depth,
     seed=0,
@@ -711,10 +728,12 @@ fn py_evaluate_game(
     fallback_rollout_policy=None,
     fallback_rollout_evaluator=None,
     fallback_rollout_heuristic=None,
+    fallback_rollout_params=None,
     fallback_rollout_epsilon=None,
     progressive_bias_weight=None,
     progressive_bias_evaluator=None,
     progressive_bias_heuristic=None,
+    progressive_bias_params=None,
     progressive_bias_condition_phase=None,
     root_diagnostics=false,
     tree_reuse=false,
@@ -728,9 +747,11 @@ fn py_benchmark_mcts_agent(
     rollout_depth: u32,
     cutoff_evaluator: &str,
     cutoff_heuristic: Option<u32>,
+    cutoff_params: Option<BTreeMap<String, f64>>,
     rollout_policy: &str,
     rollout_evaluator: Option<&str>,
     rollout_heuristic: Option<u32>,
+    rollout_params: Option<BTreeMap<String, f64>>,
     rollout_epsilon: Option<f64>,
     median_depth: u32,
     seed: u64,
@@ -738,10 +759,12 @@ fn py_benchmark_mcts_agent(
     fallback_rollout_policy: Option<&str>,
     fallback_rollout_evaluator: Option<&str>,
     fallback_rollout_heuristic: Option<u32>,
+    fallback_rollout_params: Option<BTreeMap<String, f64>>,
     fallback_rollout_epsilon: Option<f64>,
     progressive_bias_weight: Option<f64>,
     progressive_bias_evaluator: Option<&str>,
     progressive_bias_heuristic: Option<u32>,
+    progressive_bias_params: Option<BTreeMap<String, f64>>,
     progressive_bias_condition_phase: Option<&str>,
     root_diagnostics: bool,
     tree_reuse: bool,
@@ -768,19 +791,22 @@ fn py_benchmark_mcts_agent(
                     rollout_policy,
                     rollout_evaluator,
                     rollout_heuristic,
+                    rollout_params,
                     rollout_epsilon,
                     rollout_condition_phase,
                     fallback_rollout_policy,
                     fallback_rollout_evaluator,
                     fallback_rollout_heuristic,
+                    fallback_rollout_params,
                     fallback_rollout_epsilon,
                 )?,
             },
-            cutoff_evaluator: parse_evaluator(cutoff_evaluator, cutoff_heuristic)?,
+            cutoff_evaluator: parse_evaluator(cutoff_evaluator, cutoff_heuristic, cutoff_params)?,
             progressive_bias: parse_selection_bias(
                 progressive_bias_weight,
                 progressive_bias_evaluator,
                 progressive_bias_heuristic,
+                progressive_bias_params,
                 progressive_bias_condition_phase,
             )?,
             root_diagnostics,
@@ -839,18 +865,25 @@ fn parse_search_budget(
     }
 }
 
-fn parse_evaluator(kind: &str, heuristic: Option<u32>) -> PyResult<EvaluatorConfig> {
+fn parse_evaluator(
+    kind: &str,
+    heuristic: Option<u32>,
+    parameters: Option<BTreeMap<String, f64>>,
+) -> PyResult<EvaluatorConfig> {
     match kind {
         "neutral" => {
-            if heuristic.is_some() {
+            if heuristic.is_some() || parameters.is_some() {
                 return Err(PyValueError::new_err(
-                    "neutral evaluator does not accept a heuristic index",
+                    "neutral evaluator does not accept a heuristic index or params",
                 ));
             }
             Ok(EvaluatorConfig::Neutral)
         }
         "game_heuristic" => heuristic
-            .map(|index| EvaluatorConfig::GameHeuristic { index })
+            .map(|index| EvaluatorConfig::GameHeuristic {
+                index,
+                parameters: parameters.unwrap_or_default(),
+            })
             .ok_or_else(|| {
                 PyValueError::new_err("game_heuristic evaluator requires a heuristic index")
             }),
@@ -864,9 +897,15 @@ fn parse_selection_bias(
     weight: Option<f64>,
     evaluator: Option<&str>,
     heuristic: Option<u32>,
+    parameters: Option<BTreeMap<String, f64>>,
     condition_phase: Option<&str>,
 ) -> PyResult<ConfiguredSelectionBias> {
-    if weight.is_none() && evaluator.is_none() && heuristic.is_none() && condition_phase.is_none() {
+    if weight.is_none()
+        && evaluator.is_none()
+        && heuristic.is_none()
+        && parameters.is_none()
+        && condition_phase.is_none()
+    {
         return Ok(ConfiguredSelectionBias::None);
     }
     let weight =
@@ -884,7 +923,7 @@ fn parse_selection_bias(
         .map(RolloutConditionConfig::TurnPhase);
     Ok(ConfiguredSelectionBias::Progressive {
         weight,
-        evaluator: parse_evaluator(evaluator, heuristic)?,
+        evaluator: parse_evaluator(evaluator, heuristic, parameters)?,
         condition,
     })
 }
@@ -903,18 +942,21 @@ fn parse_configured_rollout_policy(
     policy: &str,
     evaluator: Option<&str>,
     heuristic: Option<u32>,
+    parameters: Option<BTreeMap<String, f64>>,
     epsilon: Option<f64>,
     condition_phase: Option<&str>,
     fallback_policy: Option<&str>,
     fallback_evaluator: Option<&str>,
     fallback_heuristic: Option<u32>,
+    fallback_parameters: Option<BTreeMap<String, f64>>,
     fallback_epsilon: Option<f64>,
 ) -> PyResult<ConfiguredRolloutPolicy> {
-    let primary = parse_rollout_policy(policy, evaluator, heuristic, epsilon)?;
+    let primary = parse_rollout_policy(policy, evaluator, heuristic, parameters, epsilon)?;
     let Some(phase) = condition_phase else {
         if fallback_policy.is_some()
             || fallback_evaluator.is_some()
             || fallback_heuristic.is_some()
+            || fallback_parameters.is_some()
             || fallback_epsilon.is_some()
         {
             return Err(PyValueError::new_err(
@@ -931,6 +973,7 @@ fn parse_configured_rollout_policy(
         fallback_policy,
         fallback_evaluator,
         fallback_heuristic,
+        fallback_parameters,
         fallback_epsilon,
     )?;
     Ok(ConfiguredRolloutPolicy::Conditional {
@@ -944,11 +987,16 @@ fn parse_rollout_policy(
     policy: &str,
     evaluator: Option<&str>,
     heuristic: Option<u32>,
+    parameters: Option<BTreeMap<String, f64>>,
     epsilon: Option<f64>,
 ) -> PyResult<RolloutPolicyConfig<EvaluatorConfig>> {
     match policy {
         "uniform_random" => {
-            if evaluator.is_some() || heuristic.is_some() || epsilon.is_some() {
+            if evaluator.is_some()
+                || heuristic.is_some()
+                || parameters.is_some()
+                || epsilon.is_some()
+            {
                 return Err(PyValueError::new_err(
                     "uniform_random rollout does not accept an evaluator or epsilon",
                 ));
@@ -964,7 +1012,7 @@ fn parse_rollout_policy(
             let evaluator = evaluator
                 .ok_or_else(|| PyValueError::new_err("greedy rollout requires an evaluator"))?;
             Ok(RolloutPolicyConfig::Greedy {
-                evaluator: parse_evaluator(evaluator, heuristic)?,
+                evaluator: parse_evaluator(evaluator, heuristic, parameters)?,
             })
         }
         "epsilon_greedy" | "epsilon_greedy_heuristic" => {
@@ -980,7 +1028,7 @@ fn parse_rollout_policy(
             }
             Ok(RolloutPolicyConfig::EpsilonGreedy {
                 epsilon,
-                evaluator: parse_evaluator(evaluator, heuristic)?,
+                evaluator: parse_evaluator(evaluator, heuristic, parameters)?,
             })
         }
         _ => Err(PyValueError::new_err(format!(
@@ -1435,7 +1483,7 @@ fn py_run_match(
 
 fn clone_python_agent_config(py: Python<'_>, configured: &PythonAgentConfig) -> PythonAgentConfig {
     match configured {
-        PythonAgentConfig::Automated(agent) => PythonAgentConfig::Automated(*agent),
+        PythonAgentConfig::Automated(agent) => PythonAgentConfig::Automated(agent.clone()),
         PythonAgentConfig::Human { selector, observer } => PythonAgentConfig::Human {
             selector: selector.clone_ref(py),
             observer: observer.as_ref().map(|callback| callback.clone_ref(py)),
@@ -1463,13 +1511,13 @@ fn run_python_match(
 
     match (first, second) {
         (PythonAgentConfig::Automated(first), PythonAgentConfig::Automated(second)) => {
-            run_match_with_trace(game, *first, *second, config)
+            run_match_with_trace(game, first.clone(), second.clone(), config)
         }
         (PythonAgentConfig::Human { selector, observer }, PythonAgentConfig::Automated(second)) => {
-            run_with_human_first(game, selector, observer.as_ref(), *second, config)
+            run_with_human_first(game, selector, observer.as_ref(), second.clone(), config)
         }
         (PythonAgentConfig::Automated(first), PythonAgentConfig::Human { selector, observer }) => {
-            run_with_human_second(game, *first, selector, observer.as_ref(), config)
+            run_with_human_second(game, first.clone(), selector, observer.as_ref(), config)
         }
         (
             PythonAgentConfig::Human {
@@ -2021,7 +2069,7 @@ fn python_tic_tac_toe_agent(
             Ok(PythonObservedAgent::Random(RandomAgent))
         }
         PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => Ok(PythonObservedAgent::Mcts(
-            configured_tic_tac_toe_mcts_for_python(*config)?,
+            configured_tic_tac_toe_mcts_for_python(config.clone())?,
         )),
         PythonAgentConfig::Human { selector, observer } => {
             Ok(PythonObservedAgent::Human(PythonHumanAgent {
@@ -2040,7 +2088,7 @@ fn python_connect_four_agent(
             Ok(PythonObservedAgent::Random(RandomAgent))
         }
         PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => Ok(PythonObservedAgent::Mcts(
-            configured_connect_four_mcts(*config)
+            configured_connect_four_mcts(config.clone())
                 .map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
         )),
         PythonAgentConfig::Human { selector, observer } => {
@@ -2059,7 +2107,7 @@ fn python_boop_agent(configured: &PythonAgentConfig) -> PyResult<PythonObservedB
         }
         PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => {
             Ok(PythonObservedBoopAgent::Mcts(
-                configured_boop_mcts(*config)
+                configured_boop_mcts(config.clone())
                     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
             ))
         }
@@ -2081,7 +2129,7 @@ fn python_spirits_agent(
         }
         PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => {
             Ok(PythonObservedSpiritsAgent::Mcts(
-                configured_spirits_of_the_forest_mcts(*config)
+                configured_spirits_of_the_forest_mcts(config.clone())
                     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
             ))
         }

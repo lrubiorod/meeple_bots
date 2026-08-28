@@ -1,8 +1,9 @@
 //! Two-player Spirits of the Forest without favor tokens.
 
 use meeple_bots_core::{
-    DeterministicGame, Game, HeuristicGame, IllegalAction, PerfectInformationGame, PlayerId,
-    PositionStatus, RandomSource, TwoPlayerZeroSumGame,
+    DeterministicGame, Game, HeuristicGame, HeuristicParameterSpec, HeuristicParameters,
+    IllegalAction, PerfectInformationGame, PlayerId, PositionStatus, RandomSource,
+    TwoPlayerZeroSumGame,
 };
 
 mod analysis;
@@ -16,6 +17,14 @@ pub const ROWS: usize = 4;
 pub const COLUMNS: usize = 12;
 pub const TILE_COUNT: usize = ROWS * COLUMNS;
 pub const GEMSTONES_PER_PLAYER: u8 = 3;
+pub const DEFAULT_GEMSTONE_EARLY_BONUS: f64 = 4.0;
+
+const H0_PARAMETERS: [HeuristicParameterSpec; 1] = [HeuristicParameterSpec {
+    name: "gemstone_early_bonus",
+    default: DEFAULT_GEMSTONE_EARLY_BONUS,
+    minimum: Some(0.0),
+    maximum: None,
+}];
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u8)]
@@ -683,6 +692,20 @@ impl HeuristicGame for SpiritsOfTheForest {
     }
 
     fn heuristic_utility(&self, index: u32, state: &Self::State, player: PlayerId) -> Option<f32> {
+        self.heuristic_utility_with_parameters(index, &HeuristicParameters::new(), state, player)
+    }
+
+    fn heuristic_parameter_specs(&self, index: u32) -> Option<&'static [HeuristicParameterSpec]> {
+        (index == 0).then_some(&H0_PARAMETERS)
+    }
+
+    fn heuristic_utility_with_parameters(
+        &self,
+        index: u32,
+        parameters: &HeuristicParameters,
+        state: &Self::State,
+        player: PlayerId,
+    ) -> Option<f32> {
         if index != 0 || player.index() >= 2 {
             return None;
         }
@@ -690,7 +713,8 @@ impl HeuristicGame for SpiritsOfTheForest {
             return Some(utility);
         }
         let remaining_fraction = state.remaining_tiles() as f32 / TILE_COUNT as f32;
-        let gemstone_weight = 0.5 + 4.0 * remaining_fraction * remaining_fraction;
+        let gemstone_early_bonus = H0_PARAMETERS[0].resolve(parameters) as f32;
+        let gemstone_weight = 0.5 + gemstone_early_bonus * remaining_fraction * remaining_fraction;
         let opponent = <Self as TwoPlayerZeroSumGame>::opponent(player)?;
         let scores = self.reachable_progress_scores(state);
         let player_pool = state.gemstone_pools[player.index()];
@@ -1268,5 +1292,42 @@ mod tests {
         late.remaining[..TILE_COUNT - ROWS].fill(false);
         let late_conservation = game.heuristic_utility(0, &late, PlayerId::FIRST).unwrap();
         assert!(early_conservation < late_conservation);
+    }
+
+    #[test]
+    fn heuristic_zero_exposes_a_defaulted_early_gemstone_bonus() {
+        let game = SpiritsOfTheForest::from_tiles(SPIRIT_TILES);
+        assert_eq!(
+            game.heuristic_parameter_specs(0),
+            Some(H0_PARAMETERS.as_slice())
+        );
+        assert_eq!(game.heuristic_parameter_specs(1), None);
+
+        let mut state = game.initial_state();
+        state.gemstone_pools[0].available = 2;
+        state.gemstone_pools[0].removed = 1;
+        let default = game.heuristic_utility(0, &state, PlayerId::FIRST).unwrap();
+        let implicit = game
+            .heuristic_utility_with_parameters(
+                0,
+                &HeuristicParameters::new(),
+                &state,
+                PlayerId::FIRST,
+            )
+            .unwrap();
+        assert_eq!(default, implicit);
+
+        let explicit_default =
+            HeuristicParameters::from([("gemstone_early_bonus".to_owned(), 4.0)]);
+        assert_eq!(
+            game.heuristic_utility_with_parameters(0, &explicit_default, &state, PlayerId::FIRST,),
+            Some(default)
+        );
+
+        let parameters = HeuristicParameters::from([("gemstone_early_bonus".to_owned(), 0.0)]);
+        let constant_weight = game
+            .heuristic_utility_with_parameters(0, &parameters, &state, PlayerId::FIRST)
+            .unwrap();
+        assert!(constant_weight > default);
     }
 }

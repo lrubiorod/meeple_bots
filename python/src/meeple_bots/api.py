@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from math import isfinite, sqrt
 from time import perf_counter
+from types import MappingProxyType
 from typing import TypeAlias
 
 from . import _native
@@ -59,9 +60,22 @@ class GameHeuristic:
     """Evaluate states with one zero-based heuristic supplied by the game."""
 
     index: int
+    params: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _non_negative_u32("heuristic index", self.index)
+        if not isinstance(self.params, Mapping):
+            raise TypeError("heuristic params must be a mapping")
+        normalized: dict[str, float] = {}
+        for name, value in self.params.items():
+            if not isinstance(name, str) or not name:
+                raise TypeError("heuristic parameter names must be non-empty strings")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"heuristic parameter {name!r} must be a number")
+            if not isfinite(value):
+                raise ValueError(f"heuristic parameter {name!r} must be finite")
+            normalized[name] = float(value)
+        object.__setattr__(self, "params", MappingProxyType(normalized))
 
 
 StateEvaluator: TypeAlias = NeutralEvaluator | GameHeuristic
@@ -1162,11 +1176,13 @@ def benchmark_mcts_agent(
         rollout_policy,
         rollout_evaluator,
         rollout_heuristic,
+        rollout_params,
         rollout_epsilon,
         rollout_condition_phase,
         fallback_rollout_policy,
         fallback_rollout_evaluator,
         fallback_rollout_heuristic,
+        fallback_rollout_params,
         fallback_rollout_epsilon,
     ) = _native_rollout_policy(agent.rollout_policy)
     raw = _native.benchmark_mcts_agent(
@@ -1179,6 +1195,7 @@ def benchmark_mcts_agent(
         rollout_policy,
         rollout_evaluator,
         rollout_heuristic,
+        rollout_params,
         rollout_epsilon,
         median_depth,
         seed,
@@ -1186,6 +1203,7 @@ def benchmark_mcts_agent(
         fallback_rollout_policy,
         fallback_rollout_evaluator,
         fallback_rollout_heuristic,
+        fallback_rollout_params,
         fallback_rollout_epsilon,
         *_native_progressive_bias(agent.progressive_bias),
         agent.root_diagnostics,
@@ -1318,29 +1336,36 @@ def _native_agent(agent: Agent, game: Game):
             policy,
             rollout_evaluator,
             rollout_heuristic,
+            rollout_params,
             epsilon,
             rollout_condition_phase,
             fallback_policy,
             fallback_evaluator,
             fallback_heuristic,
+            fallback_params,
             fallback_epsilon,
         ) = _native_rollout_policy(agent.rollout_policy)
-        cutoff_evaluator, cutoff_heuristic = _native_evaluator(agent.cutoff_evaluator)
+        cutoff_evaluator, cutoff_heuristic, cutoff_params = _native_evaluator(
+            agent.cutoff_evaluator
+        )
         return _native.AgentConfig.mcts(
             agent.iterations,
             float(agent.exploration),
             agent.rollout_depth,
             cutoff_evaluator,
             cutoff_heuristic,
+            cutoff_params,
             policy,
             rollout_evaluator,
             rollout_heuristic,
+            rollout_params,
             epsilon,
             agent.time_budget,
             rollout_condition_phase,
             fallback_policy,
             fallback_evaluator,
             fallback_heuristic,
+            fallback_params,
             fallback_epsilon,
             *_native_progressive_bias(agent.progressive_bias),
             agent.root_diagnostics,
@@ -1382,20 +1407,26 @@ def _validate_agent_evaluators(game: Game, agent: Agent) -> None:
 
 def _native_evaluator(
     evaluator: StateEvaluator | None,
-) -> tuple[str, int | None]:
+) -> tuple[str, int | None, dict[str, float] | None]:
     if isinstance(evaluator, GameHeuristic):
-        return "game_heuristic", evaluator.index
-    return "neutral", None
+        return "game_heuristic", evaluator.index, dict(evaluator.params)
+    return "neutral", None, None
 
 
 def _native_progressive_bias(
     bias: ProgressiveBias | None,
-) -> tuple[float | None, str | None, int | None, str | None]:
+) -> tuple[
+    float | None,
+    str | None,
+    int | None,
+    dict[str, float] | None,
+    str | None,
+]:
     if bias is None:
-        return None, None, None, None
-    evaluator, heuristic = _native_evaluator(bias.evaluator)
+        return None, None, None, None, None
+    evaluator, heuristic, params = _native_evaluator(bias.evaluator)
     phase = None if bias.condition is None else bias.condition.phase
-    return float(bias.weight), evaluator, heuristic, phase
+    return float(bias.weight), evaluator, heuristic, params, phase
 
 
 def _native_rollout_policy(
@@ -1404,33 +1435,36 @@ def _native_rollout_policy(
     str,
     str | None,
     int | None,
+    dict[str, float] | None,
     float | None,
     str | None,
     str | None,
     str | None,
     int | None,
+    dict[str, float] | None,
     float | None,
 ]:
     if isinstance(policy, ConditionalRollout):
         primary = _native_base_rollout_policy(policy.primary)
         fallback = _native_base_rollout_policy(policy.fallback)
         return (*primary, policy.condition.phase, *fallback)
-    return (*_native_base_rollout_policy(policy), None, None, None, None, None)
+    return (*_native_base_rollout_policy(policy), None, None, None, None, None, None)
 
 
 def _native_base_rollout_policy(
     policy: BaseRolloutPolicy,
-) -> tuple[str, str | None, int | None, float | None]:
+) -> tuple[str, str | None, int | None, dict[str, float] | None, float | None]:
     if isinstance(policy, UniformRandom):
-        return "uniform_random", None, None, None
+        return "uniform_random", None, None, None, None
     if isinstance(policy, Greedy):
-        evaluator, heuristic = _native_evaluator(policy.evaluator)
-        return "greedy", evaluator, heuristic, None
-    evaluator, heuristic = _native_evaluator(policy.evaluator)
+        evaluator, heuristic, params = _native_evaluator(policy.evaluator)
+        return "greedy", evaluator, heuristic, params, None
+    evaluator, heuristic, params = _native_evaluator(policy.evaluator)
     return (
         "epsilon_greedy",
         evaluator,
         heuristic,
+        params,
         float(policy.epsilon),
     )
 
@@ -1457,6 +1491,30 @@ def _rollout_evaluators(policy: RolloutPolicy) -> tuple[StateEvaluator, ...]:
 def _validate_game_evaluator(game: Game, evaluator: StateEvaluator | None) -> None:
     if isinstance(evaluator, GameHeuristic):
         _validate_game_heuristic(game, evaluator.index)
+        _validate_game_heuristic_params(game, evaluator)
+
+
+def _validate_game_heuristic_params(game: Game, evaluator: GameHeuristic) -> None:
+    allowed: dict[str, tuple[float | None, float | None]] = {}
+    if isinstance(game, SpiritsOfTheForest) and evaluator.index == 0:
+        allowed = {"gemstone_early_bonus": (0.0, None)}
+    for name, value in evaluator.params.items():
+        if name not in allowed:
+            raise ValueError(
+                f"{_game_display_name(game)} heuristic {evaluator.index} "
+                f"does not accept parameter {name!r}"
+            )
+        minimum, maximum = allowed[name]
+        if minimum is not None and value < minimum:
+            raise ValueError(
+                f"{_game_display_name(game)} heuristic {evaluator.index} "
+                f"parameter {name!r} must be at least {minimum:g}"
+            )
+        if maximum is not None and value > maximum:
+            raise ValueError(
+                f"{_game_display_name(game)} heuristic {evaluator.index} "
+                f"parameter {name!r} must be at most {maximum:g}"
+            )
 
 
 def _validate_game_heuristic(game: Game, heuristic: int | None) -> None:

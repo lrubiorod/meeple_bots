@@ -186,7 +186,16 @@ and `-1.0` for a loss from the root player's perspective. A rollout that reaches
 uses the selected game heuristic or `0.0` when no heuristic is configured.
 
 Heuristics belong to games, not to MCTS. This keeps the generic search independent from concrete
-rules. Unsupported heuristic indices are rejected before a match starts.
+rules. Unsupported heuristic indices are rejected before a match starts. A heuristic may expose
+named numeric parameters with defaults and bounds. TOML places them in a generic `params` table:
+
+```toml
+cutoff_evaluator = { kind = "game_heuristic", index = 0, params = { gemstone_early_bonus = 4.0 } }
+```
+
+Omitted parameters use the default declared by the game. Unknown names, invalid values, and
+parameters supplied to a heuristic with no configurable parameters are rejected before play.
+Tournament grids may put arrays inside `params` just like other grid dimensions.
 
 Boop currently exposes two evaluators:
 
@@ -198,7 +207,7 @@ Boop currently exposes two evaluators:
 See the [Boop guide](../games/boop/README.md#mcts-heuristics) for their exact interpretation.
 
 Spirits of the Forest exposes only heuristic `0`, based on category progress that can still reach a
-scoring threshold and stronger early- and mid-game gemstone conservation. See its
+scoring threshold and parameterized early- and mid-game gemstone conservation. See its
 [game guide](../games/spirits-of-the-forest/README.md#mcts-heuristic).
 
 ### Reusable profiles

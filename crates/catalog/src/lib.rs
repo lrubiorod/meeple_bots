@@ -8,8 +8,8 @@ use meeple_bots_boop::{
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{
-    Agent, AgentError, DeterministicGame, Game, HeuristicGame, PlayerId, RandomSource,
-    RootActionStats, TreeReuseStats,
+    Agent, AgentError, DeterministicGame, Game, HeuristicGame, HeuristicParameters, PlayerId,
+    RandomSource, RootActionStats, TreeReuseStats,
 };
 pub use meeple_bots_evaluation::{
     EvaluationConfig, EvaluationError, GameEvaluationReport, IterationBudgetEstimate,
@@ -19,8 +19,7 @@ use meeple_bots_evaluation::{
     benchmark_mcts_agent as benchmark_typed_mcts_agent, evaluate_game as evaluate_typed_game,
 };
 use meeple_bots_mcts_agent::{
-    ConditionalRollout, GameHeuristic, MctsAgent, PolicyCondition, RolloutPolicy, SelectionBias,
-    StateEvaluator, TreeReuseMctsAgent,
+    MctsAgent, PolicyCondition, RolloutPolicy, SelectionBias, StateEvaluator, TreeReuseMctsAgent,
 };
 pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, SearchBudget, UniformRandom};
 use meeple_bots_random_agent::RandomAgent;
@@ -44,13 +43,13 @@ pub enum GameId {
     TicTacToe,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AgentConfig {
     Random,
     Mcts(MctsAgentConfig),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MctsAgentConfig {
     pub search: MctsConfig<ConfiguredRolloutPolicy>,
     pub cutoff_evaluator: EvaluatorConfig,
@@ -59,7 +58,7 @@ pub struct MctsAgentConfig {
     pub tree_reuse: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum ConfiguredSelectionBias {
     #[default]
     None,
@@ -75,7 +74,7 @@ pub enum RolloutConditionConfig {
     TurnPhase(CatalogTurnPhase),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ConfiguredRolloutPolicy {
     Standard(RolloutPolicyConfig<EvaluatorConfig>),
     Conditional {
@@ -97,13 +96,23 @@ impl From<RolloutPolicyConfig<EvaluatorConfig>> for ConfiguredRolloutPolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum EvaluatorConfig {
     #[default]
     Neutral,
     GameHeuristic {
         index: u32,
+        parameters: HeuristicParameters,
     },
+}
+
+impl EvaluatorConfig {
+    pub fn game_heuristic(index: u32) -> Self {
+        Self::GameHeuristic {
+            index,
+            parameters: HeuristicParameters::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -273,6 +282,11 @@ pub enum CatalogError {
         available: u32,
     },
     InvalidMctsConfig(&'static str),
+    InvalidHeuristicParameter {
+        game: GameId,
+        index: u32,
+        message: String,
+    },
     AnalysisUnavailable(GameId),
     InvalidTrace {
         game: GameId,
@@ -307,6 +321,15 @@ impl fmt::Display for CatalogError {
                 }
             }
             Self::InvalidMctsConfig(message) => formatter.write_str(message),
+            Self::InvalidHeuristicParameter {
+                game,
+                index,
+                message,
+            } => write!(
+                formatter,
+                "{} heuristic {index} {message}",
+                game_name(*game)
+            ),
             Self::AnalysisUnavailable(game) => {
                 write!(
                     formatter,
@@ -660,8 +683,19 @@ impl RolloutPolicy<SpiritsOfTheForest> for ConfiguredRolloutPolicy {
                 condition: RolloutConditionConfig::TurnPhase(phase),
                 primary,
                 fallback,
-            } => ConditionalRollout::new(SpiritsTurnPhaseCondition(*phase), *primary, *fallback)
-                .select_action(game, state, active_player, root_player, rng),
+            } => {
+                let policy = if SpiritsTurnPhaseCondition(*phase).matches(
+                    game,
+                    state,
+                    active_player,
+                    root_player,
+                ) {
+                    primary
+                } else {
+                    fallback
+                };
+                policy.select_action(game, state, active_player, root_player, rng)
+            }
         }
     }
 }
@@ -676,11 +710,17 @@ where
         state: &G::State,
         perspective: PlayerId,
     ) -> Result<f64, AgentError> {
-        match *self {
+        match self {
             Self::Neutral => Ok(0.0),
-            Self::GameHeuristic { index } => {
-                GameHeuristic::new(index).evaluate(game, state, perspective)
-            }
+            Self::GameHeuristic { index, parameters } => game
+                .heuristic_utility_with_parameters(*index, parameters, state, perspective)
+                .map(f64::from)
+                .ok_or_else(|| {
+                    AgentError::message(format!(
+                        "heuristic index {index} is not available; the game provides {} heuristics",
+                        game.heuristic_count()
+                    ))
+                }),
         }
     }
 }
@@ -740,9 +780,9 @@ fn validate_agent_evaluators<G: HeuristicGame>(
     config: &MctsAgentConfig,
 ) -> Result<(), CatalogError> {
     validate_search_config(&config.search)?;
-    validate_evaluator(game_id, game, config.cutoff_evaluator)?;
-    validate_selection_bias(game_id, game, config.progressive_bias)?;
-    match config.search.rollout_policy {
+    validate_evaluator(game_id, game, &config.cutoff_evaluator)?;
+    validate_selection_bias(game_id, game, &config.progressive_bias)?;
+    match &config.search.rollout_policy {
         ConfiguredRolloutPolicy::Standard(policy) => {
             validate_base_rollout_policy(game_id, game, policy)?;
         }
@@ -751,7 +791,7 @@ fn validate_agent_evaluators<G: HeuristicGame>(
             primary,
             fallback,
         } => {
-            validate_rollout_condition(game_id, condition)?;
+            validate_rollout_condition(game_id, *condition)?;
             validate_base_rollout_policy(game_id, game, primary)?;
             validate_base_rollout_policy(game_id, game, fallback)?;
         }
@@ -762,7 +802,7 @@ fn validate_agent_evaluators<G: HeuristicGame>(
 fn validate_selection_bias<G: HeuristicGame>(
     game_id: GameId,
     game: &G,
-    bias: ConfiguredSelectionBias,
+    bias: &ConfiguredSelectionBias,
 ) -> Result<(), CatalogError> {
     let ConfiguredSelectionBias::Progressive {
         weight,
@@ -772,14 +812,14 @@ fn validate_selection_bias<G: HeuristicGame>(
     else {
         return Ok(());
     };
-    if !weight.is_finite() || weight < 0.0 {
+    if !weight.is_finite() || *weight < 0.0 {
         return Err(CatalogError::InvalidMctsConfig(
             "MCTS progressive bias weight must be finite and non-negative",
         ));
     }
     validate_evaluator(game_id, game, evaluator)?;
     if let Some(condition) = condition {
-        validate_selection_condition(game_id, condition)?;
+        validate_selection_condition(game_id, *condition)?;
     }
     Ok(())
 }
@@ -799,13 +839,13 @@ fn validate_selection_condition(
 fn validate_base_rollout_policy<G: HeuristicGame>(
     game_id: GameId,
     game: &G,
-    policy: RolloutPolicyConfig<EvaluatorConfig>,
+    policy: &RolloutPolicyConfig<EvaluatorConfig>,
 ) -> Result<(), CatalogError> {
     match policy {
         RolloutPolicyConfig::UniformRandom => Ok(()),
         RolloutPolicyConfig::Greedy { evaluator } => validate_evaluator(game_id, game, evaluator),
         RolloutPolicyConfig::EpsilonGreedy { epsilon, evaluator } => {
-            if !epsilon.is_finite() || !(0.0..=1.0).contains(&epsilon) {
+            if !epsilon.is_finite() || !(0.0..=1.0).contains(epsilon) {
                 return Err(CatalogError::InvalidMctsConfig(
                     "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
                 ));
@@ -830,18 +870,69 @@ fn validate_rollout_condition(
 fn validate_evaluator<G: HeuristicGame>(
     game_id: GameId,
     game: &G,
-    evaluator: EvaluatorConfig,
+    evaluator: &EvaluatorConfig,
 ) -> Result<(), CatalogError> {
     match evaluator {
         EvaluatorConfig::Neutral => Ok(()),
-        EvaluatorConfig::GameHeuristic { index } => validate_heuristic(game_id, game, index),
+        EvaluatorConfig::GameHeuristic { index, parameters } => {
+            validate_heuristic(game_id, game, *index)?;
+            validate_heuristic_parameters(game_id, game, *index, parameters)
+        }
     }
+}
+
+fn validate_heuristic_parameters<G: HeuristicGame>(
+    game_id: GameId,
+    game: &G,
+    index: u32,
+    parameters: &HeuristicParameters,
+) -> Result<(), CatalogError> {
+    let specs = game
+        .heuristic_parameter_specs(index)
+        .expect("validated heuristic index provides a parameter schema");
+    for (name, value) in parameters {
+        let Some(spec) = specs.iter().find(|spec| spec.name == name) else {
+            return Err(CatalogError::InvalidHeuristicParameter {
+                game: game_id,
+                index,
+                message: format!("does not accept parameter {name:?}"),
+            });
+        };
+        if !value.is_finite() {
+            return Err(CatalogError::InvalidHeuristicParameter {
+                game: game_id,
+                index,
+                message: format!("parameter {name:?} must be finite"),
+            });
+        }
+        if spec.minimum.is_some_and(|minimum| *value < minimum) {
+            return Err(CatalogError::InvalidHeuristicParameter {
+                game: game_id,
+                index,
+                message: format!(
+                    "parameter {name:?} must be at least {}",
+                    spec.minimum.unwrap()
+                ),
+            });
+        }
+        if spec.maximum.is_some_and(|maximum| *value > maximum) {
+            return Err(CatalogError::InvalidHeuristicParameter {
+                game: game_id,
+                index,
+                message: format!(
+                    "parameter {name:?} must be at most {}",
+                    spec.maximum.unwrap()
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_uninformed_agent(game: GameId, config: &MctsAgentConfig) -> Result<(), CatalogError> {
     validate_search_config(&config.search)?;
-    if let EvaluatorConfig::GameHeuristic { index } = config.cutoff_evaluator {
-        return Err(unsupported_heuristic(game, index, 0));
+    if let EvaluatorConfig::GameHeuristic { index, .. } = &config.cutoff_evaluator {
+        return Err(unsupported_heuristic(game, *index, 0));
     }
     if !matches!(
         config.search.rollout_policy,
@@ -1644,7 +1735,11 @@ fn run_spirits_of_the_forest_batch(
     let mut results = Vec::with_capacity(config.matches.get() as usize);
     for _ in 0..config.matches.get() {
         let match_config = MatchConfig::new(seed_stream.next_u64(), config.max_plies);
-        results.push(run_spirits_of_the_forest(first, second, match_config)?);
+        results.push(run_spirits_of_the_forest(
+            first.clone(),
+            second.clone(),
+            match_config,
+        )?);
     }
     Ok(results)
 }
@@ -1741,9 +1836,8 @@ mod tests {
                 rollout_depth: 1,
                 rollout_policy: RolloutPolicyConfig::UniformRandom.into(),
             },
-            cutoff_evaluator: heuristic.map_or(EvaluatorConfig::Neutral, |index| {
-                EvaluatorConfig::GameHeuristic { index }
-            }),
+            cutoff_evaluator: heuristic
+                .map_or(EvaluatorConfig::Neutral, EvaluatorConfig::game_heuristic),
             progressive_bias: ConfiguredSelectionBias::None,
             root_diagnostics: false,
             tree_reuse: false,
@@ -1804,7 +1898,7 @@ mod tests {
         informed_without_cutoff_heuristic.search.rollout_policy =
             RolloutPolicyConfig::EpsilonGreedy {
                 epsilon: 0.1,
-                evaluator: EvaluatorConfig::GameHeuristic { index: 0 },
+                evaluator: EvaluatorConfig::game_heuristic(0),
             }
             .into();
         configured_boop_mcts(informed_without_cutoff_heuristic).unwrap();
@@ -1813,7 +1907,7 @@ mod tests {
             unreachable!();
         };
         invalid_rollout_heuristic.search.rollout_policy = RolloutPolicyConfig::Greedy {
-            evaluator: EvaluatorConfig::GameHeuristic { index: 2 },
+            evaluator: EvaluatorConfig::game_heuristic(2),
         }
         .into();
         let error = configured_boop_mcts(invalid_rollout_heuristic).unwrap_err();
@@ -1829,6 +1923,44 @@ mod tests {
         };
         let error = configured_spirits_of_the_forest_mcts(spirits_h1).unwrap_err();
         assert!(error.to_string().contains("available index: 0"));
+    }
+
+    #[test]
+    fn validates_named_heuristic_parameters_against_the_game_schema() {
+        let configured = |name: &str, value: f64| {
+            let AgentConfig::Mcts(mut config) = mcts(None) else {
+                unreachable!();
+            };
+            config.cutoff_evaluator = EvaluatorConfig::GameHeuristic {
+                index: 0,
+                parameters: HeuristicParameters::from([(name.to_owned(), value)]),
+            };
+            config
+        };
+
+        configured_spirits_of_the_forest_mcts(configured("gemstone_early_bonus", 2.0)).unwrap();
+
+        let unknown =
+            configured_spirits_of_the_forest_mcts(configured("unknown", 2.0)).unwrap_err();
+        assert_eq!(
+            unknown.to_string(),
+            "spotf heuristic 0 does not accept parameter \"unknown\""
+        );
+
+        let negative =
+            configured_spirits_of_the_forest_mcts(configured("gemstone_early_bonus", -1.0))
+                .unwrap_err();
+        assert_eq!(
+            negative.to_string(),
+            "spotf heuristic 0 parameter \"gemstone_early_bonus\" must be at least 0"
+        );
+
+        let unsupported =
+            configured_boop_mcts(configured("gemstone_early_bonus", 2.0)).unwrap_err();
+        assert_eq!(
+            unsupported.to_string(),
+            "boop heuristic 0 does not accept parameter \"gemstone_early_bonus\""
+        );
     }
 
     #[test]
@@ -1855,7 +1987,7 @@ mod tests {
             condition: RolloutConditionConfig::TurnPhase(CatalogTurnPhase::Collect),
             primary: RolloutPolicyConfig::EpsilonGreedy {
                 epsilon: 0.0,
-                evaluator: EvaluatorConfig::GameHeuristic { index: 99 },
+                evaluator: EvaluatorConfig::game_heuristic(99),
             },
             fallback: RolloutPolicyConfig::UniformRandom,
         };
@@ -1912,14 +2044,14 @@ mod tests {
             rollout_depth: 32,
             rollout_policy: ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::UniformRandom),
         };
-        let mut uniform = MctsAgent::with_cutoff_evaluator(base, EvaluatorConfig::Neutral);
+        let mut uniform = MctsAgent::with_cutoff_evaluator(base.clone(), EvaluatorConfig::Neutral);
         let mut conditional = MctsAgent::with_cutoff_evaluator(
             MctsConfig {
                 rollout_policy: ConfiguredRolloutPolicy::Conditional {
                     condition: RolloutConditionConfig::TurnPhase(CatalogTurnPhase::Collect),
                     primary: RolloutPolicyConfig::EpsilonGreedy {
                         epsilon: 1.0,
-                        evaluator: EvaluatorConfig::GameHeuristic { index: 0 },
+                        evaluator: EvaluatorConfig::game_heuristic(0),
                     },
                     fallback: RolloutPolicyConfig::UniformRandom,
                 },

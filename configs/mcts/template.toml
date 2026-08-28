@@ -6,6 +6,8 @@ rollout_depth = 16
 exploration = 1.4142135623730951
 cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "uniform_random" }
+# A game heuristic may declare named numeric parameters with validated defaults and bounds:
+# cutoff_evaluator = { kind = "game_heuristic", index = 0, params = { gemstone_early_bonus = 4.0 } }
 # Keep the reachable subtree after accepted match actions. Disabled by default.
 tree_reuse = false
 
