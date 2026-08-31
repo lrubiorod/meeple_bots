@@ -18,6 +18,10 @@ build/
 /results/
 *-study.jsonl
 
+# Local tournament study configurations
+/configs/tournaments/boop-study.toml
+/configs/tournaments/spotf-study.toml
+
 # Extensiones nativas compiladas
 *.so
 *.pyd
