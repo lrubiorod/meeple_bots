@@ -687,8 +687,17 @@ Extraction streams the trace and accepts interrupted studies. It marks the manif
 fewer matches than declared are available. A truncated final JSONL line is ignored and reported;
 malformed records elsewhere are rejected.
 
-Connect Four and tic-tac-toe currently use these generic tables. Games with richer analyzers add
-domain-specific tables without changing the common extraction contract.
+Connect Four and tic-tac-toe use the generic tables, with native replay validation of every
+completed match. The extractor checks action types and coordinates, active players, legal
+transitions and a terminal final position, then compares the recorded winner and both utilities
+with Rust's result. Actions after the game ends and unfinished matches are rejected. No game
+rules are duplicated in Python. Validation failure does not replace existing extraction files,
+even with `--overwrite`. Historical traces undergo the same checks when re-extracted.
+
+A partial study may contain fewer completed matches than declared; an individual match must still
+be complete and valid. `complete` describes study coverage, not just whether replay succeeded.
+Games with richer analyzers add domain-specific tables without changing the common extraction
+contract.
 
 ### 3. Generate a tournament report
 

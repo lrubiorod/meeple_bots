@@ -107,6 +107,14 @@ The catalog provides the dynamic edge needed by Python and the CLI. `GameId` and
 select the corresponding concrete call once, then convert the typed trace and final state into a
 catalog report.
 
+## Trace validation
+
+`analyze_seeded_trace` dispatches to the game-specific Boop/SPOTF analyzers or to a generic
+`Game` replay for Connect Four and tic-tac-toe. Generic replay checks the active player before
+each accepted transition, rejects actions after termination and requires a terminal final state.
+Its terminal utilities are returned to the extractor, which checks the declared outcome.
+The binding only converts actions; legality remains in the Rust game implementation.
+
 ## Where changes belong
 
 | Change | Primary location | Integration points |

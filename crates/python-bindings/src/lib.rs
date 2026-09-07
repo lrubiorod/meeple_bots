@@ -13,10 +13,9 @@ use meeple_bots_catalog::{
     ConfiguredRolloutPolicy, ConfiguredSelectionBias, ConnectFourMctsAgent, EvaluationConfig,
     EvaluatorConfig, GameId, MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove,
     RolloutConditionConfig, RolloutPolicyConfig, SearchBudget, TicTacToeMctsAgent,
-    analyze_seeded_trace, analyze_trace, benchmark_mcts_agent, configured_boop_mcts,
-    configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
-    configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
-    run_boop_match_with_trace, run_connect_four_match_with_observer,
+    analyze_seeded_trace, benchmark_mcts_agent, configured_boop_mcts, configured_connect_four_mcts,
+    configured_spirits_of_the_forest_mcts, configured_tic_tac_toe_mcts, evaluate_game,
+    run_boop_match_with_observer, run_boop_match_with_trace, run_connect_four_match_with_observer,
     run_connect_four_match_with_trace, run_match_with_trace,
     run_spirits_of_the_forest_match_with_observer, run_spirits_of_the_forest_match_with_trace,
     run_tic_tac_toe_match_with_observer, run_tic_tac_toe_match_with_trace,
@@ -1579,51 +1578,65 @@ fn py_analyze_trace(
             .extract::<Vec<(u8, NativeBoopAction)>>()?
             .into_iter()
             .map(|(player, action)| {
-                Ok(RecordedMove {
-                    player: usize::from(player),
-                    action: parse_native_catalog_boop_action(action)?,
-                    decision_seconds: 0.0,
-                    selection_seconds: 0.0,
-                    maintenance_seconds: 0.0,
-                    search_iterations: None,
-                    search_nodes: None,
-                    root_actions: Vec::new(),
-                    tree_reuse: None,
-                })
+                Ok(replay_record(
+                    player,
+                    parse_native_catalog_boop_action(action)?,
+                ))
             })
             .collect::<PyResult<Vec<_>>>()?,
         GameId::SpiritsOfTheForest => moves
             .extract::<Vec<(u8, NativeSpiritsAction)>>()?
             .into_iter()
             .map(|(player, action)| {
-                Ok(RecordedMove {
-                    player: usize::from(player),
-                    action: parse_native_catalog_spirits_action(action)?,
-                    decision_seconds: 0.0,
-                    selection_seconds: 0.0,
-                    maintenance_seconds: 0.0,
-                    search_iterations: None,
-                    search_nodes: None,
-                    root_actions: Vec::new(),
-                    tree_reuse: None,
-                })
+                Ok(replay_record(
+                    player,
+                    parse_native_catalog_spirits_action(action)?,
+                ))
             })
             .collect::<PyResult<Vec<_>>>()?,
-        GameId::ConnectFour | GameId::TicTacToe => {
-            return Err(PyValueError::new_err(
-                analyze_trace(game, &[])
-                    .expect_err("games without analysis return an error")
-                    .to_string(),
-            ));
-        }
+        GameId::ConnectFour => moves
+            .extract::<Vec<(u8, u8)>>()?
+            .into_iter()
+            .map(|(player, column)| replay_record(player, CatalogAction::ConnectFour { column }))
+            .collect(),
+        GameId::TicTacToe => moves
+            .extract::<Vec<(u8, (u8, u8))>>()?
+            .into_iter()
+            .map(|(player, (row, column))| {
+                replay_record(player, CatalogAction::TicTacToe { row, column })
+            })
+            .collect(),
     };
     let analysis = analyze_seeded_trace(game, &recorded, seed)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
     match analysis {
+        CatalogTraceAnalysis::Generic { utilities } => {
+            let result = PyDict::new(py);
+            result.set_item("utilities", utilities)?;
+            result.set_item(
+                "winner",
+                utilities.iter().position(|utility| *utility > 0.0),
+            )?;
+            Ok(result.unbind())
+        }
         CatalogTraceAnalysis::Boop(analysis) => serialize_boop_analysis(py, analysis),
         CatalogTraceAnalysis::SpiritsOfTheForest(analysis) => {
             serialize_spirits_analysis(py, analysis)
         }
+    }
+}
+
+fn replay_record(player: u8, action: CatalogAction) -> RecordedMove {
+    RecordedMove {
+        player: usize::from(player),
+        action,
+        decision_seconds: 0.0,
+        selection_seconds: 0.0,
+        maintenance_seconds: 0.0,
+        search_iterations: None,
+        search_nodes: None,
+        root_actions: Vec::new(),
+        tree_reuse: None,
     }
 }
 

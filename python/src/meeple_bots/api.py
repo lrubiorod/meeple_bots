@@ -1359,6 +1359,16 @@ def _analyze_trace(game: Game, moves: tuple[Move, ...], *, seed: int = 0):
             else:
                 raise TypeError("spotf trace contains a non-spotf action")
             native_moves.append((move.player, native_action))
+    elif isinstance(game, ConnectFour):
+        for move in moves:
+            if not isinstance(move.action, ConnectFourAction):
+                raise TypeError("connect-four trace contains a non-connect-four action")
+            native_moves.append((move.player, move.action.column))
+    elif isinstance(game, TicTacToe):
+        for move in moves:
+            if not isinstance(move.action, TicTacToeAction):
+                raise TypeError("tic-tac-toe trace contains a non-tic-tac-toe action")
+            native_moves.append((move.player, (move.action.row, move.action.column)))
     return _native.analyze_trace(_native_game(game), native_moves, seed)
 
 

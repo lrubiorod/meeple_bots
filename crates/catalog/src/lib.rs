@@ -9,7 +9,7 @@ use meeple_bots_boop::{
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{
     Agent, AgentError, DeterministicGame, Game, HeuristicGame, HeuristicParameters, PlayerId,
-    RandomSource, RootActionStats, TreeReuseStats,
+    PositionStatus, RandomSource, RootActionStats, TreeReuseStats,
 };
 pub use meeple_bots_evaluation::{
     EvaluationConfig, EvaluationError, GameEvaluationReport, IterationBudgetEstimate,
@@ -271,8 +271,9 @@ pub struct CatalogMatchReport {
     pub scores: Option<[i16; 2]>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CatalogTraceAnalysis {
+    Generic { utilities: [f32; 2] },
     Boop(BoopReplayAnalysis),
     SpiritsOfTheForest(SpiritsReplayAnalysis),
 }
@@ -469,8 +470,62 @@ pub fn analyze_seeded_trace(
                     message: error.to_string(),
                 })
         }
-        GameId::ConnectFour | GameId::TicTacToe => Err(CatalogError::AnalysisUnavailable(game)),
+        GameId::ConnectFour => analyze_generic_replay(game, &ConnectFour, moves, |action| {
+            let CatalogAction::ConnectFour { column } = action else {
+                return Err("expected a connect-four action");
+            };
+            ConnectFourAction::new(*column).ok_or("column is outside the board")
+        }),
+        GameId::TicTacToe => analyze_generic_replay(game, &TicTacToe, moves, |action| {
+            let CatalogAction::TicTacToe { row, column } = action else {
+                return Err("expected a tic-tac-toe action");
+            };
+            TicTacToeAction::new(*row, *column).ok_or("position is outside the board")
+        }),
     }
+}
+
+/// Validate a completed trace using the authoritative game contract, without
+/// depending on agents or reimplementing board rules in an extractor.
+fn analyze_generic_replay<G: DeterministicGame>(
+    id: GameId,
+    game: &G,
+    moves: &[RecordedMove],
+    action_from_catalog: impl Fn(&CatalogAction) -> Result<G::Action, &'static str>,
+) -> Result<CatalogTraceAnalysis, CatalogError> {
+    let mut state = game.initial_state();
+    for (index, movement) in moves.iter().enumerate() {
+        let PositionStatus::PlayerTurn(player) = game.status(&state) else {
+            return Err(invalid_trace(id, index, "action after the end of the game"));
+        };
+        if movement.player != player.index() {
+            return Err(invalid_trace(
+                id,
+                index,
+                "recorded player is not the active player",
+            ));
+        }
+        let action = action_from_catalog(&movement.action)
+            .map_err(|message| invalid_trace(id, index, message))?;
+        game.apply_action(&mut state, &action)
+            .map_err(|error| invalid_trace(id, index, error))?;
+    }
+    if game.status(&state) != PositionStatus::Terminal {
+        return Err(CatalogError::InvalidTrace {
+            game: id,
+            message: "trace does not end in a terminal position".to_owned(),
+        });
+    }
+    let mut utilities = [0.0; 2];
+    for player in [PlayerId::FIRST, PlayerId::SECOND] {
+        utilities[player.index()] =
+            game.terminal_utility(&state, player)
+                .ok_or_else(|| CatalogError::InvalidTrace {
+                    game: id,
+                    message: format!("terminal utility is missing for player {player}"),
+                })?;
+    }
+    Ok(CatalogTraceAnalysis::Generic { utilities })
 }
 
 fn catalog_spirits_replay_action(
@@ -2402,7 +2457,7 @@ mod tests {
     }
 
     #[test]
-    fn trace_analysis_dispatches_to_supported_games_and_rejects_unimplemented_games() {
+    fn trace_analysis_dispatches_to_all_supported_games() {
         let report = run_match_with_trace(
             GameId::Boop,
             AgentConfig::Random,
@@ -2442,11 +2497,29 @@ mod tests {
             spirits_report.scores.unwrap()
         );
 
-        let unavailable = analyze_trace(GameId::ConnectFour, &[]).unwrap_err();
-        assert_eq!(
-            unavailable.to_string(),
-            "tournament analysis is not available for connect-four"
-        );
+        for game in [GameId::ConnectFour, GameId::TicTacToe] {
+            let report = run_match_with_trace(
+                game,
+                AgentConfig::Random,
+                AgentConfig::Random,
+                MatchConfig::default(),
+            )
+            .unwrap();
+            let CatalogTraceAnalysis::Generic { utilities } =
+                analyze_trace(game, &report.moves).unwrap()
+            else {
+                panic!("expected generic replay analysis");
+            };
+            assert_eq!(utilities.as_slice(), report.utilities);
+            assert!(analyze_trace(game, &[]).is_err());
+            assert!(analyze_trace(game, &report.moves[..report.moves.len() - 1]).is_err());
+            let mut invalid = report.moves.clone();
+            invalid[0].player = 1;
+            assert!(analyze_trace(game, &invalid).is_err());
+            invalid = report.moves.clone();
+            invalid.push(invalid[0].clone());
+            assert!(analyze_trace(game, &invalid).is_err());
+        }
     }
 
     #[test]

@@ -18,6 +18,7 @@ from .api import (
     BoopPosition,
     BoopRecoverPiece,
     ConnectFour,
+    ConnectFourAction,
     EndSpiritCollection,
     ForestPosition,
     Move,
@@ -29,6 +30,7 @@ from .api import (
     SpiritsOfTheForest,
     TakeSpiritTile,
     TicTacToe,
+    TicTacToeAction,
     TreeReuseDiagnostic,
     _analyze_trace,
 )
@@ -836,6 +838,8 @@ def extract_tournament(
                         _extract_generic_match(context, writers, row_counts)
                         if extract_match is not None:
                             extract_match(context, writers, row_counts, game)
+                        else:
+                            _validate_generic_result(context, game)
 
                 study_complete = (
                     study_processed == study.declared_matches and not study_truncated
@@ -1080,6 +1084,38 @@ def _extract_generic_match(
             }
         )
         row_counts["moves"] += 1
+
+
+def _validate_generic_result(context: _MatchContext, game: ConnectFour | TicTacToe) -> None:
+    """Convert trace data; Rust owns legality, turn order and terminal outcomes."""
+    moves = []
+    for ply, raw in enumerate(context.raw_moves, 1):
+        where = f"match {context.match_number} ply {ply}"
+        action = raw["action"]  # Structure and player were checked by generic extraction.
+        try:
+            expected_type = "connect_four" if isinstance(game, ConnectFour) else "tic_tac_toe"
+            if action["type"] != expected_type:
+                raise ValueError(f"expected a {expected_type} action")
+            column = _integer_field(action, "column", where)
+            typed_action = (
+                ConnectFourAction(column)
+                if isinstance(game, ConnectFour)
+                else TicTacToeAction(_integer_field(action, "row", where), column)
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{where}: {error}") from error
+        moves.append(Move(player=raw["player"], action=typed_action))
+    try:
+        analysis = _analyze_trace(game, tuple(moves), seed=context.seed)
+    except (ValueError, OverflowError) as error:
+        raise ValueError(f"match {context.match_number}: {error}") from error
+    if analysis["winner"] != context.winner_player:
+        raise ValueError(f"match {context.match_number} replay winner does not match its result")
+    utilities = context.raw_result["utilities"]
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in utilities):
+        raise ValueError(f"match {context.match_number} utilities must be numeric")
+    if list(analysis["utilities"]) != utilities:
+        raise ValueError(f"match {context.match_number} replay utilities do not match its result")
 
 
 def _extract_boop_match(
