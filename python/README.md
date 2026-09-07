@@ -346,6 +346,13 @@ HTML report, figures, summary, and aggregate tables
 
 ### 1. Configure and run the tournament
 
+Create `configs/tournaments/boop-study.toml` locally using the TOML example below,
+then run it. Personal tournament definitions are ignored by Git. The shared
+[`template-study.toml`](../configs/tournaments/template-study.toml) remains versioned
+as an executable reference for agent configurations and parameter grids. The Boop
+and SPOTF baseline profiles are also included under `configs/mcts/`. Personal study
+scripts belong under the ignored `local/` directory.
+
 ```bash
 meeple-bots tournament \
   --config configs/tournaments/boop-study.toml
@@ -353,11 +360,6 @@ meeple-bots tournament \
 
 A configuration defines shared execution settings and enough agent entries or matrix combinations
 to produce at least two uniquely named agents:
-
-The fully commented
-[`configs/tournaments/template-study.toml`](../configs/tournaments/template-study.toml) shows
-Random, uniform-rollout, cutoff-heuristic, epsilon-greedy, epsilon-sweep, and Cartesian-grid
-examples in one executable study.
 
 ```toml
 game = "boop"
@@ -432,9 +434,8 @@ Greedy and epsilon-greedy iterations evaluate legal successors; MAST instead mai
 an action table. These policies have different iteration costs, so
 compare policies with the same `time_budget` as well as with equal iterations. A timed decision
 finishes its current iteration, can slightly exceed its deadline, and records its actual elapsed
-time, iterations, and nodes in the JSONL move. See the executable
-[`template-study.toml`](../configs/tournaments/template-study.toml) for all combinations and grid
-examples.
+time, iterations, and nodes in the JSONL move. Further configuration and grid
+examples appear below.
 
 A conditional policy can restrict informed selection to a game phase. This SPOTF example evaluates
 H0 only for `TakeTile` and `EndCollection`; gemstone actions use the uniform fallback:
@@ -530,8 +531,37 @@ The JSONL header stores the complete configuration and schema version. Each foll
 roles, physical seats, seed, duration, result, and full action trace. Because each match is flushed
 immediately, completed work remains available if a long tournament is interrupted.
 
-The supplied `boop-study.toml` defines seven configurations, 21 cross-agent pairings, two selected
-self-play pairings, and 20 matches per pairing: 460 matches in total.
+Local Python studies can use the same executor without importing CLI internals:
+
+```python
+from pathlib import Path
+from meeple_bots import ConnectFour, MctsAgent, RandomAgent
+from meeple_bots.tournaments import TournamentAgent, TournamentConfig, run_tournament
+
+config = TournamentConfig(
+    game=ConnectFour(),
+    output=Path("results/tournaments/my-study.jsonl"),
+    pairing_mode="round_robin", seat_mode="paired",
+    matches_per_pair=2, seed=42, max_plies=42, workers=1,
+    agents=(
+        TournamentAgent("control", MctsAgent(iterations=100, rollout_depth=42)),
+        TournamentAgent("random", RandomAgent()),
+    ),
+)
+summary = run_tournament(config)
+```
+
+`run_tournament` returns a summary and accepts optional `on_start` and `on_match`
+callbacks. Console output remains the CLI's responsibility. Both entry points use
+the same scheduler, worker pool, seat/seed handling, serialization, and trace writer.
+
+For a study with its own ordering, `match_jobs`, `run_matches`, `tournament_header`,
+and `TournamentTrace` expose those same pieces. `TournamentTrace(..., resume=True)`
+validates an existing trace against its header and exposes `completed_match_numbers`;
+the caller must skip those jobs without changing their original identities. Duplicate
+numbers, conflicting plans, and truncated records are rejected. This lower-level
+resumption is for Python study scripts; the CLI still protects existing output and
+requires `--overwrite` to replace it. Regenerate analysis using `extract` and `report`.
 
 ### 2. Extract analysis tables
 
@@ -651,6 +681,28 @@ and nodes per second, budget utilization, search cost by phase, reachable scorin
 gemstone conservation across game quarters. Strategic quarters use collected-tile progress rather
 than internal plies. Search-specific figures are omitted when the input has no MCTS decision
 metrics.
+
+Connect Four and tic-tac-toe use a shared generic report through the same command:
+
+```bash
+meeple-bots report --input results/tournaments/connect-four-study/data
+```
+
+It produces `index.html`, `summary.json`, four CSV tables, and up to two figures.
+Tables cover W/D/L and competitive score `(wins + 0.5 * draws) / games`, results
+by agent and seat, results by opponent, and decision metrics. Decision metrics
+include mean/median time, actual mean/median/min/max completed iterations, and
+iterations per second. Configured iteration/time budgets are retained alongside
+measurements. Missing measurements remain missing, including for random agents;
+they are not interpreted as zero iterations. Throughput uses only decisions with
+both iteration counts and positive elapsed time.
+
+Competitive summaries exclude self-play; decision metrics include it. Partial
+studies are marked preliminary. Scores are descriptive, without confidence
+intervals, and aggregate scores depend on the opponents faced. The generic
+report requires only the common extraction tables, so no game-specific analysis
+or study script is needed. Existing output is protected unless `--overwrite` is
+given. Regenerating a report does not rerun matches.
 
 ## Study artifacts
 

@@ -93,11 +93,20 @@ Start with the guide that matches the question:
 
 ```text
 agents/       Rust agent implementations and MCTS roadmap
-configs/      Reusable MCTS profiles and tournament definitions
+configs/      Shared MCTS baselines and templates; personal configurations stay local
 crates/       Shared Rust contracts, simulation, catalog, evaluation, and bindings
 games/        Authoritative Rust rules for each game
 python/       Public Python package, CLI, GUI, extraction, reporting, and tests
 ```
+
+Personal scripts and experiments belong under `local/`; tournament definitions under
+`configs/tournaments/`; generated traces, tables, and reports under `results/`.
+Personal configurations and generated data are ignored by Git. Shared references
+remain versioned: `configs/mcts/template.toml`, `heuristic.toml`, `boop-baseline.toml`,
+`spotf-baseline.toml`, and `configs/tournaments/template-study.toml`.
+Game rules, agents, reusable tournament/extraction/report tools, and their regression
+tests remain versioned. See [the Python guide](python/README.md#1-configure-and-run-the-tournament)
+to create your own local study; no personal experiment files are required.
 
 ## Development
 

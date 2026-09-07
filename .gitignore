@@ -14,13 +14,21 @@ __pycache__/
 dist/
 build/
 
-# Generated tournament studies
+# Personal studies and generated data stay local.
+/local/
+/scripts/
+/experiments/
 /results/
 *-study.jsonl
 
-# Local tournament study configurations
-/configs/tournaments/boop-study.toml
-/configs/tournaments/spotf-study.toml
+# Personal configurations stay local; shared references remain versioned.
+/configs/tournaments/*
+!/configs/tournaments/template-study.toml
+/configs/mcts/*
+!/configs/mcts/template.toml
+!/configs/mcts/heuristic.toml
+!/configs/mcts/boop-baseline.toml
+!/configs/mcts/spotf-baseline.toml
 
 # Extensiones nativas compiladas
 *.so
