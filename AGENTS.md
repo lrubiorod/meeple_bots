@@ -1,87 +1,83 @@
 # Meeple Bots - Codex Instructions
 
-## General working style
+## Communication
 
-- Always communicate with me in Spanish, including explanations, plans, approval requests, summaries, and error descriptions, even if these instructions or the project code are written in English.
+- Always communicate with me in Spanish, including plans, explanations, approval requests, summaries, and errors.
 - Keep code, identifiers, commit messages, and technical documentation in English unless I explicitly ask otherwise.
-- Before implementing a non-trivial change, explain the proposed approach first.
-- Keep changes small, focused, and limited to the current task.
-- Do not modify unrelated files.
+- Keep explanations concise and focused on information useful for understanding or reviewing the change.
+- Explain new or non-obvious Rust concepts in simple Spanish when they are relevant.
+- Do not restate the task or describe obvious code line by line.
+
+## Working style
+
+- Prefer the smallest change that fully solves the requested task.
+- Keep changes focused on the current task and do not modify unrelated files.
 - Prefer simple and explicit solutions over premature abstractions.
-- Explain new Rust concepts in simple Spanish when they appear.
-- Do not make Git commits or push changes to GitHub unless I explicitly request it.
+- Preserve the existing architecture unless the task genuinely requires changing it.
+- Do not implement speculative improvements or adjacent features that were not requested. Mention them instead if they are worth considering.
+- For straightforward localized tasks, implement directly.
+- Before a non-trivial or architectural change, briefly explain the intended approach, then proceed unless a material ambiguity or required approval blocks the work.
+- Infer routine details from the repository and existing patterns instead of asking unnecessary clarification questions.
 
-## Repository boundaries
+## Repository exploration
 
-- Treat the repository root as the normal writable workspace.
-- Do not access or modify files outside the repository unless it is genuinely necessary.
-- If access outside the repository is required, explain why and request approval first.
-- Do not use unrestricted or full-access permissions unless I explicitly request it.
+- Treat the repository root as the normal workspace.
+- Stay inside the repository unless access outside it is genuinely necessary.
+- Prefer targeted searches with `rg` and specific files or symbols over broad repository scans.
+- Once the relevant implementation has been located, do not continue exploring unrelated directories.
+- Do not repeatedly reread unchanged files.
+- Read project documentation only when it is relevant to the current task.
 
-## Approval requests
+## Scope and safety
 
-Whenever you need my approval to run a command or perform an action, explain it briefly in Spanish before requesting approval.
-
-Include:
-
-1. What the command or action does.
-2. Why it is needed.
-3. Whether it only reads information or whether it writes, deletes, renames, installs software, accesses the network, or affects anything outside the repository.
-4. The main risk, if any.
-5. Whether you recommend approving it.
-
-Keep the explanation short and understandable for someone learning Rust and development tooling.
-
-### Commands that modify the repository
-
-Before requesting approval for a command that writes to the repository, also state:
-
-- Which files will be affected.
-- Whether each file will be created, modified, renamed, or deleted.
-- A short summary of the intended change.
-- Whether the operation is easily reversible with Git.
-
-For patching commands such as `apply_patch` or `git apply`, summarize the patch before requesting approval.
-
-Do not assume that a write command should be permanently approved just because it is commonly used.
-
-## Command safety
-
-Treat commands approximately according to the following risk levels:
-
-- Read-only commands such as `rg`, `cat`, `sed`, `grep`, `git status`, and `git diff` are normally low risk.
-- Validation commands such as `cargo check`, `cargo test`, and `cargo fmt` are normally low risk, but explain them when approval is required.
-- Commands that modify files, such as `apply_patch`, `git apply`, file creation, or code generation, require a clear explanation of the intended changes.
-- Destructive commands such as `rm`, `git reset`, `git clean`, or operations that overwrite files require special care and explicit approval.
-- Commands using `sudo`, modifying system configuration, installing software, accessing the network, or operating outside the repository always require an explanation and explicit approval.
+- Do not access or modify files outside the repository unless necessary for the requested task.
+- If outside access, network access, software installation, system configuration, or another significant side effect requires approval, explain briefly why it is needed.
+- When approval is required, keep the explanation short: state what the command does, its relevant side effect or risk, and whether you recommend approving it.
+- Be especially careful with destructive commands such as `rm`, `git reset`, `git clean`, or commands that overwrite existing work.
+- Never use destructive Git operations on user changes unless explicitly requested.
 
 ## Git
 
 - Do not create commits unless I explicitly request it.
 - Do not push to any remote unless I explicitly request it.
-- Do not rewrite Git history.
-- Do not run destructive Git commands such as `git reset --hard` or `git clean` without explicit approval.
-- Prefer using `git diff` and `git status` to show me what changed.
+- Do not rewrite Git history unless I explicitly request it.
+- Preserve existing uncommitted user changes.
+- Use `git status` and `git diff` when they are useful for reviewing the work, but do not repeatedly run them without a reason.
 
 ## Validation
 
-After Rust changes, run the relevant checks when appropriate:
+- Run the smallest relevant validation for the change first.
+- Prefer targeted package or test commands over full-workspace checks for localized changes.
+- Run broader workspace checks when shared/core behavior changed, several crates are affected, targeted checks fail, or the task explicitly requires full validation.
+- Do not repeat a successful test or check unless code changed afterward or a new concern justifies it.
+- Do not run benchmarks, tournaments, long simulations, or large data analyses unless requested or necessary for the task.
+- Do not add tests that merely duplicate implementation details; add tests when they meaningfully protect behavior or reproduce a bug.
 
-- `cargo fmt`
-- `cargo check --workspace`
-- `cargo test --workspace`
+Typical Rust validation, chosen according to scope:
 
-If a command fails:
+- Localized crate change: `cargo check -p <package>` and relevant `cargo test -p <package>`.
+- Formatting when Rust files changed: `cargo fmt`.
+- Broad/shared change when justified: `cargo check --workspace` and `cargo test --workspace`.
 
-- Explain the failure before making significant additional changes.
-- Do not start a broad refactor just to make a failing command pass.
+If validation fails:
+
+- Identify the cause before making substantial additional changes.
 - Prefer the smallest reasonable fix.
+- Do not start an unrelated refactor just to make a failing check pass.
+- Report unresolved failures clearly.
 
-## Learning-oriented explanations
+## Repository architecture
 
-When presenting implemented code:
+The Rust workspace contains shared infrastructure, games, agents, and Python bindings. Keep performance-sensitive game simulation and search logic in Rust; keep orchestration, experiment configuration, tournament analysis, and reporting in Python unless the existing architecture indicates otherwise.
 
-- Explain the purpose of each changed file.
-- Explain important Rust concepts introduced by the change.
-- Point out relevant trade-offs or assumptions.
-- Distinguish clearly between necessary design choices and choices that could reasonably be made differently.
+When changing generic MCTS infrastructure, avoid game-specific branching in the generic search code. Prefer traits, policies, evaluators, or existing extension points when game-specific behavior is genuinely required.
+
+## Completion
+
+When the requested work is complete:
+
+- Stop once the relevant implementation and validation are complete.
+- Give a concise summary of what changed.
+- State which tests or checks were run and whether they passed.
+- Mention important trade-offs or unresolved issues only when relevant.
+- Do not propose or implement additional work unless it materially affects the requested task.
