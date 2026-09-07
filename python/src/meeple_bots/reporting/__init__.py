@@ -62,7 +62,7 @@ def generate_study_report(
     game = manifest.get("game")
     if not isinstance(game, str):
         raise TypeError("extraction manifest game must be a string")
-    if game not in {"boop", "spotf"}:
+    if game not in {"boop", "spotf", "connect-four", "tic-tac-toe"}:
         raise ValueError(f"tournament report is not available for {game}")
 
     if output_dir is None:
@@ -86,10 +86,14 @@ def generate_study_report(
             from ..games.boop.reporting import generate_boop_report
 
             generate_report = generate_boop_report
-        else:
+        elif game == "spotf":
             from ..games.spirits_of_the_forest.reporting import generate_spotf_report
 
             generate_report = generate_spotf_report
+        else:
+            from .generic import generate_generic_report
+
+            generate_report = generate_generic_report
     except ModuleNotFoundError as error:
         if error.name in {"matplotlib", "numpy", "pandas", "seaborn"}:
             raise RuntimeError(

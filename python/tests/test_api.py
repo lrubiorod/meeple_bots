@@ -3054,7 +3054,7 @@ class MatchApiTests(unittest.TestCase):
                 json.dumps(
                     {
                         "schema_version": 1,
-                        "game": "connect-four",
+                        "game": "unsupported-game",
                     }
                 ),
                 encoding="utf-8",
@@ -3065,7 +3065,7 @@ class MatchApiTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 1)
             self.assertIn(
-                "tournament report is not available for connect-four",
+                "tournament report is not available for unsupported-game",
                 errors.getvalue(),
             )
             self.assertFalse((study / "report").exists())
