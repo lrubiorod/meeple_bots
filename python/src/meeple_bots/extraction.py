@@ -64,6 +64,7 @@ _SPOTF_TILE_COUNT = 48
 _AGENT_FIELDS = (
     "agent_name",
     "kind",
+    "config_json",
     "iterations",
     "time_budget",
     "rollout_depth",
@@ -648,37 +649,9 @@ def _combined_agent_rows(studies: tuple[_StudySource, ...]) -> list[dict[str, ob
 
 
 def _agent_signature(row: dict[str, object]) -> dict[str, object]:
-    return {
-        field: row[field]
-        for field in (
-            "kind",
-            "iterations",
-            "time_budget",
-            "rollout_depth",
-            "exploration",
-            "heuristic",
-            "cutoff_evaluator",
-            "cutoff_heuristic",
-            "rollout_policy",
-            "rollout_evaluator",
-            "rollout_heuristic",
-            "rollout_epsilon",
-            "rollout_condition",
-            "rollout_condition_phase",
-            "rollout_primary_policy",
-            "rollout_fallback_policy",
-            "rollout_fallback_evaluator",
-            "rollout_fallback_heuristic",
-            "rollout_fallback_epsilon",
-            "progressive_bias_weight",
-            "progressive_bias_evaluator",
-            "progressive_bias_heuristic",
-            "progressive_bias_condition",
-            "progressive_bias_condition_phase",
-            "tree_reuse",
-            "transpositions",
-        )
-    }
+    # Compare decoded values: object key order and 1 versus 1.0 do not change
+    # a configuration. Do not infer missing defaults from the current API.
+    return json.loads(row["config_json"])
 
 
 def _fields_with_provenance(fields: tuple[str, ...]) -> tuple[str, ...]:
@@ -907,7 +880,7 @@ def extract_tournament(
             "output_dir": str(output_dir),
             "game": game_name,
             "tournament_schema_version": 1,
-            "analysis_schema_version": 7,
+            "analysis_schema_version": 8,
             "decision_timing_scope": timing_scope,
             "declared_matches": declared_matches,
             "processed_matches": processed_matches,
@@ -1984,6 +1957,12 @@ def _agent_row(raw: object) -> dict[str, object]:
     return {
         "agent_name": _string_field(raw, "name", "tournament agent"),
         "kind": kind,
+        "config_json": json.dumps(
+            {key: value for key, value in raw.items() if key not in {"name", "self_play"}},
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ),
         "iterations": raw.get("iterations", ""),
         "time_budget": raw.get("time_budget", ""),
         "rollout_depth": raw.get("rollout_depth", ""),

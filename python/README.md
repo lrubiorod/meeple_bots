@@ -642,10 +642,22 @@ Extraction is available for every supported game. It starts with five generic st
 
 - `manifest.json`: sources, schemas, completeness, table names, and row counts;
 - `studies.csv`: one row per source trace, including whether it came from a batch or tournament;
-- `agents.csv`: one row per configured agent;
+- `agents.csv`: one row per configured agent, with the full recorded configuration in
+  `config_json` alongside the usual analysis columns;
 - `matches.csv`: game-independent outcomes, seats, durations, and utilities.
 - `moves.csv`: one row per ply with its player, agent, outcome, action JSON, decision time,
   search iterations/nodes, root diagnostics, and tree-reuse metrics.
+
+`config_json` preserves nested evaluator parameters and diagnostics options with sorted object
+keys. Only `name` and `self_play` are excluded: the name has its own column and self-play is
+aggregated separately across studies. When combining traces, the same agent name must have the
+same recorded configuration, including cutoff, rollout, fallback and progressive-bias evaluator
+parameters. Object key order and equivalent JSON numbers such as `1` and `1.0` do not cause
+conflicts. Missing fields are not filled with today's defaults; use distinct names when recorded
+configurations differ. Existing traces retain their original fields and remain extractable.
+
+Analysis schema 8 adds this column. Regenerate old extractions from the original JSONL to recover
+parameters that earlier CSVs omitted; there is no need to rerun matches for this correction.
 
 Boop additionally produces:
 
