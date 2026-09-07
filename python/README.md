@@ -433,9 +433,9 @@ See the [MAST behavior and experiment notes](../agents/README.md#reusable-profil
 Greedy and epsilon-greedy iterations evaluate legal successors; MAST instead maintains
 an action table. These policies have different iteration costs, so
 compare policies with the same `time_budget` as well as with equal iterations. A timed decision
-finishes its current iteration, can slightly exceed its deadline, and records its actual elapsed
-time, iterations, and nodes in the JSONL move. Further configuration and grid
-examples appear below.
+finishes its current iteration and can exceed its search deadline. JSONL moves record actual
+completed iterations and total agent cost; this total also includes lifecycle work outside the
+search budget. Further configuration and grid examples appear below.
 
 A conditional policy can restrict informed selection to a game phase. This SPOTF example evaluates
 H0 only for `TakeTile` and `EndCollection`; gemstone actions use the uniform fallback:
@@ -530,6 +530,32 @@ pass `--overwrite` only when replacement is intentional or use `--output PATH` f
 The JSONL header stores the complete configuration and schema version. Each following line stores
 roles, physical seats, seed, duration, result, and full action trace. Because each match is flushed
 immediately, completed work remains available if a long tournament is interrupted.
+
+Decision timing in new traces uses `decision_timing_scope = "agent_total_v1"`:
+
+- `decision_seconds` is total agent wall time attributed to that action.
+- `selection_seconds` covers action selection and retrieval of search statistics.
+- `maintenance_seconds` covers start, action-update and end callbacks, including tree/graph reuse.
+- `decision_seconds = selection_seconds + maintenance_seconds`.
+
+Maintenance belongs to the agent executing it, even after an opponent's action. Pending work is
+charged to its next decision; any remainder at match end is added to its last decision. Therefore
+final per-agent means and iterations/second include lifecycle overhead. A seat with no decisions
+has its lifecycle cost in `result.unassigned_maintenance_seconds`, indexed by seat.
+Game-rule transitions, observers, GUI animation delays, serialization and construction outside
+the match runner are excluded. Human selection time includes waiting for human input.
+
+Live move observers receive the cost known at publication time; terminal adjustments appear in
+the final `MatchResult` and the GUI's completed history. `time_budget` remains the approximate
+MCTS search-loop budget, not a hard cap on total agent cost. For equal-cost comparisons use the
+measured totals; equal configured search budgets alone do not guarantee equal total costs.
+
+`moves.csv` retains all three timing fields. Existing game-specific tables and reports use the
+new total through `decision_seconds`. Extracted manifests and reports identify the timing scope.
+Historical traces without the marker retain selection-only timing and unknown component fields.
+They remain readable, but cannot be combined or resumed with new total-cost studies. Their
+missing lifecycle costs cannot be recovered by re-extraction; repeat affected timing comparisons
+when total cost is required.
 
 Local Python studies can use the same executor without importing CLI internals:
 

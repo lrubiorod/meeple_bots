@@ -11,6 +11,17 @@ from pathlib import Path
 _REPORT_TARGETS = ("index.html", "summary.json", "figures", "tables")
 
 
+def decision_timing_description(manifest: dict) -> str:
+    """Explain the measurement boundary, including historical extractions."""
+    if manifest.get("decision_timing_scope") == "agent_total_v1":
+        return (
+            "Decision time is total agent cost: selection plus lifecycle maintenance, "
+            "including updates after opponent actions and final cleanup. "
+            "Game transitions and observer/UI work are excluded."
+        )
+    return "Legacy decision timing covers selection only; lifecycle maintenance was not measured."
+
+
 def wilson_interval(
     successes: int,
     total: int,

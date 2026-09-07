@@ -149,6 +149,10 @@ class BoopGui:
             except Exception as error:
                 trace_error = str(error)
         with self._condition:
+            for displayed, recorded in zip(self._state["moves"], result.moves):
+                displayed["decision_seconds"] = recorded.decision_seconds
+            if result.moves:
+                self._state["last_decision_seconds"] = result.moves[-1].decision_seconds
             self._state["status"] = "finished"
             self._state["active_player"] = None
             self._state["winner"] = result.winner

@@ -216,6 +216,7 @@ def tournament_header(config: TournamentConfig, output: Path, workers: int) -> d
     pairings = tournament_pairings(config.agents, config.pairing_mode)
     return {
         "record_type": "tournament", "schema_version": 1,
+        "decision_timing_scope": "agent_total_v1",
         "study_type": "tournament", "game": game_name(config.game),
         "output": str(output), "pairing_mode": config.pairing_mode,
         "seat_mode": config.seat_mode, "matches_per_pair": config.matches_per_pair,

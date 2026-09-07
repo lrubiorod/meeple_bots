@@ -164,6 +164,8 @@ _GENERIC_MOVE_FIELDS = (
     "agent",
     "outcome",
     "decision_seconds",
+    "selection_seconds",
+    "maintenance_seconds",
     "search_iterations",
     "search_nodes",
     *_TREE_REUSE_FIELDS,
@@ -695,6 +697,15 @@ def extract_tournament(
 
     paths = _normalize_input_paths(input_paths)
     studies = _load_study_sources(paths)
+    timing_scopes = {
+        study.header.get("decision_timing_scope", "selection_only_legacy")
+        for study in studies
+    }
+    if len(timing_scopes) != 1:
+        raise ValueError(
+            "cannot combine selection-only and total-agent timing studies; extract them separately"
+        )
+    timing_scope = timing_scopes.pop()
     agent_rows = _combined_agent_rows(studies)
     if output_dir is None:
         if len(paths) > 1:
@@ -896,7 +907,8 @@ def extract_tournament(
             "output_dir": str(output_dir),
             "game": game_name,
             "tournament_schema_version": 1,
-            "analysis_schema_version": 6,
+            "analysis_schema_version": 7,
+            "decision_timing_scope": timing_scope,
             "declared_matches": declared_matches,
             "processed_matches": processed_matches,
             "complete": complete,
@@ -915,6 +927,7 @@ def extract_tournament(
     return {
         "input": str(paths[0]),
         "inputs": [str(path) for path in paths],
+        "decision_timing_scope": timing_scope,
         "output_dir": str(output_dir),
         "declared_matches": declared_matches,
         "processed_matches": processed_matches,
@@ -1070,6 +1083,8 @@ def _extract_generic_match(
                 "agent": context.players[player],
                 "outcome": _player_outcome(player, context.winner_player),
                 "decision_seconds": raw.get("decision_seconds", ""),
+                "selection_seconds": raw.get("selection_seconds", ""),
+                "maintenance_seconds": raw.get("maintenance_seconds", ""),
                 "search_iterations": raw.get("search_iterations", ""),
                 "search_nodes": raw.get("search_nodes", ""),
                 **_tree_reuse_row(tree_reuse),

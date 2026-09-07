@@ -27,7 +27,7 @@ use meeple_bots_core::{
     Agent, AgentDecisionStats, AgentError, DecisionContext, Game, PlayerId, RandomSource,
 };
 use meeple_bots_random_agent::RandomAgent;
-use meeple_bots_simulation::MatchObserver;
+use meeple_bots_simulation::{DecisionTiming, MatchObserver};
 use meeple_bots_spirits_of_the_forest::{
     ForestPosition, GemstoneSacrifice, PowerSource, ScoringCategory, Spirit, SpiritsOfTheForest,
     SpiritsOfTheForestAction, SpiritsOfTheForestState, SpiritsReplayAnalysis, SpiritsStateMetrics,
@@ -438,7 +438,7 @@ impl MatchObserver<TicTacToe> for PythonTicTacToeMatchObserver<'_> {
         state: &<TicTacToe as Game>::State,
         player: PlayerId,
         action: &TicTacToeAction,
-        decision_time: Duration,
+        decision_time: DecisionTiming,
         decision_stats: AgentDecisionStats,
     ) {
         if self.error.is_some() {
@@ -454,7 +454,7 @@ impl MatchObserver<TicTacToe> for PythonTicTacToeMatchObserver<'_> {
                 player.index(),
                 board,
                 (action.row(), action.column()),
-                decision_time.as_secs_f64(),
+                decision_time.total().as_secs_f64(),
                 decision_stats.search_iterations,
                 decision_stats.search_nodes,
             ))?;
@@ -476,7 +476,7 @@ impl MatchObserver<ConnectFour> for PythonConnectFourMatchObserver<'_> {
         state: &<ConnectFour as Game>::State,
         player: PlayerId,
         action: &ConnectFourAction,
-        decision_time: Duration,
+        decision_time: DecisionTiming,
         decision_stats: AgentDecisionStats,
     ) {
         if self.error.is_some() {
@@ -492,7 +492,7 @@ impl MatchObserver<ConnectFour> for PythonConnectFourMatchObserver<'_> {
                 player.index(),
                 board,
                 action.column(),
-                decision_time.as_secs_f64(),
+                decision_time.total().as_secs_f64(),
                 decision_stats.search_iterations,
                 decision_stats.search_nodes,
             ))?;
@@ -514,7 +514,7 @@ impl MatchObserver<Boop> for PythonBoopMatchObserver<'_> {
         state: &<Boop as Game>::State,
         player: PlayerId,
         action: &BoopAction,
-        decision_time: Duration,
+        decision_time: DecisionTiming,
         decision_stats: AgentDecisionStats,
     ) {
         if self.error.is_some() {
@@ -543,7 +543,7 @@ impl MatchObserver<Boop> for PythonBoopMatchObserver<'_> {
                 board,
                 pools,
                 native_boop_action(action),
-                decision_time.as_secs_f64(),
+                decision_time.total().as_secs_f64(),
                 decision_stats.search_iterations,
                 decision_stats.search_nodes,
             ))?;
@@ -565,7 +565,7 @@ impl MatchObserver<SpiritsOfTheForest> for PythonSpiritsMatchObserver<'_> {
         state: &SpiritsOfTheForestState,
         player: PlayerId,
         action: &SpiritsOfTheForestAction,
-        decision_time: Duration,
+        decision_time: DecisionTiming,
         decision_stats: AgentDecisionStats,
     ) {
         if self.error.is_some() {
@@ -576,7 +576,7 @@ impl MatchObserver<SpiritsOfTheForest> for PythonSpiritsMatchObserver<'_> {
                 player.index(),
                 native_spirits_state(game, state),
                 native_spirits_action(*action),
-                decision_time.as_secs_f64(),
+                decision_time.total().as_secs_f64(),
                 decision_stats.search_iterations,
                 decision_stats.search_nodes,
             ))?;
@@ -1415,6 +1415,10 @@ fn py_run_match(
         }
     }
     result.set_item("scores", report.scores)?;
+    result.set_item(
+        "unassigned_maintenance_seconds",
+        report.unassigned_maintenance_seconds,
+    )?;
 
     let moves = PyList::empty(py);
     for recorded in report.moves {
@@ -1465,6 +1469,8 @@ fn py_run_match(
         movement.set_item("player", recorded.player)?;
         movement.set_item("action", action)?;
         movement.set_item("decision_seconds", recorded.decision_seconds)?;
+        movement.set_item("selection_seconds", recorded.selection_seconds)?;
+        movement.set_item("maintenance_seconds", recorded.maintenance_seconds)?;
         movement.set_item("search_iterations", recorded.search_iterations)?;
         movement.set_item("search_nodes", recorded.search_nodes)?;
         let root_actions = PyList::empty(py);
@@ -1577,6 +1583,8 @@ fn py_analyze_trace(
                     player: usize::from(player),
                     action: parse_native_catalog_boop_action(action)?,
                     decision_seconds: 0.0,
+                    selection_seconds: 0.0,
+                    maintenance_seconds: 0.0,
                     search_iterations: None,
                     search_nodes: None,
                     root_actions: Vec::new(),
@@ -1592,6 +1600,8 @@ fn py_analyze_trace(
                     player: usize::from(player),
                     action: parse_native_catalog_spirits_action(action)?,
                     decision_seconds: 0.0,
+                    selection_seconds: 0.0,
+                    maintenance_seconds: 0.0,
                     search_iterations: None,
                     search_nodes: None,
                     root_actions: Vec::new(),

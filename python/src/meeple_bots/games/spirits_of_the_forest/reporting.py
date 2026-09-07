@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from ...reporting import wilson_interval
+from ...reporting import decision_timing_description, wilson_interval
 
 
 _REQUIRED_TABLES = (
@@ -863,6 +863,7 @@ def _summary(
     return {
         "game": "spotf",
         "complete": bool(manifest.get("complete", False)),
+        "decision_timing_scope": manifest.get("decision_timing_scope", "selection_only_legacy"),
         "matches": int(len(tables["matches"])),
         "agents": int(len(tables["agents"])),
         "figures": len(figures),
@@ -958,6 +959,7 @@ def _render_html(
   <header>
     <h1>Spirits of the Forest tournament report</h1>
     <p class="source">Extracted data: {source}</p>
+    <p>{decision_timing_description(manifest)}</p>
     <div class="cards">{cards}</div>
   </header>
   <main>

@@ -247,6 +247,8 @@ pub struct RecordedMove {
     pub player: usize,
     pub action: CatalogAction,
     pub decision_seconds: f64,
+    pub selection_seconds: f64,
+    pub maintenance_seconds: f64,
     pub search_iterations: Option<u64>,
     pub search_nodes: Option<u64>,
     pub root_actions: Vec<RootActionStats>,
@@ -260,6 +262,7 @@ pub struct CatalogMatchReport {
     pub utilities: Vec<f32>,
     pub winner: Option<usize>,
     pub moves: Vec<RecordedMove>,
+    pub unassigned_maintenance_seconds: [f64; 2],
     pub final_board: Vec<Option<CatalogPiece>>,
     pub pools: Option<[CatalogPool; 2]>,
     pub spirit_forest: Option<Vec<Option<CatalogSpiritTile>>>,
@@ -1539,6 +1542,8 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
                 column: traced_action.action.column(),
             },
             decision_seconds: traced_action.decision_time.as_secs_f64(),
+            selection_seconds: traced_action.selection_time.as_secs_f64(),
+            maintenance_seconds: traced_action.maintenance_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
             root_actions: traced_action.decision_stats.root_actions,
@@ -1547,6 +1552,9 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
         .collect();
 
     CatalogMatchReport {
+        unassigned_maintenance_seconds: traced
+            .unassigned_maintenance_time
+            .map(|time| time.as_secs_f64()),
         seed: traced.result.seed,
         plies: traced.result.plies,
         utilities: traced.result.utilities,
@@ -1588,6 +1596,8 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
                 column: traced_action.action.column(),
             },
             decision_seconds: traced_action.decision_time.as_secs_f64(),
+            selection_seconds: traced_action.selection_time.as_secs_f64(),
+            maintenance_seconds: traced_action.maintenance_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
             root_actions: traced_action.decision_stats.root_actions,
@@ -1596,6 +1606,9 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
         .collect();
 
     CatalogMatchReport {
+        unassigned_maintenance_seconds: traced
+            .unassigned_maintenance_time
+            .map(|time| time.as_secs_f64()),
         seed: traced.result.seed,
         plies: traced.result.plies,
         utilities: traced.result.utilities,
@@ -1650,6 +1663,8 @@ fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
                 },
             },
             decision_seconds: traced_action.decision_time.as_secs_f64(),
+            selection_seconds: traced_action.selection_time.as_secs_f64(),
+            maintenance_seconds: traced_action.maintenance_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
             root_actions: traced_action.decision_stats.root_actions,
@@ -1662,6 +1677,9 @@ fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
     });
 
     CatalogMatchReport {
+        unassigned_maintenance_seconds: traced
+            .unassigned_maintenance_time
+            .map(|time| time.as_secs_f64()),
         seed: traced.result.seed,
         plies: traced.result.plies,
         utilities: traced.result.utilities,
@@ -1705,6 +1723,8 @@ fn spirits_of_the_forest_report(
             player: traced_action.player.index(),
             action: CatalogAction::SpiritsOfTheForest(catalog_spirits_action(traced_action.action)),
             decision_seconds: traced_action.decision_time.as_secs_f64(),
+            selection_seconds: traced_action.selection_time.as_secs_f64(),
+            maintenance_seconds: traced_action.maintenance_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
             root_actions: traced_action.decision_stats.root_actions,
@@ -1743,6 +1763,9 @@ fn spirits_of_the_forest_report(
     });
 
     CatalogMatchReport {
+        unassigned_maintenance_seconds: traced
+            .unassigned_maintenance_time
+            .map(|time| time.as_secs_f64()),
         seed: traced.result.seed,
         plies: traced.result.plies,
         utilities: traced.result.utilities,

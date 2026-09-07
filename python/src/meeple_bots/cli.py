@@ -939,6 +939,7 @@ def _run_batch(
                 {
                     "record_type": "tournament",
                     "schema_version": 1,
+                    "decision_timing_scope": "agent_total_v1",
                     "study_type": "batch",
                     "game": _game_name(game),
                     "output": str(args.output),

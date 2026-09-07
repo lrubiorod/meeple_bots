@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from ...reporting import wilson_interval
+from ...reporting import decision_timing_description, wilson_interval
 
 
 _REQUIRED_TABLES = (
@@ -888,6 +888,7 @@ def _summary(
         "schema_version": 1,
         "game": "boop",
         "complete": bool(manifest.get("complete", False)),
+        "decision_timing_scope": manifest.get("decision_timing_scope", "selection_only_legacy"),
         "matches": len(matches),
         "agents": len(tables["agents"]),
         "turns": len(tables["turns"]),
@@ -982,6 +983,7 @@ def _render_html(
     {html.escape(completeness)} · Source: {html.escape(str(input_dir))} ·
     Analysis schema {manifest.get('analysis_schema_version')}
   </p>
+  <p>{decision_timing_description(manifest)}</p>
   {warning}
   <div class="cards">{cards}</div>
   <section><h2>Agent performance</h2>{table_html}</section>

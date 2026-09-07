@@ -41,11 +41,27 @@ A normal automated match follows one short path:
 3. `play_match<G, A, B>` creates the initial state and independent seeded RNG streams.
 4. The active `Agent<G>` receives a read-only `DecisionContext` and returns one `G::Action`.
 5. The game validates and applies the action to its authoritative state.
-6. An optional observer records the accepted action and decision time.
+6. An optional observer records the action and agent time: selection (including statistics)
+   plus lifecycle maintenance. Maintenance is attributed to the agent that performs it,
+   including work after an opponent's action.
 7. Terminal utilities and the typed trace are converted back to the public result model.
 
 The Python interpreter does not participate in automated decision loops. Python is called during a
 match only for a human selector or observer callback.
+
+### Agent time accounting
+
+`DecisionTiming` separates selection and maintenance. Each recorded decision includes that
+player's pending maintenance since its previous decision plus the update after its new action.
+Match-start work is charged to the first decision. At match end, remaining updates and cleanup
+are added to each player's last decision through `on_remaining_maintenance`. If a seat never
+acts, its lifecycle time is retained in `unassigned_maintenance_time` instead.
+
+The sum of final decision times per seat therefore covers all measured agent calls during the
+match. Game transitions, observer callbacks, serialization and agent construction outside the
+runner are excluded. Live `on_action` timing includes work known then; retained traces receive
+terminal adjustments before `on_finish`. A custom observer that retains times must handle
+`on_remaining_maintenance` as well. Runs without timing do not sample the clock.
 
 ## Game contract
 

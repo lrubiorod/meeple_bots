@@ -34,6 +34,7 @@ def write_gui_trace(
     header = {
         "record_type": "tournament",
         "schema_version": 1,
+        "decision_timing_scope": "agent_total_v1",
         "study_type": "batch",
         "game": game,
         "output": str(target),

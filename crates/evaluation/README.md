@@ -201,7 +201,9 @@ metric, not a production latency guarantee. MCTS cost is not perfectly linear in
 because larger searches build larger trees. Do not treat `milliseconds_per_iteration` as an exact
 extrapolation far away from the measured configuration.
 
-These are isolated single-decision measurements. A tournament with several workers can report
+These are isolated selection measurements, without a match lifecycle or maintenance callbacks.
+They are not interchangeable with tournament `decision_seconds`, which includes lifecycle cost.
+A tournament with several workers can report
 higher per-decision latency because multiple single-threaded MCTS searches share the machine. Run
 benchmarks on an otherwise idle system for stable isolated comparisons, or under intentional load
 when that load represents deployment.

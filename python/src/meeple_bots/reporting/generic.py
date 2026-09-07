@@ -13,6 +13,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from . import decision_timing_description
+
 
 def _load_tables(input_dir: Path, manifest: dict) -> dict[str, pd.DataFrame]:
     filenames = manifest.get("tables")
@@ -171,6 +173,7 @@ table {{border-collapse:collapse}} th,td {{padding:.5rem;border-bottom:1px solid
 <p>Score = (wins + 0.5 × draws) / games. Competitive results exclude self-play.
 Overall scores depend on the opponents faced; use results by opponent for direct comparisons.
 These are descriptive results, without confidence intervals.</p>
+<p>{decision_timing_description(manifest)}</p>
 <p>Decision metrics include self-play. Missing measurements are left blank or shown as —.
 Iteration counts are actual completed iterations, including under time budgets.
 Throughput is total iterations divided by total time on decisions with both measurements
@@ -198,6 +201,7 @@ def generate_generic_report(input_dir: Path, output_dir: Path, manifest: dict) -
         "schema_version": 1,
         "game": manifest["game"],
         "complete": bool(manifest.get("complete", False)),
+        "decision_timing_scope": manifest.get("decision_timing_scope", "selection_only_legacy"),
         "matches": len(tables["matches"]),
         "competitive_matches": len(results) // 2,
         "agents": len(tables["agents"]),

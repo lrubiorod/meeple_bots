@@ -678,7 +678,10 @@ HumanMoveObserver: TypeAlias = Callable[[HumanMoveObservation], None]
 
 @dataclass(frozen=True, slots=True)
 class MatchMoveObservation:
-    """State after any accepted action, including the agent's thinking time."""
+    """Live action and agent time so far, excluding game and observer work.
+
+    Final MatchResult moves also include lifecycle work remaining at match end.
+    """
 
     game: Game
     player: int
@@ -744,7 +747,10 @@ class TreeReuseDiagnostic:
 
 @dataclass(frozen=True, slots=True)
 class Move:
-    """One action selected by one player."""
+    """One action; decision_seconds includes selection and attributed lifecycle work.
+
+    Optional component times distinguish current measurements from legacy traces.
+    """
 
     player: int
     action: GameAction
@@ -755,11 +761,17 @@ class Move:
         default=(), compare=False
     )
     tree_reuse: TreeReuseDiagnostic | None = field(default=None, compare=False)
+    selection_seconds: float | None = field(default=None, compare=False)
+    maintenance_seconds: float | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
 class MatchResult:
     """Immutable summary and full action history of a completed match."""
+
+    unassigned_maintenance_seconds: tuple[float, float] = field(
+        default=(0.0, 0.0), compare=False, kw_only=True
+    )
 
     seed: int
     plies: int
@@ -887,6 +899,8 @@ class Match:
                 player=item["player"],
                 action=_action_from_native(item["action"]),
                 decision_seconds=item.get("decision_seconds", 0.0),
+                selection_seconds=item.get("selection_seconds"),
+                maintenance_seconds=item.get("maintenance_seconds"),
                 search_iterations=item.get("search_iterations"),
                 search_nodes=item.get("search_nodes"),
                 root_actions=tuple(
@@ -909,6 +923,9 @@ class Match:
             for item in raw["moves"]
         )
         return MatchResult(
+            unassigned_maintenance_seconds=tuple(
+                raw.get("unassigned_maintenance_seconds", (0.0, 0.0))
+            ),
             seed=raw["seed"],
             plies=raw["plies"],
             utilities=tuple(raw["utilities"]),

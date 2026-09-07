@@ -76,7 +76,7 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `iterations` | `1_000` | Exact iterations per decision; excludes `time_budget`. |
-| `time_budget` | `None` | Approximate seconds per decision; excludes `iterations`. |
+| `time_budget` | `None` | Approximate search-loop seconds per decision; excludes `iterations`. |
 | `exploration` | `sqrt(2)` | UCT balance between utility and less-visited branches. |
 | `rollout_depth` | `256` | Maximum simulated actions after expansion. |
 | `cutoff_evaluator` | `NeutralEvaluator()` | Evaluator used only when a rollout reaches its depth cutoff. |
@@ -235,7 +235,10 @@ transpositions = true
 ```
 
 Exactly one of `iterations` or `time_budget` is required, together with `rollout_depth`.
-`time_budget` is expressed in seconds. `exploration` defaults to `sqrt(2)`,
+`time_budget` is expressed in seconds and limits the search loop. Recorded `decision_seconds`
+includes selection and lifecycle maintenance, so total agent cost can exceed this budget.
+See [agent timing in studies](../python/README.md#1-configure-and-run-the-tournament).
+`exploration` defaults to `sqrt(2)`,
 `cutoff_evaluator` defaults to neutral, `rollout_policy` defaults to uniform random, and
 `tree_reuse` and `transpositions` default to false. Evaluator
 kinds currently supported by the catalog are `neutral` and `game_heuristic`. Rollout policy kinds

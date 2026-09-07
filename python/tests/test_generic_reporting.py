@@ -55,6 +55,8 @@ class GenericReportingTests(unittest.TestCase):
             ("mast", "", 70), ("mast", 0.2, ""),
             ("random", 0.01, ""),
         ], columns=["agent", "decision_seconds", "search_iterations"])
+        # Even when selection is cheap, throughput must use the total agent cost.
+        moves["selection_seconds"] = 0.001
         metrics = _decision_performance(moves, agents).set_index("agent")
         mast = metrics.loc["mast"]
         self.assertEqual(mast["decisions"], 4)

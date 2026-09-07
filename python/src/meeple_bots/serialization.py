@@ -27,6 +27,7 @@ def match_result_dict(result: MatchResult) -> dict[str, object]:
     """Serialize one match result using the version-1 trace representation."""
 
     payload = {
+        "unassigned_maintenance_seconds": list(result.unassigned_maintenance_seconds),
         "seed": result.seed,
         "plies": result.plies,
         "utilities": list(result.utilities),
@@ -37,6 +38,8 @@ def match_result_dict(result: MatchResult) -> dict[str, object]:
                 "player": move.player,
                 "action": action_dict(move.action),
                 "decision_seconds": move.decision_seconds,
+                "selection_seconds": move.selection_seconds,
+                "maintenance_seconds": move.maintenance_seconds,
                 "search_iterations": move.search_iterations,
                 "search_nodes": move.search_nodes,
                 "root_actions": [

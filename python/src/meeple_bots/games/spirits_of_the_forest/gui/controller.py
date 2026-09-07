@@ -200,6 +200,10 @@ class SpiritsOfTheForestGui:
             except Exception as error:
                 trace_error = str(error)
         with self._condition:
+            for displayed, recorded in zip(self._state["moves"], result.moves):
+                displayed["decision_seconds"] = recorded.decision_seconds
+            if result.moves:
+                self._state["last_decision_seconds"] = result.moves[-1].decision_seconds
             self._state.update(
                 status="finished",
                 active_player=None,
