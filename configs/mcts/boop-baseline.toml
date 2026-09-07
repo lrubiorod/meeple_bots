@@ -7,3 +7,4 @@ exploration = 0.25
 cutoff_evaluator = { kind = "game_heuristic", index = 0 }
 rollout_policy = { kind = "uniform_random" }
 tree_reuse = true
+transpositions = true
