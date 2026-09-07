@@ -35,6 +35,7 @@ from .api import (
     HumanMoveObservation,
     Match,
     MatchResult,
+    Mast,
     MctsAgent,
     MctsAgentBenchmark,
     NeutralEvaluator,
@@ -148,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
             "uniform",
             "random",
             "greedy",
+            "mast",
             "epsilon_greedy_heuristic",
             "epsilon_greedy",
             "epsilon",
@@ -2155,7 +2157,7 @@ def _configured_transpositions(values: dict[str, object], context: str) -> bool:
 def _configured_rollout_policy(
     values: dict[str, object],
     context: str,
-) -> UniformRandom | Greedy | EpsilonGreedy | ConditionalRollout:
+) -> UniformRandom | Greedy | EpsilonGreedy | Mast | ConditionalRollout:
     policy = values.get("rollout_policy", "uniform_random")
     if isinstance(policy, dict):
         kind = policy.get("kind")
@@ -2235,7 +2237,7 @@ def _configured_rollout_policy(
             values,
             context,
             share_legacy_cutoff=normalized_policy
-            not in {"uniform_random", "uniform", "random"},
+            not in {"uniform_random", "uniform", "random", "mast"},
         )
         epsilon = values.get("rollout_epsilon")
     else:
@@ -2245,6 +2247,10 @@ def _configured_rollout_policy(
         if evaluator is not None or epsilon is not None:
             raise ValueError(f"{context} uniform_random rollout accepts no evaluator or epsilon")
         return UniformRandom()
+    if normalized_policy == "mast":
+        if evaluator is not None:
+            raise ValueError(f"{context} mast rollout does not accept an evaluator")
+        return Mast(0.1 if epsilon is None else epsilon)
     if evaluator is None:
         raise ValueError(f"{context} {normalized_policy} rollout requires an evaluator")
     if normalized_policy == "greedy":
@@ -2257,7 +2263,7 @@ def _configured_rollout_policy(
         "epsilon",
     }:
         raise ValueError(
-            f"{context} rollout_policy must be uniform_random, greedy, or epsilon_greedy"
+            f"{context} rollout_policy must be uniform_random, greedy, epsilon_greedy, or mast"
         )
     epsilon = 0.1 if epsilon is None else epsilon
     if isinstance(epsilon, bool) or not isinstance(epsilon, (int, float)):
@@ -2306,8 +2312,10 @@ def _rollout_policy_name(agent: MctsAgent) -> str:
 
 
 def _base_rollout_policy_name(
-    policy: UniformRandom | Greedy | EpsilonGreedy,
+    policy: UniformRandom | Greedy | EpsilonGreedy | Mast,
 ) -> str:
+    if isinstance(policy, Mast):
+        return "mast"
     if isinstance(policy, EpsilonGreedy):
         return "epsilon_greedy"
     if isinstance(policy, Greedy):
@@ -2316,23 +2324,23 @@ def _base_rollout_policy_name(
 
 
 def _rollout_policy_evaluator(
-    policy: UniformRandom | Greedy | EpsilonGreedy | ConditionalRollout,
+    policy: UniformRandom | Greedy | EpsilonGreedy | Mast | ConditionalRollout,
 ) -> NeutralEvaluator | GameHeuristic | None:
     if isinstance(policy, ConditionalRollout):
         return _rollout_policy_evaluator(policy.primary)
-    return None if isinstance(policy, UniformRandom) else policy.evaluator
+    return None if isinstance(policy, (UniformRandom, Mast)) else policy.evaluator
 
 
 def _rollout_policy_epsilon(
-    policy: UniformRandom | Greedy | EpsilonGreedy | ConditionalRollout,
+    policy: UniformRandom | Greedy | EpsilonGreedy | Mast | ConditionalRollout,
 ) -> float | None:
     if isinstance(policy, ConditionalRollout):
         return _rollout_policy_epsilon(policy.primary)
-    return policy.epsilon if isinstance(policy, EpsilonGreedy) else None
+    return policy.epsilon if isinstance(policy, (EpsilonGreedy, Mast)) else None
 
 
 def _conditional_rollout_fields(
-    policy: UniformRandom | Greedy | EpsilonGreedy | ConditionalRollout,
+    policy: UniformRandom | Greedy | EpsilonGreedy | Mast | ConditionalRollout,
 ) -> dict[str, object]:
     if not isinstance(policy, ConditionalRollout):
         return {

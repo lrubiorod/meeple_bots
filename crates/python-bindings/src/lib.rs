@@ -1009,6 +1009,20 @@ fn parse_rollout_policy(
             }
             Ok(RolloutPolicyConfig::UniformRandom)
         }
+        "mast" => {
+            if evaluator.is_some() || heuristic.is_some() || parameters.is_some() {
+                return Err(PyValueError::new_err(
+                    "mast rollout does not accept an evaluator",
+                ));
+            }
+            let epsilon = epsilon.unwrap_or(0.1);
+            if !epsilon.is_finite() || !(0.0..=1.0).contains(&epsilon) {
+                return Err(PyValueError::new_err(
+                    "rollout_epsilon must be finite and between 0.0 and 1.0",
+                ));
+            }
+            Ok(RolloutPolicyConfig::Mast { epsilon })
+        }
         "greedy" => {
             if epsilon.is_some() {
                 return Err(PyValueError::new_err(
@@ -1038,7 +1052,7 @@ fn parse_rollout_policy(
             })
         }
         _ => Err(PyValueError::new_err(format!(
-            "unknown rollout policy {policy}; expected uniform_random, greedy, or epsilon_greedy"
+            "unknown rollout policy {policy}; expected uniform_random, greedy, epsilon_greedy, or mast"
         ))),
     }
 }

@@ -116,7 +116,20 @@ class EpsilonGreedy:
         _validate_state_evaluator("rollout evaluator", self.evaluator)
 
 
-BaseRolloutPolicy: TypeAlias = UniformRandom | Greedy | EpsilonGreedy
+@dataclass(frozen=True, slots=True)
+class Mast:
+    """Learn player/action averages per decision and use epsilon-greedy rollouts."""
+
+    epsilon: float = 0.1
+
+    def __post_init__(self) -> None:
+        if isinstance(self.epsilon, bool) or not isinstance(self.epsilon, (int, float)):
+            raise TypeError("rollout epsilon must be a number")
+        if not isfinite(self.epsilon) or not 0.0 <= self.epsilon <= 1.0:
+            raise ValueError("rollout epsilon must be finite and between 0.0 and 1.0")
+
+
+BaseRolloutPolicy: TypeAlias = UniformRandom | Greedy | EpsilonGreedy | Mast
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,9 +162,9 @@ class ConditionalRollout:
     def __post_init__(self) -> None:
         if not isinstance(self.condition, TurnPhaseIs):
             raise TypeError("rollout condition must be TurnPhaseIs")
-        if not isinstance(self.primary, (UniformRandom, Greedy, EpsilonGreedy)):
+        if not isinstance(self.primary, (UniformRandom, Greedy, EpsilonGreedy, Mast)):
             raise TypeError("primary rollout policy must be a base rollout policy")
-        if not isinstance(self.fallback, (UniformRandom, Greedy, EpsilonGreedy)):
+        if not isinstance(self.fallback, (UniformRandom, Greedy, EpsilonGreedy, Mast)):
             raise TypeError("fallback rollout policy must be a base rollout policy")
 
 
@@ -235,10 +248,10 @@ class MctsAgent:
             object.__setattr__(self, "heuristic", evaluator_heuristic)
         if not isinstance(
             self.rollout_policy,
-            (UniformRandom, Greedy, EpsilonGreedy, ConditionalRollout),
+            (UniformRandom, Greedy, EpsilonGreedy, Mast, ConditionalRollout),
         ):
             raise TypeError(
-                "rollout_policy must be UniformRandom, Greedy, EpsilonGreedy, "
+                "rollout_policy must be UniformRandom, Greedy, EpsilonGreedy, Mast, "
                 "or ConditionalRollout"
             )
         if self.progressive_bias is not None and not isinstance(
@@ -1461,6 +1474,8 @@ def _native_base_rollout_policy(
 ) -> tuple[str, str | None, int | None, dict[str, float] | None, float | None]:
     if isinstance(policy, UniformRandom):
         return "uniform_random", None, None, None, None
+    if isinstance(policy, Mast):
+        return "mast", None, None, None, float(policy.epsilon)
     if isinstance(policy, Greedy):
         evaluator, heuristic, params = _native_evaluator(policy.evaluator)
         return "greedy", evaluator, heuristic, params, None
@@ -1477,7 +1492,7 @@ def _native_base_rollout_policy(
 def _rollout_evaluator(policy: RolloutPolicy) -> StateEvaluator | None:
     if isinstance(policy, ConditionalRollout):
         return _rollout_evaluator(policy.primary)
-    if isinstance(policy, UniformRandom):
+    if isinstance(policy, (UniformRandom, Mast)):
         return None
     return policy.evaluator
 

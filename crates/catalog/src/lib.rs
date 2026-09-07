@@ -19,7 +19,7 @@ use meeple_bots_evaluation::{
     benchmark_mcts_agent as benchmark_typed_mcts_agent, evaluate_game as evaluate_typed_game,
 };
 use meeple_bots_mcts_agent::{
-    MctsAgent, PolicyCondition, RolloutPolicy, SelectionBias, StateEvaluator,
+    MctsAgent, PolicyCondition, RolloutMemory, RolloutPolicy, SelectionBias, StateEvaluator,
     TranspositionMctsAgent,
 };
 pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, SearchBudget, UniformRandom};
@@ -567,8 +567,11 @@ pub type SpiritsOfTheForestMctsAgent = TranspositionMctsAgent<
     ConfiguredRolloutPolicy,
     ConfiguredSelectionBias,
 >;
-pub type ConnectFourMctsAgent =
-    TranspositionMctsAgent<ConnectFour, meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>;
+pub type ConnectFourMctsAgent = TranspositionMctsAgent<
+    ConnectFour,
+    meeple_bots_mcts_agent::NeutralEvaluator,
+    RolloutPolicyConfig,
+>;
 pub type TicTacToeMctsAgent =
     TranspositionMctsAgent<TicTacToe, meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>;
 
@@ -669,6 +672,80 @@ impl SelectionBias<Boop> for ConfiguredSelectionBias {
 }
 
 impl RolloutPolicy<SpiritsOfTheForest> for ConfiguredRolloutPolicy {
+    fn validate(&self) -> Result<(), AgentError> {
+        match self {
+            Self::Standard(policy) => <RolloutPolicyConfig<EvaluatorConfig> as RolloutPolicy<
+                SpiritsOfTheForest,
+            >>::validate(policy),
+            Self::Conditional {
+                primary, fallback, ..
+            } => {
+                <RolloutPolicyConfig<EvaluatorConfig> as RolloutPolicy<SpiritsOfTheForest>>::validate(primary)?;
+                <RolloutPolicyConfig<EvaluatorConfig> as RolloutPolicy<SpiritsOfTheForest>>::validate(fallback)
+            }
+        }
+    }
+
+    fn action_for_learning(
+        &self,
+        action: &SpiritsOfTheForestAction,
+    ) -> Option<SpiritsOfTheForestAction> {
+        let uses_mast = match self {
+            Self::Standard(policy) => matches!(policy, RolloutPolicyConfig::Mast { .. }),
+            Self::Conditional {
+                primary, fallback, ..
+            } => {
+                matches!(primary, RolloutPolicyConfig::Mast { .. })
+                    || matches!(fallback, RolloutPolicyConfig::Mast { .. })
+            }
+        };
+        uses_mast.then_some(*action)
+    }
+
+    fn finish_simulation(
+        &self,
+        memory: &mut RolloutMemory<SpiritsOfTheForestAction>,
+        root_player: PlayerId,
+        utility: f64,
+    ) {
+        let policy = match self {
+            Self::Standard(policy) => policy,
+            Self::Conditional { primary, .. } => primary,
+        };
+        <RolloutPolicyConfig<EvaluatorConfig> as RolloutPolicy<SpiritsOfTheForest>>::finish_simulation(policy, memory, root_player, utility);
+    }
+
+    fn select_action_with_memory<R: RandomSource + ?Sized>(
+        &self,
+        game: &SpiritsOfTheForest,
+        state: &<SpiritsOfTheForest as Game>::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+        memory: &RolloutMemory<SpiritsOfTheForestAction>,
+        rng: &mut R,
+    ) -> Result<SpiritsOfTheForestAction, AgentError> {
+        let policy = match self {
+            Self::Standard(policy) => policy,
+            Self::Conditional {
+                condition: RolloutConditionConfig::TurnPhase(phase),
+                primary,
+                fallback,
+            } => {
+                if SpiritsTurnPhaseCondition(*phase).matches(
+                    game,
+                    state,
+                    active_player,
+                    root_player,
+                ) {
+                    primary
+                } else {
+                    fallback
+                }
+            }
+        };
+        policy.select_action_with_memory(game, state, active_player, root_player, memory, rng)
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &self,
         game: &SpiritsOfTheForest,
@@ -762,8 +839,23 @@ pub fn configured_connect_four_mcts(
     config: MctsAgentConfig,
 ) -> Result<ConnectFourMctsAgent, CatalogError> {
     validate_uninformed_agent(GameId::ConnectFour, &config)?;
+    let rollout_policy = match config.search.rollout_policy {
+        ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::UniformRandom) => {
+            RolloutPolicyConfig::UniformRandom
+        }
+        ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::Mast { epsilon }) => {
+            RolloutPolicyConfig::Mast { epsilon }
+        }
+        _ => unreachable!("Connect Four rollout policy was validated"),
+    };
     Ok(TranspositionMctsAgent::new(
-        MctsAgent::new(uniform_search_config(config.search)),
+        MctsAgent::new(MctsConfig {
+            budget: config.search.budget,
+            exploration: config.search.exploration,
+            rollout_depth: config.search.rollout_depth,
+            rollout_policy,
+        })
+        .with_root_diagnostics(config.root_diagnostics),
         config.tree_reuse,
         config.transpositions,
     ))
@@ -849,6 +941,14 @@ fn validate_base_rollout_policy<G: HeuristicGame>(
 ) -> Result<(), CatalogError> {
     match policy {
         RolloutPolicyConfig::UniformRandom => Ok(()),
+        RolloutPolicyConfig::Mast { epsilon } => {
+            if !epsilon.is_finite() || !(0.0..=1.0).contains(epsilon) {
+                return Err(CatalogError::InvalidMctsConfig(
+                    "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
+                ));
+            }
+            Ok(())
+        }
         RolloutPolicyConfig::Greedy { evaluator } => validate_evaluator(game_id, game, evaluator),
         RolloutPolicyConfig::EpsilonGreedy { epsilon, evaluator } => {
             if !epsilon.is_finite() || !(0.0..=1.0).contains(epsilon) {
@@ -940,10 +1040,26 @@ fn validate_uninformed_agent(game: GameId, config: &MctsAgentConfig) -> Result<(
     if let EvaluatorConfig::GameHeuristic { index, .. } = &config.cutoff_evaluator {
         return Err(unsupported_heuristic(game, *index, 0));
     }
-    if !matches!(
-        config.search.rollout_policy,
-        ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::UniformRandom)
-    ) {
+    let connect_four_mast = if let (
+        GameId::ConnectFour,
+        ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::Mast { epsilon }),
+    ) = (game, &config.search.rollout_policy)
+    {
+        if !epsilon.is_finite() || !(0.0..=1.0).contains(epsilon) {
+            return Err(CatalogError::InvalidMctsConfig(
+                "MCTS rollout epsilon must be finite and between 0.0 and 1.0",
+            ));
+        }
+        true
+    } else {
+        false
+    };
+    if !connect_four_mast
+        && !matches!(
+            config.search.rollout_policy,
+            ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::UniformRandom)
+        )
+    {
         return Err(CatalogError::InvalidMctsConfig(
             "informed rollout requires a game with MCTS evaluators",
         ));
@@ -1863,6 +1979,54 @@ mod tests {
 
         assert_eq!(result.utilities.len(), 2);
         assert!((5..=9).contains(&result.plies));
+    }
+
+    #[test]
+    fn connect_four_mast_epsilon_one_preserves_uniform_search() {
+        use meeple_bots_core::{DecisionContext, PositionStatus};
+        let AgentConfig::Mcts(mut config) = mcts(None) else {
+            unreachable!()
+        };
+        config.search.budget = SearchBudget::Iterations(NonZeroU32::new(64).unwrap());
+        config.search.rollout_depth = 42;
+        config.root_diagnostics = true;
+        let mut uniform = configured_connect_four_mcts(config.clone()).unwrap();
+        config.search.rollout_policy = RolloutPolicyConfig::Mast { epsilon: 1.0 }.into();
+        let mut mast = configured_connect_four_mcts(config).unwrap();
+        let game = ConnectFour;
+        let mut state = game.initial_state();
+        let mut uniform_rng = SplitMix64::new(42);
+        let mut mast_rng = SplitMix64::new(42);
+        while let PositionStatus::PlayerTurn(player) = game.status(&state) {
+            let a = uniform
+                .select_action(
+                    DecisionContext::new(&game, &state, player),
+                    &mut uniform_rng,
+                )
+                .unwrap();
+            let b = mast
+                .select_action(DecisionContext::new(&game, &state, player), &mut mast_rng)
+                .unwrap();
+            assert_eq!(a, b);
+            assert_eq!(uniform.last_decision_stats(), mast.last_decision_stats());
+            assert!(!mast.last_decision_stats().root_actions.is_empty());
+            game.apply_action(&mut state, &a).unwrap();
+        }
+    }
+
+    #[test]
+    fn connect_four_mast_validates_epsilon_and_rejects_heuristics() {
+        let AgentConfig::Mcts(mut config) = mcts(None) else {
+            unreachable!()
+        };
+        for epsilon in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
+            config.search.rollout_policy = RolloutPolicyConfig::Mast { epsilon }.into();
+            assert!(configured_connect_four_mcts(config.clone()).is_err());
+        }
+        config.search.rollout_policy = RolloutPolicyConfig::Mast { epsilon: 0.25 }.into();
+        assert!(configured_connect_four_mcts(config.clone()).is_ok());
+        config.cutoff_evaluator = EvaluatorConfig::game_heuristic(0);
+        assert!(configured_connect_four_mcts(config).is_err());
     }
 
     #[test]

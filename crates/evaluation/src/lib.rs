@@ -11,7 +11,7 @@ use meeple_bots_core::{
     Agent, AgentError, DecisionContext, DeterministicGame, IllegalAction, PerfectInformationGame,
     PositionStatus, RandomSource, TwoPlayerZeroSumGame,
 };
-use meeple_bots_mcts_agent::{MctsAgent, MctsConfig, SearchBudget};
+use meeple_bots_mcts_agent::{MctsAgent, MctsConfig, SearchBudget, UniformRandom};
 use meeple_bots_simulation::SplitMix64;
 
 const CALIBRATION_PROBE_ITERATIONS: u32 = 8;
@@ -631,7 +631,7 @@ where
         budget: SearchBudget::Iterations(iterations),
         exploration: std::f64::consts::SQRT_2,
         rollout_depth,
-        ..MctsConfig::default()
+        rollout_policy: UniformRandom,
     });
     let mut rng = SplitMix64::new(seed);
     let started = Instant::now();

@@ -422,8 +422,14 @@ rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = 
 ```
 
 This example uses heuristic 0 during rollout selection but not at the depth cutoff. The inverse and
-combined configurations are valid too. `uniform_random`, `greedy`, and `epsilon_greedy` are the
-built-in policies. Informed iterations cost more because they evaluate every legal successor, so
+combined configurations are valid too. `uniform_random`, `greedy`, `epsilon_greedy`, and `mast` are the
+built-in policies. Use `rollout_policy = { kind = "mast", epsilon = 0.1 }` in TOML or
+`Mast(epsilon=0.1)` from `meeple_bots` in Python. MAST learns exact action averages per
+player within each decision, using terminal results or the cutoff evaluator. It accepts
+no rollout evaluator and resets its statistics even when the search tree is reused.
+See the [MAST behavior and experiment notes](../agents/README.md#reusable-profiles).
+Greedy and epsilon-greedy iterations evaluate legal successors; MAST instead maintains
+an action table. These policies have different iteration costs, so
 compare policies with the same `time_budget` as well as with equal iterations. A timed decision
 finishes its current iteration, can slightly exceed its deadline, and records its actual elapsed
 time, iterations, and nodes in the JSONL move. See the executable

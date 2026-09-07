@@ -27,6 +27,7 @@ from meeple_bots import (
     HumanMoveObservation,
     Match,
     MatchMoveObservation,
+    Mast,
     MctsAgent,
     NeutralEvaluator,
     ProgressiveBias,
@@ -554,6 +555,95 @@ class MatchApiTests(unittest.TestCase):
 
     def test_uniform_random_is_the_default_rollout_policy(self) -> None:
         self.assertIsInstance(MctsAgent().rollout_policy, UniformRandom)
+
+    def test_connect_four_mast_supports_iterations_and_time_budgets(self) -> None:
+        for budget in ({"iterations": 50}, {"time_budget": 0.001}):
+            result = Match(
+                game=ConnectFour(),
+                first=MctsAgent(**budget, rollout_depth=42, rollout_policy=Mast(0.25)),
+                second=RandomAgent(), seed=23, max_plies=42,
+            ).run()
+            self.assertLessEqual(result.plies, 42)
+            own_moves = [move for move in result.moves if move.player == 0]
+            self.assertTrue(all(move.search_iterations >= 1 for move in own_moves))
+            if "iterations" in budget:
+                self.assertTrue(all(move.search_iterations == 50 for move in own_moves))
+
+    def test_connect_four_mast_epsilon_one_matches_uniform_trace(self) -> None:
+        results = [Match(
+            game=ConnectFour(),
+            first=MctsAgent(iterations=50, rollout_depth=42, rollout_policy=policy),
+            second=RandomAgent(), seed=23, max_plies=42,
+        ).run() for policy in (UniformRandom(), Mast(1.0))]
+        self.assertEqual(results[0].moves, results[1].moves)
+        self.assertEqual(results[0].utilities, results[1].utilities)
+
+    def test_mast_validates_epsilon_and_serializes_without_an_evaluator(self) -> None:
+        for epsilon in (-0.1, 1.1, float("nan"), float("inf")):
+            with self.subTest(epsilon=epsilon), self.assertRaises(ValueError):
+                Mast(epsilon)
+        for epsilon in (True, "0.1"):
+            with self.subTest(epsilon=epsilon), self.assertRaises(TypeError):
+                Mast(epsilon)
+        row = _batch_agent_dict("mast", MctsAgent(rollout_policy=Mast(0.25)))
+        self.assertEqual(row["rollout_policy"], "mast")
+        self.assertEqual(row["rollout_epsilon"], 0.25)
+        self.assertIsNone(row["rollout_evaluator"])
+
+    def test_mast_runs_on_boop_and_spotf_with_both_search_engines(self) -> None:
+        for game in (Boop(), SpiritsOfTheForest()):
+            for transpositions in (False, True):
+                with self.subTest(game=game, transpositions=transpositions):
+                    result = Match(
+                        game=game,
+                        first=MctsAgent(
+                            iterations=8,
+                            rollout_depth=4,
+                            cutoff_evaluator=GameHeuristic(0),
+                            rollout_policy=Mast(),
+                            tree_reuse=True,
+                            transpositions=transpositions,
+                        ),
+                        second=RandomAgent(),
+                        seed=19,
+                    ).run()
+                    self.assertGreater(result.plies, 0)
+
+    def test_conditional_mast_runs_on_spotf(self) -> None:
+        for primary, fallback in ((Mast(), UniformRandom()), (UniformRandom(), Mast()), (Mast(0.1), Mast(0.25))):
+            with self.subTest(primary=primary, fallback=fallback):
+                result = Match(
+                    game=SpiritsOfTheForest(),
+                    first=MctsAgent(
+                        iterations=8,
+                        rollout_depth=4,
+                        rollout_policy=ConditionalRollout(TurnPhaseIs("collect"), primary, fallback),
+                    ),
+                    second=RandomAgent(),
+                    seed=19,
+                ).run()
+                self.assertGreater(result.plies, 0)
+
+    def test_tournament_parses_mast_epsilon_grid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory, "mast.toml")
+            config_path.write_text(
+                '\n'.join([
+                    'game = "boop"',
+                    'matches_per_pair = 2',
+                    '[[agents]]',
+                    'name = "control"',
+                    'kind = "random"',
+                    '[[agents]]',
+                    'name = "mast"',
+                    'kind = "mcts"',
+                    'iterations = 8',
+                    'rollout_depth = 4',
+                    'rollout_policy = { kind = "mast", epsilon = [0.1, 0.25] }',
+                ]), encoding="utf-8",
+            )
+            config = _load_tournament_config(config_path)
+        self.assertEqual([entry.agent.rollout_policy for entry in config.agents[1:]], [Mast(0.1), Mast(0.25)])
 
     def test_epsilon_greedy_rollout_runs_with_a_supported_heuristic(self) -> None:
         result = Match(

@@ -239,8 +239,40 @@ Exactly one of `iterations` or `time_budget` is required, together with `rollout
 `cutoff_evaluator` defaults to neutral, `rollout_policy` defaults to uniform random, and
 `tree_reuse` and `transpositions` default to false. Evaluator
 kinds currently supported by the catalog are `neutral` and `game_heuristic`. Rollout policy kinds
-are `uniform_random`, `greedy`, and `epsilon_greedy`. The legacy `use_heuristic`,
+are `uniform_random`, `greedy`, `epsilon_greedy`, and `mast`. The legacy `use_heuristic`,
 `heuristic_index`, `rollout_heuristic_index`, and flat rollout fields remain accepted.
+
+MAST (Move-Average Sampling Technique) learns a mean utility for each exact action and
+acting player across simulations within one decision:
+
+```toml
+rollout_policy = { kind = "mast", epsilon = 0.1 }
+```
+
+This implementation uses epsilon-greedy sampling: choose uniformly with probability
+`epsilon`, otherwise choose a legal action with the highest learned mean, breaking ties
+uniformly. Unseen actions have value zero. `epsilon` must be finite and in `[0, 1]`;
+Python and TOML default it to `0.1`. MAST has no rollout evaluator of its own.
+Every action occurrence in tree selection, expansion, and rollout receives the final
+simulation utility, with its sign adjusted for the acting player. Truncated simulations
+use the configured cutoff evaluator, so the learned values can inherit its biases.
+Statistics reset at every decision, including with tree reuse or transpositions enabled,
+and are never shared between agents or matches. A standalone Rust `select_action` call
+has no search memory and therefore samples uniformly.
+
+The configurable Rust policy requires actions implementing `Clone + Eq + Hash` to copy
+and identify table keys. Concrete `UniformRandom`, `Greedy`, and `EpsilonGreedy` policies
+retain their previous action requirements. In SPOTF, conditional policies can include
+MAST in either branch; both branches share the same action table and the full trajectory
+trains it. In Boop, action identity includes piece, position, and resolution; SPOTF uses
+the complete action, including positions and any sacrifice. No symmetry or feature
+grouping is applied.
+
+For an initial study, compare uniform rollouts and MAST with identical search settings
+and paired seats. Measure elapsed time as well as wins, then confirm results with equal
+time budgets. SPOTF's shrinking tile supply makes complete rollouts useful for a separate
+experiment without cutoff feedback; Boop with a short horizon tests the combination of
+MAST and its cutoff heuristic. Neither setup guarantees stronger play.
 
 ```bash
 meeple-bots match --game boop --first mcts --second random \

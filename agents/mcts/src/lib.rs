@@ -73,6 +73,46 @@ pub enum RolloutPolicyConfig<E = NeutralEvaluator> {
         epsilon: f64,
         evaluator: E,
     },
+    /// Learn action values during each search and use epsilon-greedy rollouts.
+    Mast {
+        epsilon: f64,
+    },
+}
+
+/// Statistics shared by simulations within one decision, never across decisions.
+pub struct RolloutMemory<A> {
+    values: HashMap<(PlayerId, A), MoveAverage>,
+    trajectory: Vec<(PlayerId, A)>,
+}
+
+impl<A> Default for RolloutMemory<A> {
+    fn default() -> Self {
+        Self {
+            values: HashMap::new(),
+            trajectory: Vec::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct MoveAverage {
+    visits: u64,
+    total: f64,
+}
+
+impl<A: Eq + Hash> RolloutMemory<A> {
+    fn finish_simulation(&mut self, root_player: PlayerId, utility: f64) {
+        // Every occurrence in selection, expansion, and rollout receives credit.
+        for (player, action) in self.trajectory.drain(..) {
+            let value = self.values.entry((player, action)).or_default();
+            value.visits += 1;
+            value.total += if player == root_player {
+                utility
+            } else {
+                -utility
+            };
+        }
+    }
 }
 
 pub trait StateEvaluator<G: DeterministicGame> {
@@ -139,6 +179,33 @@ where
     /// Validates configuration before a search starts.
     fn validate(&self) -> Result<(), AgentError> {
         Ok(())
+    }
+
+    /// Select with statistics accumulated by earlier simulations in this search.
+    fn select_action_with_memory<R: RandomSource + ?Sized>(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+        memory: &RolloutMemory<G::Action>,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        let _ = memory;
+        self.select_action(game, state, active_player, root_player, rng)
+    }
+
+    /// Record tree and rollout actions only for policies that learn from results.
+    fn action_for_learning(&self, _action: &G::Action) -> Option<G::Action> {
+        None
+    }
+
+    fn finish_simulation(
+        &self,
+        _memory: &mut RolloutMemory<G::Action>,
+        _root_player: PlayerId,
+        _utility: f64,
+    ) {
     }
 
     fn select_action<R: RandomSource + ?Sized>(
@@ -309,6 +376,56 @@ where
         self.fallback.validate()
     }
 
+    fn action_for_learning(&self, action: &G::Action) -> Option<G::Action> {
+        self.primary
+            .action_for_learning(action)
+            .or_else(|| self.fallback.action_for_learning(action))
+    }
+
+    fn finish_simulation(
+        &self,
+        memory: &mut RolloutMemory<G::Action>,
+        root_player: PlayerId,
+        utility: f64,
+    ) {
+        self.primary.finish_simulation(memory, root_player, utility);
+        self.fallback
+            .finish_simulation(memory, root_player, utility);
+    }
+
+    fn select_action_with_memory<R: RandomSource + ?Sized>(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+        memory: &RolloutMemory<G::Action>,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        if self
+            .condition
+            .matches(game, state, active_player, root_player)
+        {
+            self.primary.select_action_with_memory(
+                game,
+                state,
+                active_player,
+                root_player,
+                memory,
+                rng,
+            )
+        } else {
+            self.fallback.select_action_with_memory(
+                game,
+                state,
+                active_player,
+                root_player,
+                memory,
+                rng,
+            )
+        }
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &self,
         game: &G,
@@ -434,13 +551,67 @@ impl<G, E> RolloutPolicy<G> for RolloutPolicyConfig<E>
 where
     G: DeterministicGame,
     G::State: Clone,
+    G::Action: Clone + Eq + Hash,
     E: StateEvaluator<G>,
 {
     fn validate(&self) -> Result<(), AgentError> {
         match self {
-            Self::EpsilonGreedy { epsilon, .. } => validate_rollout_epsilon(*epsilon),
+            Self::EpsilonGreedy { epsilon, .. } | Self::Mast { epsilon } => {
+                validate_rollout_epsilon(*epsilon)
+            }
             Self::UniformRandom | Self::Greedy { .. } => Ok(()),
         }
+    }
+
+    fn action_for_learning(&self, action: &G::Action) -> Option<G::Action> {
+        matches!(self, Self::Mast { .. }).then(|| action.clone())
+    }
+
+    fn finish_simulation(
+        &self,
+        memory: &mut RolloutMemory<G::Action>,
+        root_player: PlayerId,
+        utility: f64,
+    ) {
+        memory.finish_simulation(root_player, utility);
+    }
+
+    fn select_action_with_memory<R: RandomSource + ?Sized>(
+        &self,
+        game: &G,
+        state: &G::State,
+        active_player: PlayerId,
+        root_player: PlayerId,
+        memory: &RolloutMemory<G::Action>,
+        rng: &mut R,
+    ) -> Result<G::Action, AgentError> {
+        let Self::Mast { epsilon } = self else {
+            return self.select_action(game, state, active_player, root_player, rng);
+        };
+        if *epsilon == 1.0 || (*epsilon > 0.0 && rng.unit_f64() < *epsilon) {
+            return UniformRandom.select_action(game, state, active_player, root_player, rng);
+        }
+        let mut best = f64::NEG_INFINITY;
+        let mut candidates = Vec::new();
+        for action in game.legal_actions(state) {
+            let mean = memory
+                .values
+                .get(&(active_player, action.clone()))
+                .map_or(0.0, |value| value.total / value.visits as f64);
+            match mean.total_cmp(&best) {
+                Ordering::Greater => {
+                    best = mean;
+                    candidates.clear();
+                    candidates.push(action);
+                }
+                Ordering::Equal => candidates.push(action),
+                Ordering::Less => {}
+            }
+        }
+        let index = rng
+            .index(candidates.len())
+            .ok_or(AgentError::NoLegalActions)?;
+        Ok(candidates.swap_remove(index))
     }
 
     fn select_action<R: RandomSource + ?Sized>(
@@ -452,7 +623,8 @@ where
         rng: &mut R,
     ) -> Result<G::Action, AgentError> {
         match self {
-            Self::UniformRandom => {
+            // A standalone selection has no previous simulations to learn from.
+            Self::UniformRandom | Self::Mast { .. } => {
                 UniformRandom.select_action(game, state, active_player, root_player, rng)
             }
             Self::Greedy { evaluator } => {
@@ -719,6 +891,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
         let bias_enabled = bias_weight > 0.0;
 
         let search_started = Instant::now();
+        let mut rollout_memory = RolloutMemory::default();
         let mut completed_iterations = 0_u64;
         let mut path = Vec::new();
         loop {
@@ -772,6 +945,11 @@ impl<C, P, B> MctsAgent<C, P, B> {
                                 .map(|indices| indices.unexpanded.swap_remove(unexpanded_slot))
                         })
                         .flatten();
+                    if let Some(recorded) =
+                        self.config.rollout_policy.action_for_learning(&unexpanded)
+                    {
+                        rollout_memory.trajectory.push((active_player, recorded));
+                    }
                     game.apply_action(&mut state, &unexpanded)
                         .map_err(|error| AgentError::message(error.to_string()))?;
 
@@ -824,21 +1002,28 @@ impl<C, P, B> MctsAgent<C, P, B> {
                     .action
                     .as_ref()
                     .expect("child has an action");
+                if let Some(recorded) = self.config.rollout_policy.action_for_learning(action) {
+                    rollout_memory.trajectory.push((active_player, recorded));
+                }
                 game.apply_action(&mut state, action)
                     .map_err(|error| AgentError::message(error.to_string()))?;
                 node_index = selected;
                 path.push(node_index);
             }
 
-            let utility = rollout(
+            let utility = rollout_with_memory(
                 game,
                 &mut state,
                 root_player,
                 self.config.rollout_depth,
                 &self.config.rollout_policy,
                 &self.cutoff_evaluator,
+                &mut rollout_memory,
                 rng,
             )?;
+            self.config
+                .rollout_policy
+                .finish_simulation(&mut rollout_memory, root_player, utility);
             for &visited in &path {
                 nodes[visited].visits += 1;
                 nodes[visited].total_utility += utility;
@@ -927,6 +1112,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
         let bias_enabled = bias_weight > 0.0;
 
         let search_started = Instant::now();
+        let mut rollout_memory = RolloutMemory::default();
         let mut completed_iterations = 0_u64;
         let mut path_nodes = Vec::new();
         let mut path_edges = Vec::new();
@@ -984,6 +1170,10 @@ impl<C, P, B> MctsAgent<C, P, B> {
                                 .map(|indices| indices.unexpanded.swap_remove(unexpanded_slot))
                         })
                         .flatten();
+                    if let Some(recorded) = self.config.rollout_policy.action_for_learning(&action)
+                    {
+                        rollout_memory.trajectory.push((active_player, recorded));
+                    }
                     game.apply_action(&mut state, &action)
                         .map_err(|error| AgentError::message(error.to_string()))?;
 
@@ -1044,6 +1234,9 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 );
                 let action = graph.nodes[node_index].edges[edge_index].action.clone();
                 let child_index = graph.nodes[node_index].edges[edge_index].child;
+                if let Some(recorded) = self.config.rollout_policy.action_for_learning(&action) {
+                    rollout_memory.trajectory.push((active_player, recorded));
+                }
                 game.apply_action(&mut state, &action)
                     .map_err(|error| AgentError::message(error.to_string()))?;
                 path_edges.push((node_index, edge_index));
@@ -1054,15 +1247,19 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 path_nodes.push(node_index);
             }
 
-            let utility = rollout(
+            let utility = rollout_with_memory(
                 game,
                 &mut state,
                 root_player,
                 self.config.rollout_depth,
                 &self.config.rollout_policy,
                 &self.cutoff_evaluator,
+                &mut rollout_memory,
                 rng,
             )?;
+            self.config
+                .rollout_policy
+                .finish_simulation(&mut rollout_memory, root_player, utility);
             for &visited in &path_nodes {
                 graph.nodes[visited].visits += 1;
                 graph.nodes[visited].total_utility += utility;
@@ -2089,6 +2286,7 @@ fn uct_score<A>(node: &Node<A>, parent_visits: f64, maximizing: bool, exploratio
     exploitation + exploration * (parent_visits.ln() / f64::from(node.visits)).sqrt()
 }
 
+#[cfg(test)]
 fn rollout<G, P, C, R>(
     game: &G,
     state: &mut G::State,
@@ -2105,13 +2303,52 @@ where
     C: StateEvaluator<G>,
     R: RandomSource + ?Sized,
 {
+    rollout_with_memory(
+        game,
+        state,
+        root_player,
+        max_depth,
+        policy,
+        cutoff_evaluator,
+        &mut RolloutMemory::default(),
+        rng,
+    )
+}
+
+fn rollout_with_memory<G, P, C, R>(
+    game: &G,
+    state: &mut G::State,
+    root_player: PlayerId,
+    max_depth: u32,
+    policy: &P,
+    cutoff_evaluator: &C,
+    memory: &mut RolloutMemory<G::Action>,
+    rng: &mut R,
+) -> Result<f64, AgentError>
+where
+    G: DeterministicGame,
+    G::State: Clone,
+    P: RolloutPolicy<G>,
+    C: StateEvaluator<G>,
+    R: RandomSource + ?Sized,
+{
     for _ in 0..max_depth {
         match game.status(state) {
             PositionStatus::Terminal => {
                 return terminal_utility(game, state, root_player);
             }
             PositionStatus::PlayerTurn(active_player) => {
-                let action = policy.select_action(game, state, active_player, root_player, rng)?;
+                let action = policy.select_action_with_memory(
+                    game,
+                    state,
+                    active_player,
+                    root_player,
+                    memory,
+                    rng,
+                )?;
+                if let Some(recorded) = policy.action_for_learning(&action) {
+                    memory.trajectory.push((active_player, recorded));
+                }
                 game.apply_action(state, &action)
                     .map_err(|error| AgentError::message(error.to_string()))?;
             }
@@ -2178,6 +2415,262 @@ mod tests {
     use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
     use super::*;
+
+    #[test]
+    fn mast_averages_credit_each_occurrence_from_the_acting_players_perspective() {
+        let mut memory = RolloutMemory::<u8>::default();
+        memory.trajectory = vec![
+            (PlayerId::FIRST, 0),
+            (PlayerId::SECOND, 0),
+            (PlayerId::FIRST, 0),
+        ];
+        memory.finish_simulation(PlayerId::SECOND, 0.5);
+        memory.trajectory.push((PlayerId::FIRST, 0));
+        memory.finish_simulation(PlayerId::SECOND, -1.0);
+        let first = &memory.values[&(PlayerId::FIRST, 0)];
+        assert_eq!(first.visits, 3);
+        assert_eq!(first.total, 0.0);
+        assert_eq!(memory.values[&(PlayerId::SECOND, 0)].total, 0.5);
+        assert!(memory.trajectory.is_empty());
+    }
+
+    #[test]
+    fn mast_uses_player_averages_and_only_legal_actions() {
+        let game = TicTacToe;
+        let mut state = game.initial_state();
+        let policy = RolloutPolicyConfig::<NeutralEvaluator>::Mast { epsilon: 0.0 };
+        let mut memory = RolloutMemory::default();
+        for (player, chosen) in [(PlayerId::FIRST, action(0)), (PlayerId::SECOND, action(1))] {
+            memory.values.insert(
+                (player, chosen),
+                MoveAverage {
+                    visits: 2,
+                    total: 1.0,
+                },
+            );
+            let selected = policy
+                .select_action_with_memory(
+                    &game,
+                    &state,
+                    player,
+                    PlayerId::FIRST,
+                    &memory,
+                    &mut SplitMix64::new(42),
+                )
+                .unwrap();
+            assert_eq!(selected, chosen);
+        }
+        game.apply_action(&mut state, &action(0)).unwrap();
+        for seed in 0..16 {
+            let selected = policy
+                .select_action_with_memory(
+                    &game,
+                    &state,
+                    PlayerId::FIRST,
+                    PlayerId::FIRST,
+                    &memory,
+                    &mut SplitMix64::new(seed),
+                )
+                .unwrap();
+            assert_ne!(selected, action(0));
+        }
+        // Unseen actions have neutral value and can beat a known losing action.
+        memory.values.insert(
+            (PlayerId::SECOND, action(1)),
+            MoveAverage {
+                visits: 1,
+                total: -1.0,
+            },
+        );
+        let selected = policy
+            .select_action_with_memory(
+                &game,
+                &state,
+                PlayerId::SECOND,
+                PlayerId::FIRST,
+                &memory,
+                &mut SplitMix64::new(42),
+            )
+            .unwrap();
+        assert_ne!(selected, action(1));
+    }
+
+    #[test]
+    fn mast_epsilon_one_matches_uniform_with_reuse_and_transpositions() {
+        let game = TicTacToe;
+        for reuse in [false, true] {
+            for transpositions in [false, true] {
+                for seed in 0..8 {
+                    let make_agent = |rollout_policy| {
+                        TranspositionMctsAgent::new(
+                            MctsAgent::new(MctsConfig {
+                                budget: SearchBudget::Iterations(NonZeroU32::new(64).unwrap()),
+                                exploration: 1.0,
+                                rollout_depth: 9,
+                                rollout_policy,
+                            })
+                            .with_root_diagnostics(true),
+                            reuse,
+                            transpositions,
+                        )
+                    };
+                    let mut uniform =
+                        make_agent(RolloutPolicyConfig::<NeutralEvaluator>::UniformRandom);
+                    let mut mast = make_agent(RolloutPolicyConfig::Mast { epsilon: 1.0 });
+                    let mut state = game.initial_state();
+                    let mut uniform_rng = SplitMix64::new(seed);
+                    let mut mast_rng = SplitMix64::new(seed);
+                    uniform.on_match_start(&game, &state, PlayerId::FIRST);
+                    mast.on_match_start(&game, &state, PlayerId::FIRST);
+                    while let PositionStatus::PlayerTurn(player) = game.status(&state) {
+                        let chosen = if player == PlayerId::FIRST {
+                            let first = uniform
+                                .select_action(
+                                    DecisionContext::new(&game, &state, player),
+                                    &mut uniform_rng,
+                                )
+                                .unwrap();
+                            let second = mast
+                                .select_action(
+                                    DecisionContext::new(&game, &state, player),
+                                    &mut mast_rng,
+                                )
+                                .unwrap();
+                            assert_eq!(first, second);
+                            assert_eq!(uniform.last_decision_stats(), mast.last_decision_stats());
+                            first
+                        } else {
+                            game.legal_actions(&state).next().unwrap()
+                        };
+                        game.apply_action(&mut state, &chosen).unwrap();
+                        uniform.on_action_applied(&game, &state, player, &chosen);
+                        mast.on_action_applied(&game, &state, player, &chosen);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mast_restarts_learning_each_decision() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        let mut agent = MctsAgent::new(MctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(128).unwrap()),
+            exploration: 1.0,
+            rollout_depth: 9,
+            rollout_policy: RolloutPolicyConfig::<NeutralEvaluator>::Mast { epsilon: 0.1 },
+        })
+        .with_root_diagnostics(true);
+        let chosen = agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut SplitMix64::new(42),
+            )
+            .unwrap();
+        let stats = agent.decision_stats();
+        let repeated = agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut SplitMix64::new(42),
+            )
+            .unwrap();
+        assert_eq!(chosen, repeated);
+        assert_eq!(stats, agent.decision_stats());
+    }
+
+    #[test]
+    fn mast_records_tree_actions_and_learns_cutoff_values_in_both_search_engines() {
+        struct InspectMast {
+            calls: std::rc::Rc<Cell<u32>>,
+            expected_actions: usize,
+        }
+        impl RolloutPolicy<TicTacToe> for InspectMast {
+            fn select_action<R: RandomSource + ?Sized>(
+                &self,
+                game: &TicTacToe,
+                state: &<TicTacToe as Game>::State,
+                active: PlayerId,
+                root: PlayerId,
+                rng: &mut R,
+            ) -> Result<TicTacToeAction, AgentError> {
+                UniformRandom.select_action(game, state, active, root, rng)
+            }
+            fn action_for_learning(&self, action: &TicTacToeAction) -> Option<TicTacToeAction> {
+                Some(*action)
+            }
+            fn finish_simulation(
+                &self,
+                memory: &mut RolloutMemory<TicTacToeAction>,
+                root: PlayerId,
+                utility: f64,
+            ) {
+                assert_eq!(memory.trajectory.len(), self.expected_actions);
+                assert_eq!(
+                    memory
+                        .values
+                        .values()
+                        .map(|value| value.visits)
+                        .sum::<u64>(),
+                    u64::from(self.calls.get()) * self.expected_actions as u64
+                );
+                for (index, (player, _)) in memory.trajectory.iter().enumerate() {
+                    assert_eq!(
+                        *player,
+                        if index % 2 == 0 {
+                            PlayerId::FIRST
+                        } else {
+                            PlayerId::SECOND
+                        }
+                    );
+                }
+                assert_eq!(utility, 0.4);
+                memory.finish_simulation(root, utility);
+                for ((player, _), value) in &memory.values {
+                    let expected = if *player == root { 0.4 } else { -0.4 };
+                    assert!((value.total / value.visits as f64 - expected).abs() < 1e-12);
+                }
+                self.calls.set(self.calls.get() + 1);
+            }
+        }
+        for transpositions in [false, true] {
+            for rollout_depth in [0, 2] {
+                let calls = std::rc::Rc::new(Cell::new(0));
+                let mut agent = TranspositionMctsAgent::new(
+                    MctsAgent::with_cutoff_evaluator(
+                        MctsConfig {
+                            budget: SearchBudget::Iterations(NonZeroU32::new(2).unwrap()),
+                            exploration: 1.0,
+                            rollout_depth,
+                            rollout_policy: InspectMast {
+                                calls: calls.clone(),
+                                expected_actions: 1 + rollout_depth as usize,
+                            },
+                        },
+                        FixedEvaluator(0.4),
+                    ),
+                    true,
+                    transpositions,
+                );
+                let game = TicTacToe;
+                agent
+                    .select_action(
+                        DecisionContext::new(&game, &game.initial_state(), PlayerId::FIRST),
+                        &mut SplitMix64::new(42),
+                    )
+                    .unwrap();
+                assert_eq!(calls.get(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn mast_rejects_invalid_epsilon() {
+        for epsilon in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
+            let policy = RolloutPolicyConfig::<NeutralEvaluator>::Mast { epsilon };
+            assert!(<RolloutPolicyConfig as RolloutPolicy<TicTacToe>>::validate(&policy).is_err());
+        }
+    }
 
     #[derive(Clone, Copy)]
     struct FixedEvaluator(f64);
@@ -3435,7 +3928,7 @@ mod tests {
             budget: SearchBudget::Iterations(NonZeroU32::new(4).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 4,
-            rollout_policy: RolloutPolicyConfig::<NeutralEvaluator>::UniformRandom,
+            rollout_policy: UniformRandom,
         };
         let mut agent = TranspositionMctsAgent::new(MctsAgent::new(config), true, true);
         let mut rng = SplitMix64::new(17);
@@ -3483,7 +3976,7 @@ mod tests {
             budget: SearchBudget::Iterations(NonZeroU32::new(128).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 4,
-            rollout_policy: RolloutPolicyConfig::<NeutralEvaluator>::UniformRandom,
+            rollout_policy: UniformRandom,
         };
         let inner = MctsAgent::new(config).with_root_diagnostics(true);
         let mut agent = TreeReuseMctsAgent::new(inner, true);
