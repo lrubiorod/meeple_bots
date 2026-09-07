@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 from .api import (
+    Boop, ConnectFour, SpiritsOfTheForest, TicTacToe,
+    RandomAgent, MctsAgent, ProgressiveBias, ConditionalRollout,
+    UniformRandom, Greedy, EpsilonGreedy, Mast, NeutralEvaluator, GameHeuristic,
     BoopAction,
     BoopGraduateLine,
     BoopRecoverPiece,
@@ -161,3 +166,176 @@ def _boop_resolution_dict(action: BoopAction) -> dict[str, object]:
             "column": action.resolution.position.column,
         }
     return {"type": "none"}
+
+
+def agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, object]:
+    if isinstance(agent, RandomAgent):
+        return {"name": name, "type": "random"}
+    return {
+        "name": name,
+        "type": "mcts",
+        "iterations": agent.iterations,
+        "time_budget": agent.time_budget,
+        "rollout_depth": agent.rollout_depth,
+        "exploration": agent.exploration,
+        "heuristic": agent.heuristic,
+        "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator),
+        "rollout_policy": _rollout_policy_name(agent),
+        "rollout_evaluator": _evaluator_dict(
+            _rollout_policy_evaluator(agent.rollout_policy)
+        ),
+        "rollout_epsilon": _rollout_policy_epsilon(agent.rollout_policy),
+        **_conditional_rollout_fields(agent.rollout_policy),
+        **_progressive_bias_fields(agent.progressive_bias),
+        "root_diagnostics": agent.root_diagnostics,
+        "tree_reuse": agent.tree_reuse,
+        "transpositions": agent.transpositions,
+    }
+
+
+def _progressive_bias_fields(bias: ProgressiveBias | None) -> dict[str, object]:
+    if bias is None:
+        return {
+            "progressive_bias_weight": None,
+            "progressive_bias_evaluator": None,
+            "progressive_bias_heuristic": None,
+            "progressive_bias_condition": None,
+            "progressive_bias_condition_phase": None,
+        }
+    return {
+        "progressive_bias_weight": bias.weight,
+        "progressive_bias_evaluator": _evaluator_dict(bias.evaluator),
+        "progressive_bias_heuristic": _evaluator_heuristic_index(bias.evaluator),
+        "progressive_bias_condition": (
+            "turn_phase" if bias.condition is not None else None
+        ),
+        "progressive_bias_condition_phase": (
+            bias.condition.phase if bias.condition is not None else None
+        ),
+    }
+
+
+def _rollout_policy_name(agent: MctsAgent) -> str:
+    if isinstance(agent.rollout_policy, ConditionalRollout):
+        return "conditional"
+    return _base_rollout_policy_name(agent.rollout_policy)
+
+
+def _base_rollout_policy_name(
+    policy: UniformRandom | Greedy | EpsilonGreedy | Mast,
+) -> str:
+    if isinstance(policy, Mast):
+        return "mast"
+    if isinstance(policy, EpsilonGreedy):
+        return "epsilon_greedy"
+    if isinstance(policy, Greedy):
+        return "greedy"
+    return "uniform_random"
+
+
+def _rollout_policy_evaluator(
+    policy: UniformRandom | Greedy | EpsilonGreedy | Mast | ConditionalRollout,
+) -> NeutralEvaluator | GameHeuristic | None:
+    if isinstance(policy, ConditionalRollout):
+        return _rollout_policy_evaluator(policy.primary)
+    return None if isinstance(policy, (UniformRandom, Mast)) else policy.evaluator
+
+
+def _rollout_policy_epsilon(
+    policy: UniformRandom | Greedy | EpsilonGreedy | Mast | ConditionalRollout,
+) -> float | None:
+    if isinstance(policy, ConditionalRollout):
+        return _rollout_policy_epsilon(policy.primary)
+    return policy.epsilon if isinstance(policy, (EpsilonGreedy, Mast)) else None
+
+
+def _conditional_rollout_fields(
+    policy: UniformRandom | Greedy | EpsilonGreedy | Mast | ConditionalRollout,
+) -> dict[str, object]:
+    if not isinstance(policy, ConditionalRollout):
+        return {
+            "rollout_condition": None,
+            "rollout_primary_policy": None,
+            "rollout_fallback_policy": None,
+            "rollout_fallback_evaluator": None,
+            "rollout_fallback_epsilon": None,
+        }
+    return {
+        "rollout_condition": {
+            "kind": "turn_phase",
+            "phase": policy.condition.phase,
+        },
+        "rollout_primary_policy": _base_rollout_policy_name(policy.primary),
+        "rollout_fallback_policy": _base_rollout_policy_name(policy.fallback),
+        "rollout_fallback_evaluator": _evaluator_dict(
+            _rollout_policy_evaluator(policy.fallback)
+        ),
+        "rollout_fallback_epsilon": _rollout_policy_epsilon(policy.fallback),
+    }
+
+
+def _evaluator_heuristic_index(
+    evaluator: NeutralEvaluator | GameHeuristic | None,
+) -> int | None:
+    return evaluator.index if isinstance(evaluator, GameHeuristic) else None
+
+
+def _evaluator_dict(
+    evaluator: NeutralEvaluator | GameHeuristic | None,
+) -> dict[str, object] | None:
+    if evaluator is None:
+        return None
+    if isinstance(evaluator, GameHeuristic):
+        serialized: dict[str, object] = {
+            "kind": "game_heuristic",
+            "index": evaluator.index,
+        }
+        if evaluator.params:
+            serialized["params"] = dict(evaluator.params)
+        return serialized
+    return {"kind": "neutral"}
+
+
+def game_name(game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest) -> str:
+    if isinstance(game, TicTacToe):
+        return "tic-tac-toe"
+    if isinstance(game, ConnectFour):
+        return "connect-four"
+    if isinstance(game, SpiritsOfTheForest):
+        return "spotf"
+    return "boop"
+
+
+def trace_match_dict(
+    *,
+    result: MatchResult,
+    match_number: int,
+    pairing_number: int,
+    pairing_match_number: int,
+    agent_a: str,
+    agent_b: str,
+    self_play: bool,
+    agent_a_player: int,
+    winner: str | None,
+    duration_seconds: float,
+) -> dict[str, object]:
+    players = [agent_a, agent_b] if agent_a_player == 0 else [agent_b, agent_a]
+    return {
+        "record_type": "match",
+        "match_number": match_number,
+        "pairing_number": pairing_number,
+        "pairing_match_number": pairing_match_number,
+        "agent_a": agent_a,
+        "agent_b": agent_b,
+        "self_play": self_play,
+        "agent_a_player": agent_a_player,
+        "players": players,
+        "winner": winner,
+        "duration_seconds": duration_seconds,
+        "result": match_result_dict(result),
+    }
+
+
+def write_jsonl(output, value: dict[str, object]) -> None:
+    output.write(json.dumps(value, separators=(",", ":")) + "\n")
+    output.flush()

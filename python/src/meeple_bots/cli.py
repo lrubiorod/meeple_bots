@@ -6,11 +6,10 @@ import argparse
 import json
 import sys
 import tomllib
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
-from time import perf_counter
 
 from .api import (
     Batch,
@@ -54,11 +53,32 @@ from .api import (
     benchmark_mcts_agent,
     evaluate_game,
 )
-from ._concurrency import WorkerSetting, ordered_parallel_map, resolve_workers
+from ._concurrency import WorkerSetting, resolve_workers
 from .extraction import extract_tournament
 from .gui import run_gui
 from .reporting import generate_study_report
-from .serialization import match_result_dict as _result_dict
+from .serialization import (
+    match_result_dict as _result_dict,
+    agent_dict as _batch_agent_dict,
+    _progressive_bias_fields,
+    _rollout_policy_name,
+    _base_rollout_policy_name,
+    _rollout_policy_evaluator,
+    _rollout_policy_epsilon,
+    _conditional_rollout_fields,
+    _evaluator_heuristic_index,
+    _evaluator_dict,
+    game_name as _game_name,
+    trace_match_dict as _trace_match_dict,
+    write_jsonl as _write_jsonl,
+)
+from .tournaments import (
+    TournamentAgent as _TournamentAgent,
+    TournamentConfig as _TournamentConfig,
+    tournament_pairings as _tournament_pairings,
+    run_tournament,
+)
+
 
 _PLAYABLE_GAMES = ["boop", "connect-four", "spotf", "tic-tac-toe"]
 _TOURNAMENT_GRID_FIELDS = (
@@ -485,284 +505,36 @@ class _ConfiguredMctsBenchmark:
     benchmark: MctsAgentBenchmark
 
 
-@dataclass(frozen=True, slots=True)
-class _TournamentAgent:
-    name: str
-    agent: RandomAgent | MctsAgent
-    self_play: bool
-    template_index: int
-    grid_position: tuple[int, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _TournamentConfig:
-    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest
-    output: Path | None
-    pairing_mode: str
-    seat_mode: str
-    matches_per_pair: int
-    seed: int
-    max_plies: int
-    workers: int
-    agents: tuple[_TournamentAgent, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _TournamentMatchJob:
-    match_number: int
-    pairing_number: int
-    pairing_match_number: int
-    agent_a: _TournamentAgent
-    agent_b: _TournamentAgent
-    self_play: bool
-    agent_a_player: int
-    seed: int
-
-
-@dataclass(frozen=True, slots=True)
-class _TournamentMatchOutcome:
-    result: MatchResult
-    started_at: float
-    finished_at: float
-
-    @property
-    def duration_seconds(self) -> float:
-        return self.finished_at - self.started_at
-
-
-@dataclass(slots=True)
-class _TournamentPairingStats:
-    agent_a: _TournamentAgent
-    agent_b: _TournamentAgent
-    self_play: bool
-    agent_a_wins: int = 0
-    agent_b_wins: int = 0
-    draws: int = 0
-    total_plies: int = 0
-    started_at: float | None = None
-    finished_at: float | None = None
-
-
 def _run_tournament(args: argparse.Namespace) -> int:
     config = _load_tournament_config(args.config)
-    output_path = args.output if args.output is not None else config.output
-    if output_path is None:
-        raise ValueError("tournament output is required in the config or with --output")
-    pairings = _tournament_pairings(config.agents, config.pairing_mode)
-    total_matches = len(pairings) * config.matches_per_pair
-    worker_count = min(
-        resolve_workers(config.workers if args.workers is None else args.workers),
-        total_matches,
-    )
-    output_mode = "w" if args.overwrite else "x"
-    standings = {
-        agent.name: {
-            "games": 0,
-            "wins": 0,
-            "losses": 0,
-            "draws": 0,
-            "self_play_games": 0,
-        }
-        for agent in config.agents
-    }
-    pairing_stats = [
-        _TournamentPairingStats(
-            agent_a=agent_a,
-            agent_b=agent_b,
-            self_play=agent_a is agent_b,
-        )
-        for agent_a, agent_b in pairings
-    ]
-    jobs = _tournament_match_jobs(pairings, config)
-    tournament_started = perf_counter()
+    total_matches = 0
 
-    print(
-        f"Starting tournament: {_game_name(config.game)}, {len(config.agents)} agents, "
-        f"{len(pairings)} pairings, {total_matches} matches, {worker_count} workers",
-        file=sys.stderr,
-        flush=True,
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open(output_mode, encoding="utf-8") as output:
-        _write_jsonl(
-            output,
-            {
-                "record_type": "tournament",
-                "schema_version": 1,
-                "study_type": "tournament",
-                "game": _game_name(config.game),
-                "output": str(output_path),
-                "pairing_mode": config.pairing_mode,
-                "seat_mode": config.seat_mode,
-                "matches_per_pair": config.matches_per_pair,
-                "seed": config.seed,
-                "max_plies": config.max_plies,
-                "workers": worker_count,
-                "total_pairings": len(pairings),
-                "total_matches": total_matches,
-                "agents": [
-                    _tournament_agent_dict(agent) for agent in config.agents
-                ],
-            },
+    def started(header: dict) -> None:
+        nonlocal total_matches
+        total_matches = header["total_matches"]
+        print(
+            f"Starting tournament: {header['game']}, {len(header['agents'])} agents, "
+            f"{header['total_pairings']} pairings, {total_matches} matches, {header['workers']} workers",
+            file=sys.stderr, flush=True,
         )
 
-        def run_job(job: _TournamentMatchJob) -> _TournamentMatchOutcome:
-            return _run_tournament_match(job, config.game, config.max_plies)
+    def completed(row: dict) -> None:
+        print(
+            f"[{row['match_number']}/{total_matches}] {row['agent_a']} vs {row['agent_b']}: "
+            f"winner={row['winner'] or 'draw'}, plies={row['result']['plies']}, "
+            f"time={row['duration_seconds']:.3f}s",
+            file=sys.stderr, flush=True,
+        )
 
-        for job, outcome in ordered_parallel_map(run_job, jobs, worker_count):
-            result = outcome.result
-            stats = pairing_stats[job.pairing_number - 1]
-            stats.total_plies += result.plies
-            stats.started_at = (
-                outcome.started_at
-                if stats.started_at is None
-                else min(stats.started_at, outcome.started_at)
-            )
-            stats.finished_at = (
-                outcome.finished_at
-                if stats.finished_at is None
-                else max(stats.finished_at, outcome.finished_at)
-            )
-
-            if result.winner is None:
-                winner = None
-                stats.draws += 1
-            elif result.winner == job.agent_a_player:
-                winner = "agent_a"
-                stats.agent_a_wins += 1
-            else:
-                winner = "agent_b"
-                stats.agent_b_wins += 1
-
-            if job.self_play:
-                standings[job.agent_a.name]["self_play_games"] += 1
-            else:
-                _update_tournament_standings(
-                    standings,
-                    job.agent_a.name,
-                    job.agent_b.name,
-                    winner,
-                )
-
-            _write_jsonl(
-                output,
-                _trace_match_dict(
-                    result=result,
-                    match_number=job.match_number,
-                    pairing_number=job.pairing_number,
-                    pairing_match_number=job.pairing_match_number,
-                    agent_a=job.agent_a.name,
-                    agent_b=job.agent_b.name,
-                    self_play=job.self_play,
-                    agent_a_player=job.agent_a_player,
-                    winner=winner,
-                    duration_seconds=outcome.duration_seconds,
-                ),
-            )
-            print(
-                f"[{job.match_number}/{total_matches}] "
-                f"{job.agent_a.name} vs {job.agent_b.name}: "
-                f"winner={winner or 'draw'}, plies={result.plies}, "
-                f"time={outcome.duration_seconds:.3f}s",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    pairing_results = [_tournament_pairing_result(stats, config) for stats in pairing_stats]
-    summary = {
-        "game": _game_name(config.game),
-        "agents": len(config.agents),
-        "pairing_mode": config.pairing_mode,
-        "seat_mode": config.seat_mode,
-        "pairings": len(pairings),
-        "matches": total_matches,
-        "workers": worker_count,
-        "matches_per_pair": config.matches_per_pair,
-        "seed": config.seed,
-        "output": str(output_path),
-        "elapsed_seconds": perf_counter() - tournament_started,
-        "standings": standings,
-        "pairing_results": pairing_results,
-    }
+    summary = run_tournament(
+        config, output=args.output, workers=args.workers, overwrite=args.overwrite,
+        on_start=started, on_match=completed,
+    )
     if args.json:
         print(json.dumps(summary, indent=2))
     else:
         _print_tournament_summary(summary)
     return 0
-
-
-def _run_tournament_match(
-    job: _TournamentMatchJob,
-    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
-    max_plies: int,
-) -> _TournamentMatchOutcome:
-    first, second = (
-        (job.agent_a.agent, job.agent_b.agent)
-        if job.agent_a_player == 0
-        else (job.agent_b.agent, job.agent_a.agent)
-    )
-    started_at = perf_counter()
-    result = Match(
-        game=game,
-        first=first,
-        second=second,
-        seed=job.seed,
-        max_plies=max_plies,
-    ).run()
-    return _TournamentMatchOutcome(
-        result=result,
-        started_at=started_at,
-        finished_at=perf_counter(),
-    )
-
-
-def _tournament_match_jobs(
-    pairings: list[tuple[_TournamentAgent, _TournamentAgent]],
-    config: _TournamentConfig,
-) -> Iterator[_TournamentMatchJob]:
-    match_number = 0
-    seed_offset = 0
-    for pairing_number, (agent_a, agent_b) in enumerate(pairings, start=1):
-        paired_seats = config.seat_mode == "paired" and agent_a is not agent_b
-        for pairing_match_number in range(1, config.matches_per_pair + 1):
-            match_number += 1
-            pairing_seed_offset = (
-                (pairing_match_number - 1) // 2
-                if paired_seats
-                else pairing_match_number - 1
-            )
-            yield _TournamentMatchJob(
-                match_number=match_number,
-                pairing_number=pairing_number,
-                pairing_match_number=pairing_match_number,
-                agent_a=agent_a,
-                agent_b=agent_b,
-                self_play=agent_a is agent_b,
-                agent_a_player=(pairing_match_number - 1) % 2,
-                seed=(config.seed + seed_offset + pairing_seed_offset) & (2**64 - 1),
-            )
-        seed_offset += (
-            config.matches_per_pair // 2 if paired_seats else config.matches_per_pair
-        )
-
-
-def _tournament_pairing_result(
-    stats: _TournamentPairingStats,
-    config: _TournamentConfig,
-) -> dict[str, object]:
-    if stats.started_at is None or stats.finished_at is None:
-        raise RuntimeError("tournament pairing did not run any matches")
-    return {
-        "agent_a": stats.agent_a.name,
-        "agent_b": stats.agent_b.name,
-        "self_play": stats.self_play,
-        "matches": config.matches_per_pair,
-        "agent_a_wins": stats.agent_a_wins,
-        "agent_b_wins": stats.agent_b_wins,
-        "draws": stats.draws,
-        "average_plies": stats.total_plies / config.matches_per_pair,
-        "elapsed_seconds": stats.finished_at - stats.started_at,
-    }
 
 
 def _load_tournament_config(path: Path) -> _TournamentConfig:
@@ -1107,100 +879,6 @@ def _mcts_budget_kwargs(
     if has_iterations:
         return {"iterations": values["iterations"]}
     return {"time_budget": values["time_budget"]}
-
-
-def _tournament_pairings(
-    agents: tuple[_TournamentAgent, ...],
-    pairing_mode: str = "round_robin",
-) -> list[tuple[_TournamentAgent, _TournamentAgent]]:
-    pairings = [
-        (agent_a, agent_b)
-        for index, agent_a in enumerate(agents)
-        for agent_b in agents[index + 1 :]
-        if pairing_mode == "round_robin"
-        or agent_a.template_index != agent_b.template_index
-        or _adjacent_grid_variants(agent_a, agent_b)
-    ]
-    pairings.extend((agent, agent) for agent in agents if agent.self_play)
-    return pairings
-
-
-def _adjacent_grid_variants(
-    agent_a: _TournamentAgent,
-    agent_b: _TournamentAgent,
-) -> bool:
-    if len(agent_a.grid_position) != len(agent_b.grid_position):
-        return False
-    differences = [
-        abs(position_a - position_b)
-        for position_a, position_b in zip(
-            agent_a.grid_position,
-            agent_b.grid_position,
-            strict=True,
-        )
-        if position_a != position_b
-    ]
-    return differences == [1]
-
-
-def _update_tournament_standings(
-    standings: dict[str, dict[str, int]],
-    agent_a: str,
-    agent_b: str,
-    winner: str | None,
-) -> None:
-    standings[agent_a]["games"] += 1
-    standings[agent_b]["games"] += 1
-    if winner is None:
-        standings[agent_a]["draws"] += 1
-        standings[agent_b]["draws"] += 1
-    elif winner == "agent_a":
-        standings[agent_a]["wins"] += 1
-        standings[agent_b]["losses"] += 1
-    else:
-        standings[agent_b]["wins"] += 1
-        standings[agent_a]["losses"] += 1
-
-
-def _tournament_agent_dict(agent: _TournamentAgent) -> dict[str, object]:
-    description = _batch_agent_dict(agent.name, agent.agent)
-    description["self_play"] = agent.self_play
-    return description
-
-
-def _write_jsonl(output, value: dict[str, object]) -> None:
-    output.write(json.dumps(value, separators=(",", ":")) + "\n")
-    output.flush()
-
-
-def _trace_match_dict(
-    *,
-    result: MatchResult,
-    match_number: int,
-    pairing_number: int,
-    pairing_match_number: int,
-    agent_a: str,
-    agent_b: str,
-    self_play: bool,
-    agent_a_player: int,
-    winner: str | None,
-    duration_seconds: float,
-) -> dict[str, object]:
-    players = [agent_a, agent_b] if agent_a_player == 0 else [agent_b, agent_a]
-    return {
-        "record_type": "match",
-        "match_number": match_number,
-        "pairing_number": pairing_number,
-        "pairing_match_number": pairing_match_number,
-        "agent_a": agent_a,
-        "agent_b": agent_b,
-        "self_play": self_play,
-        "agent_a_player": agent_a_player,
-        "players": players,
-        "winner": winner,
-        "duration_seconds": duration_seconds,
-        "result": _result_dict(result),
-    }
 
 
 def _print_tournament_summary(summary: dict[str, object]) -> None:
@@ -1743,53 +1421,6 @@ def _batch_agent_description(name: str, agent: RandomAgent | MctsAgent) -> str:
     )
 
 
-def _batch_agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, object]:
-    if isinstance(agent, RandomAgent):
-        return {"name": name, "type": "random"}
-    return {
-        "name": name,
-        "type": "mcts",
-        "iterations": agent.iterations,
-        "time_budget": agent.time_budget,
-        "rollout_depth": agent.rollout_depth,
-        "exploration": agent.exploration,
-        "heuristic": agent.heuristic,
-        "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator),
-        "rollout_policy": _rollout_policy_name(agent),
-        "rollout_evaluator": _evaluator_dict(
-            _rollout_policy_evaluator(agent.rollout_policy)
-        ),
-        "rollout_epsilon": _rollout_policy_epsilon(agent.rollout_policy),
-        **_conditional_rollout_fields(agent.rollout_policy),
-        **_progressive_bias_fields(agent.progressive_bias),
-        "root_diagnostics": agent.root_diagnostics,
-        "tree_reuse": agent.tree_reuse,
-        "transpositions": agent.transpositions,
-    }
-
-
-def _progressive_bias_fields(bias: ProgressiveBias | None) -> dict[str, object]:
-    if bias is None:
-        return {
-            "progressive_bias_weight": None,
-            "progressive_bias_evaluator": None,
-            "progressive_bias_heuristic": None,
-            "progressive_bias_condition": None,
-            "progressive_bias_condition_phase": None,
-        }
-    return {
-        "progressive_bias_weight": bias.weight,
-        "progressive_bias_evaluator": _evaluator_dict(bias.evaluator),
-        "progressive_bias_heuristic": _evaluator_heuristic_index(bias.evaluator),
-        "progressive_bias_condition": (
-            "turn_phase" if bias.condition is not None else None
-        ),
-        "progressive_bias_condition_phase": (
-            bias.condition.phase if bias.condition is not None else None
-        ),
-    }
-
-
 def _progressive_bias_description(bias: ProgressiveBias | None) -> str:
     if bias is None:
         return "none"
@@ -2305,87 +1936,6 @@ def _configured_legacy_rollout_evaluator(
     return None
 
 
-def _rollout_policy_name(agent: MctsAgent) -> str:
-    if isinstance(agent.rollout_policy, ConditionalRollout):
-        return "conditional"
-    return _base_rollout_policy_name(agent.rollout_policy)
-
-
-def _base_rollout_policy_name(
-    policy: UniformRandom | Greedy | EpsilonGreedy | Mast,
-) -> str:
-    if isinstance(policy, Mast):
-        return "mast"
-    if isinstance(policy, EpsilonGreedy):
-        return "epsilon_greedy"
-    if isinstance(policy, Greedy):
-        return "greedy"
-    return "uniform_random"
-
-
-def _rollout_policy_evaluator(
-    policy: UniformRandom | Greedy | EpsilonGreedy | Mast | ConditionalRollout,
-) -> NeutralEvaluator | GameHeuristic | None:
-    if isinstance(policy, ConditionalRollout):
-        return _rollout_policy_evaluator(policy.primary)
-    return None if isinstance(policy, (UniformRandom, Mast)) else policy.evaluator
-
-
-def _rollout_policy_epsilon(
-    policy: UniformRandom | Greedy | EpsilonGreedy | Mast | ConditionalRollout,
-) -> float | None:
-    if isinstance(policy, ConditionalRollout):
-        return _rollout_policy_epsilon(policy.primary)
-    return policy.epsilon if isinstance(policy, (EpsilonGreedy, Mast)) else None
-
-
-def _conditional_rollout_fields(
-    policy: UniformRandom | Greedy | EpsilonGreedy | Mast | ConditionalRollout,
-) -> dict[str, object]:
-    if not isinstance(policy, ConditionalRollout):
-        return {
-            "rollout_condition": None,
-            "rollout_primary_policy": None,
-            "rollout_fallback_policy": None,
-            "rollout_fallback_evaluator": None,
-            "rollout_fallback_epsilon": None,
-        }
-    return {
-        "rollout_condition": {
-            "kind": "turn_phase",
-            "phase": policy.condition.phase,
-        },
-        "rollout_primary_policy": _base_rollout_policy_name(policy.primary),
-        "rollout_fallback_policy": _base_rollout_policy_name(policy.fallback),
-        "rollout_fallback_evaluator": _evaluator_dict(
-            _rollout_policy_evaluator(policy.fallback)
-        ),
-        "rollout_fallback_epsilon": _rollout_policy_epsilon(policy.fallback),
-    }
-
-
-def _evaluator_heuristic_index(
-    evaluator: NeutralEvaluator | GameHeuristic | None,
-) -> int | None:
-    return evaluator.index if isinstance(evaluator, GameHeuristic) else None
-
-
-def _evaluator_dict(
-    evaluator: NeutralEvaluator | GameHeuristic | None,
-) -> dict[str, object] | None:
-    if evaluator is None:
-        return None
-    if isinstance(evaluator, GameHeuristic):
-        serialized: dict[str, object] = {
-            "kind": "game_heuristic",
-            "index": evaluator.index,
-        }
-        if evaluator.params:
-            serialized["params"] = dict(evaluator.params)
-        return serialized
-    return {"kind": "neutral"}
-
-
 def _evaluator_name(evaluator: NeutralEvaluator | GameHeuristic | None) -> str:
     if isinstance(evaluator, GameHeuristic):
         params = ""
@@ -2842,13 +2392,3 @@ def _print_evaluation(
             "  Some samples did not finish: increase --max-depth before treating "
             "the full-depth row as representative."
         )
-
-
-def _game_name(game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest) -> str:
-    if isinstance(game, TicTacToe):
-        return "tic-tac-toe"
-    if isinstance(game, ConnectFour):
-        return "connect-four"
-    if isinstance(game, SpiritsOfTheForest):
-        return "spotf"
-    return "boop"
