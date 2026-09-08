@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 from typing import Any
 
 from ....gui.player import parse_gui_player
+from ....gui.application import GuiApplication
 from .controller import TicTacToeGui
 
 
-class TicTacToeApplication:
+class TicTacToeApplication(GuiApplication):
     """Own the current tic-tac-toe match and validate browser commands."""
 
     def __init__(self, trace_dir: Path = Path("results/gui/tic-tac-toe")) -> None:
-        self._lock = threading.Lock()
-        self._trace_dir = trace_dir
-        self._game = TicTacToeGui(trace_dir=trace_dir)
+        super().__init__(TicTacToeGui, trace_dir)
 
     def start(self, payload: dict[str, Any]) -> dict[str, object]:
         first = parse_gui_player(
@@ -27,19 +25,13 @@ class TicTacToeApplication:
         )
         seed = payload.get("seed", 0)
         delay = payload.get("minimum_move_seconds", 0.6)
-        with self._lock:
-            previous = self._game
-            candidate = TicTacToeGui(trace_dir=self._trace_dir)
-            candidate.start(
-                first,
-                second,
-                seed=seed,
-                minimum_move_seconds=delay,
-                save_trace=payload.get("save_trace", False),
-            )
-            previous.cancel()
-            self._game = candidate
-            return candidate.snapshot()
+        return self._start_match(
+            first,
+            second,
+            seed=seed,
+            minimum_move_seconds=delay,
+            save_trace=payload.get("save_trace", False),
+        )
 
     def move(self, payload: dict[str, Any]) -> dict[str, object]:
         row = payload.get("row")
@@ -52,12 +44,3 @@ class TicTacToeApplication:
             game = self._game
         game.submit_move(row, column)
         return game.snapshot()
-
-    def snapshot(self) -> dict[str, object]:
-        with self._lock:
-            game = self._game
-        return game.snapshot()
-
-    def cancel(self) -> None:
-        with self._lock:
-            self._game.cancel()

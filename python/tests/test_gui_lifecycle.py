@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from meeple_bots.gui.player import GuiPlayer
+from meeple_bots.gui import controller as lifecycle
 
 
 GAMES = (
@@ -19,11 +20,30 @@ RESULT = SimpleNamespace(moves=(), winner=None, scores=(0, 0))
 
 
 class GuiLifecycleTests(unittest.TestCase):
+    def test_game_defaults_and_failed_preparation_preserve_idle_state(self):
+        for game, name in GAMES:
+            module = import_module(f"meeple_bots.games.{game}.gui.controller")
+            with self.subTest(game=game):
+                gui = getattr(module, name + "Gui")()
+                before = gui.snapshot()
+                depth = 15 if game == "boop" else 9 if game == "tic_tac_toe" else 64
+                self.assertEqual(before["players"][0]["rollout_depth"], depth)
+                self.assertEqual(before["minimum_move_seconds"],
+                                 0.4 if game == "spirits_of_the_forest" else 0.6)
+                if game == "boop":
+                    self.assertEqual(before["players"][1]["heuristic"], 0)
+                    self.assertEqual(before["players"][1]["iterations"], 1000)
+                with patch.object(gui, "_prepare_start", side_effect=ValueError("bad initial state")):
+                    with self.assertRaisesRegex(ValueError, "bad initial state"):
+                        gui.start(GuiPlayer("random"), GuiPlayer("random"))
+                self.assertEqual(gui.snapshot(), before)
+                self.assertFalse(gui._cancelled.is_set())
+                self.assertIsNone(gui._thread)
+
     def test_invalid_browser_start_preserves_current_match(self):
         for game, name in GAMES:
             module = import_module(f"meeple_bots.games.{game}.gui.application")
-            controller = import_module(f"meeple_bots.games.{game}.gui.controller")
-            with self.subTest(game=game), patch.object(controller, "Match") as match:
+            with self.subTest(game=game), patch.object(lifecycle, "Match") as match:
                 match.return_value.run.return_value = RESULT
                 app = getattr(module, name + "Application")()
                 app.start({"first": {"kind": "random"}, "second": {"kind": "random"}})
@@ -63,8 +83,8 @@ class GuiLifecycleTests(unittest.TestCase):
                             return RESULT
                         return SimpleNamespace(run=run)
 
-                    with patch.object(module, "Match", side_effect=make_match), \
-                            patch.object(module, "write_gui_trace") as write_trace:
+                    with patch.object(lifecycle, "Match", side_effect=make_match), \
+                            patch.object(lifecycle, "write_gui_trace") as write_trace:
                         try:
                             gui.start(GuiPlayer("human"), GuiPlayer("random"), seed=1,
                                       minimum_move_seconds=0, save_trace=True)
@@ -107,8 +127,8 @@ class GuiLifecycleTests(unittest.TestCase):
                         raise RuntimeError("test release timed out")
                     return "old-trace.json"
 
-                with patch.object(module, "Match") as match, \
-                        patch.object(module, "write_gui_trace", side_effect=write_trace) as trace:
+                with patch.object(lifecycle, "Match") as match, \
+                        patch.object(lifecycle, "write_gui_trace", side_effect=write_trace) as trace:
                     match.return_value.run.return_value = RESULT
                     try:
                         gui.start(*players, seed=1, save_trace=True)
@@ -150,7 +170,7 @@ class GuiLifecycleTests(unittest.TestCase):
                         return RESULT
                     return SimpleNamespace(run=run)
 
-                with patch.object(module, "Match", side_effect=make_match):
+                with patch.object(lifecycle, "Match", side_effect=make_match):
                     gui.start(GuiPlayer("human"), GuiPlayer("random"), seed=1)
                     old = gui._thread
                     try:

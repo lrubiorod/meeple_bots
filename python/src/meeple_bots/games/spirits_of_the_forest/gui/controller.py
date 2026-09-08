@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from time import monotonic
 
 from ....api import (
     EndSpiritCollection,
     HumanAgent,
     HumanTurn,
-    Match,
     MatchMoveObservation,
+    MatchResult,
     MctsAgent,
     MoveSpiritGemstone,
     PlaceSpiritGemstone,
@@ -26,92 +25,47 @@ from ....api import (
     _initial_spirits_state,
 )
 from ....gui.player import GuiPlayer
-from ....gui.trace import write_gui_trace
+from ....gui.controller import GuiController
 
 
-class SpiritsOfTheForestGui:
+class SpiritsOfTheForestGui(GuiController):
     def __init__(self, trace_dir: Path = Path("results/gui/spotf")) -> None:
-        self._condition = threading.Condition()
-        self._cancelled = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._pending_action: SpiritsOfTheForestAction | None = None
-        self._legal_actions: tuple[SpiritsOfTheForestAction, ...] = ()
-        self._players = (
-            GuiPlayer("human", rollout_depth=64),
-            GuiPlayer("mcts", rollout_depth=64),
+        super().__init__(
+            trace_dir,
+            game=SpiritsOfTheForest(),
+            game_name="spotf",
+            max_plies=256,
+            players=(
+                GuiPlayer("human", rollout_depth=64),
+                GuiPlayer("mcts", rollout_depth=64),
+            ),
+            delay=0.4,
         )
-        self._minimum_move_seconds = 0.4
-        self._trace_dir = trace_dir
-        self._save_trace = False
-        self._last_published = monotonic()
-        self._state = self._empty_state()
 
-    def start(
-        self,
-        first: GuiPlayer,
-        second: GuiPlayer,
-        *,
-        seed: int = 0,
-        minimum_move_seconds: float = 0.4,
-        save_trace: bool = False,
-    ) -> None:
-        if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**64:
-            raise ValueError("seed must be an integer between 0 and 2^64 - 1")
-        if (
-            isinstance(minimum_move_seconds, bool)
-            or not isinstance(minimum_move_seconds, (int, float))
-            or not 0 <= minimum_move_seconds <= 10
-        ):
-            raise ValueError("minimum_move_seconds must be between 0 and 10")
-        if not isinstance(save_trace, bool):
-            raise ValueError("save_trace must be a boolean")
+    def start(self, first: GuiPlayer, second: GuiPlayer, *, seed: int = 0,
+              minimum_move_seconds: float = 0.4, save_trace: bool = False) -> None:
+        super().start(first, second, seed=seed,
+                      minimum_move_seconds=minimum_move_seconds, save_trace=save_trace)
+
+    def _prepare_start(self, seed: int) -> dict[str, object]:
         board, collections, gems, phase, active, scores = _initial_spirits_state(seed)
-        with self._condition:
-            self.cancel()
-            self._cancelled = threading.Event()
-            self._pending_action = None
-            self._legal_actions = ()
-            self._players = (first, second)
-            self._minimum_move_seconds = float(minimum_move_seconds)
-            self._save_trace = save_trace
-            self._last_published = monotonic()
-            self._state = self._empty_state()
-            self._state.update(
-                {
-                    "status": "playing",
-                    "message": "Player 1 is thinking",
-                    "forest": _serialize_board(board),
-                    "collections": _serialize_collections(collections),
-                    "gemstone_pools": _serialize_gems(gems),
-                    "scores": list(scores),
-                    "phase": phase.value,
-                    "active_player": active,
-                    "seed": seed,
-                    "minimum_move_seconds": self._minimum_move_seconds,
-                    "players": [first.as_dict(), second.as_dict()],
-                    "save_trace": save_trace,
-                    "initial": {
-                        "forest": _serialize_board(board),
-                        "collections": _serialize_collections(collections),
-                        "gemstone_pools": _serialize_gems(gems),
-                        "scores": list(scores),
-                        "phase": phase.value,
-                        "active_player": active,
-                    },
-                }
-            )
-            self._thread = threading.Thread(
-                target=self._run_match,
-                args=(seed, self._cancelled, self._players, save_trace),
-                name="meeple-bots-spotf",
-                daemon=True,
-            )
-            self._thread.start()
-
-    def cancel(self) -> None:
-        with self._condition:
-            self._cancelled.set()
-            self._condition.notify_all()
+        return {
+            "message": "Player 1 is thinking",
+            "forest": _serialize_board(board),
+            "collections": _serialize_collections(collections),
+            "gemstone_pools": _serialize_gems(gems),
+            "scores": list(scores),
+            "phase": phase.value,
+            "active_player": active,
+            "initial": {
+                "forest": _serialize_board(board),
+                "collections": _serialize_collections(collections),
+                "gemstone_pools": _serialize_gems(gems),
+                "scores": list(scores),
+                "phase": phase.value,
+                "active_player": active,
+            },
+        }
 
     def snapshot(self) -> dict[str, object]:
         with self._condition:
@@ -164,72 +118,19 @@ class SpiritsOfTheForestGui:
             self._state["message"] = "Applying action..."
             self._condition.notify_all()
 
-    def _run_match(
-        self,
-        seed: int,
-        cancelled: threading.Event,
-        players: tuple[GuiPlayer, GuiPlayer],
-        save_trace: bool,
-    ) -> None:
-        # Each worker keeps its own cancellation token and configuration.
-        if cancelled.is_set():
-            return
-        started = monotonic()
-        try:
-            result = Match(
-                game=SpiritsOfTheForest(),
-                first=self._agent(players[0], cancelled),
-                second=self._agent(players[1], cancelled),
-                seed=seed,
-                max_plies=256,
-                observe_move=lambda move: self._observe_move(move, cancelled),
-            ).run()
-        except (RuntimeError, TypeError, ValueError) as error:
-            with self._condition:
-                if cancelled.is_set():
-                    return
-                self._state["status"] = "error"
-                self._state["message"] = str(error)
-                self._condition.notify_all()
-            return
-        if cancelled.is_set():
-            return
-        trace_path = None
-        trace_error = None
-        if save_trace:
-            try:
-                trace_path = write_gui_trace(
-                    self._trace_dir,
-                    game="spotf",
-                    max_plies=256,
-                    result=result,
-                    players=players,
-                    duration_seconds=monotonic() - started,
-                )
-            except Exception as error:
-                trace_error = str(error)
-        with self._condition:
-            if cancelled.is_set():
-                return
-            for displayed, recorded in zip(self._state["moves"], result.moves):
-                displayed["decision_seconds"] = recorded.decision_seconds
-            if result.moves:
-                self._state["last_decision_seconds"] = result.moves[-1].decision_seconds
-            self._state.update(
-                status="finished",
-                active_player=None,
-                winner=result.winner,
-                scores=list(result.scores or (0, 0)),
-                message=(
-                    "Empate"
-                    if result.winner is None
-                    else f"Gana el jugador {result.winner + 1}"
-                ),
-                legal_actions=[],
-                trace_path=None if trace_path is None else str(trace_path),
-                trace_error=trace_error,
-            )
-            self._condition.notify_all()
+    def _finish_state(self, result: MatchResult) -> None:
+        self._state.update(
+            status="finished",
+            active_player=None,
+            winner=result.winner,
+            scores=list(result.scores or (0, 0)),
+            message=(
+                "Empate"
+                if result.winner is None
+                else f"Gana el jugador {result.winner + 1}"
+            ),
+            legal_actions=[],
+        )
 
     def _agent(self, configured: GuiPlayer, cancelled: threading.Event):
         if configured.kind == "human":
@@ -245,89 +146,59 @@ class SpiritsOfTheForestGui:
             tree_reuse=configured.tree_reuse,
         )
 
-    def _select_human_action(
-        self, turn: HumanTurn, cancelled: threading.Event
-    ) -> SpiritsOfTheForestAction:
-        with self._condition:
-            if cancelled.is_set():
-                raise RuntimeError("match cancelled")
-            self._pending_action = None
-            self._legal_actions = tuple(turn.legal_actions)
-            self._state.update(
-                status="waiting_human",
-                message=f"Jugador {turn.player + 1}: elige una acción",
-                active_player=turn.player,
-                phase=turn.phase.value if turn.phase else None,
-                legal_actions=[
-                    _serialize_action(action, index)
-                    for index, action in enumerate(self._legal_actions)
-                ],
-            )
-            self._condition.notify_all()
-            while self._pending_action is None and not cancelled.is_set():
-                self._condition.wait()
-            if cancelled.is_set():
-                raise RuntimeError("match cancelled")
-            if self._pending_action is None:
-                raise RuntimeError("human action was not supplied")
-            return self._pending_action
+    def _present_human_turn(self, turn: HumanTurn) -> None:
+        self._legal_actions = tuple(turn.legal_actions)
+        self._state.update(
+            status="waiting_human",
+            message=f"Jugador {turn.player + 1}: elige una acción",
+            active_player=turn.player,
+            phase=turn.phase.value if turn.phase else None,
+            legal_actions=[
+                _serialize_action(action, index)
+                for index, action in enumerate(self._legal_actions)
+            ],
+        )
 
-    def _observe_move(
-        self, observation: MatchMoveObservation, cancelled: threading.Event
-    ) -> None:
-        with self._condition:
-            if cancelled.is_set():
-                return
-            remaining = max(
-                0.0, self._minimum_move_seconds - (monotonic() - self._last_published)
-            )
-        if cancelled.wait(remaining):
-            return
+    def _present_move(self, observation: MatchMoveObservation) -> None:
+        action = observation.action
+        if not isinstance(
+            action,
+            (TakeSpiritTile, EndSpiritCollection, PlaceSpiritGemstone, MoveSpiritGemstone, SkipSpiritGemstone),
+        ):
+            raise TypeError("Spirits observer received another game's action")
+        forest = _serialize_board(observation.board)
+        collections = _serialize_collections(observation.spirit_collections or ())
+        gems = _serialize_gems(observation.gemstone_pools or ())
+        moves = list(self._state["moves"])
+        serialized_action = _serialize_action(action)
+        moves.append(
+            {
+                **serialized_action,
+                "ply": len(moves) + 1,
+                "player": observation.player,
+                "decision_seconds": observation.decision_seconds,
+                "forest": forest,
+                "collections": collections,
+                "gemstone_pools": gems,
+                "scores": list(observation.scores or (0, 0)),
+                "phase": observation.phase.value if observation.phase else None,
+                "active_player": observation.active_player,
+            }
+        )
+        self._state.update(
+            forest=forest,
+            collections=collections,
+            gemstone_pools=gems,
+            scores=list(observation.scores or (0, 0)),
+            phase=observation.phase.value if observation.phase else None,
+            active_player=observation.active_player,
+            moves=moves,
+            legal_actions=[],
+            last_decision_seconds=observation.decision_seconds,
+            message=f"Jugador {(observation.active_player or 0) + 1} está pensando",
+        )
 
-        with self._condition:
-            if cancelled.is_set():
-                return
-            action = observation.action
-            if not isinstance(
-                action,
-                (TakeSpiritTile, EndSpiritCollection, PlaceSpiritGemstone, MoveSpiritGemstone, SkipSpiritGemstone),
-            ):
-                raise TypeError("Spirits observer received another game's action")
-            forest = _serialize_board(observation.board)
-            collections = _serialize_collections(observation.spirit_collections or ())
-            gems = _serialize_gems(observation.gemstone_pools or ())
-            moves = list(self._state["moves"])
-            serialized_action = _serialize_action(action)
-            moves.append(
-                {
-                    **serialized_action,
-                    "ply": len(moves) + 1,
-                    "player": observation.player,
-                    "decision_seconds": observation.decision_seconds,
-                    "forest": forest,
-                    "collections": collections,
-                    "gemstone_pools": gems,
-                    "scores": list(observation.scores or (0, 0)),
-                    "phase": observation.phase.value if observation.phase else None,
-                    "active_player": observation.active_player,
-                }
-            )
-            self._state.update(
-                forest=forest,
-                collections=collections,
-                gemstone_pools=gems,
-                scores=list(observation.scores or (0, 0)),
-                phase=observation.phase.value if observation.phase else None,
-                active_player=observation.active_player,
-                moves=moves,
-                legal_actions=[],
-                last_decision_seconds=observation.decision_seconds,
-                message=f"Jugador {(observation.active_player or 0) + 1} está pensando",
-            )
-            self._last_published = monotonic()
-            self._condition.notify_all()
-
-    def _empty_state(self) -> dict[str, object]:
+    def _initial_state(self) -> dict[str, object]:
         return {
             "game": "spotf",
             "status": "idle",

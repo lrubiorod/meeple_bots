@@ -818,6 +818,16 @@ dispatch live under `meeple_bots.gui` and `meeple_bots.reporting`. The private
 `meeple_bots._native` module is an implementation detail; applications should import public values
 from `meeple_bots`.
 
+Browser controllers share worker startup, cancellation, human waits, display pacing, trace
+completion and stale-callback protection in `meeple_bots.gui.controller.GuiController`.
+Game subclasses supply idle and seeded state, input validation, board/move presentation and
+any game-specific final scores. Presentation hooks run under the shared condition lock;
+`_prepare_start` runs before replacement so preparation failures preserve the current match.
+Boop converts a browser action index to its legal action before passing it to the shared waiter.
+HTTP adapters share atomic controller replacement in `meeple_bots.gui.application.GuiApplication`,
+while each game retains its payload parsing. Cancellation remains asynchronous and does not
+interrupt native search immediately.
+
 Report adapters share extraction-table validation and competitive statistics through
 `meeple_bots.reporting.common`. That module defines per-seat win/draw/loss records, score
 aggregation, win-rate Wilson intervals and first-player advantage. Game modules select their

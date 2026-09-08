@@ -4,93 +4,35 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from time import monotonic
 
 from ....api import (
     ConnectFour,
     ConnectFourAction,
     HumanAgent,
     HumanTurn,
-    Match,
     MatchMoveObservation,
     MctsAgent,
     RandomAgent,
 )
 from ....gui.player import GuiPlayer
-from ....gui.trace import write_gui_trace
+from ....gui.controller import GuiController
 
 
-class ConnectFourGui:
+class ConnectFourGui(GuiController):
     """Coordinate a live Connect Four match between browser input and agents."""
 
     def __init__(self, trace_dir: Path = Path("results/gui/connect-four")) -> None:
-        self._condition = threading.Condition()
-        self._cancelled = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._pending_action: ConnectFourAction | None = None
-        self._legal_actions: tuple[ConnectFourAction, ...] = ()
-        self._players = (
-            GuiPlayer("human", rollout_depth=64),
-            GuiPlayer("mcts", rollout_depth=64),
+        super().__init__(
+            trace_dir,
+            game=ConnectFour(),
+            game_name="connect-four",
+            max_plies=42,
+            players=(
+                GuiPlayer("human", rollout_depth=64),
+                GuiPlayer("mcts", rollout_depth=64),
+            ),
+            delay=0.6,
         )
-        self._minimum_move_seconds = 0.6
-        self._trace_dir = trace_dir
-        self._save_trace = False
-        self._last_published = monotonic()
-        self._state: dict[str, object] = self._initial_state()
-
-    def start(
-        self,
-        first: GuiPlayer,
-        second: GuiPlayer,
-        *,
-        seed: int = 0,
-        minimum_move_seconds: float = 0.6,
-        save_trace: bool = False,
-    ) -> None:
-        if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**64:
-            raise ValueError("seed must be an integer between 0 and 2^64 - 1")
-        if (
-            isinstance(minimum_move_seconds, bool)
-            or not isinstance(minimum_move_seconds, (int, float))
-            or not 0 <= minimum_move_seconds <= 10
-        ):
-            raise ValueError("minimum_move_seconds must be between 0 and 10")
-        if not isinstance(save_trace, bool):
-            raise ValueError("save_trace must be a boolean")
-
-        with self._condition:
-            self.cancel()
-            self._cancelled = threading.Event()
-            self._pending_action = None
-            self._legal_actions = ()
-            self._players = (first, second)
-            self._minimum_move_seconds = float(minimum_move_seconds)
-            self._save_trace = save_trace
-            self._last_published = monotonic()
-            self._state = self._initial_state()
-            self._state.update(
-                {
-                    "status": "playing",
-                    "active_player": 0,
-                    "seed": seed,
-                    "minimum_move_seconds": self._minimum_move_seconds,
-                    "players": [first.as_dict(), second.as_dict()],
-                    "save_trace": save_trace,
-                }
-            )
-            self._thread = threading.Thread(
-                target=self._run_match,
-                args=(seed, self._cancelled, self._players, save_trace),
-                name="meeple-bots-connect-four",
-                daemon=True,
-            )
-            self._thread.start()
-
-    def cancel(self) -> None:
-        with self._condition:
-            self._cancelled.set()
-            self._condition.notify_all()
 
     def snapshot(self) -> dict[str, object]:
         with self._condition:
@@ -114,69 +56,6 @@ class ConnectFourGui:
             self._state["message"] = "Applying move..."
             self._condition.notify_all()
 
-    def _run_match(
-        self,
-        seed: int,
-        cancelled: threading.Event,
-        players: tuple[GuiPlayer, GuiPlayer],
-        save_trace: bool,
-    ) -> None:
-        # Each worker keeps its own cancellation token and configuration.
-        if cancelled.is_set():
-            return
-        started = monotonic()
-        try:
-            result = Match(
-                game=ConnectFour(),
-                first=self._agent(players[0], cancelled),
-                second=self._agent(players[1], cancelled),
-                seed=seed,
-                max_plies=42,
-                observe_move=lambda move: self._observe_move(move, cancelled),
-            ).run()
-        except (RuntimeError, TypeError, ValueError) as error:
-            with self._condition:
-                if cancelled.is_set():
-                    return
-                self._state["status"] = "error"
-                self._state["message"] = str(error)
-                self._condition.notify_all()
-            return
-
-        if cancelled.is_set():
-            return
-        trace_path = None
-        trace_error = None
-        if save_trace:
-            try:
-                trace_path = write_gui_trace(
-                    self._trace_dir,
-                    game="connect-four",
-                    max_plies=42,
-                    result=result,
-                    players=players,
-                    duration_seconds=monotonic() - started,
-                )
-            except Exception as error:
-                trace_error = str(error)
-        with self._condition:
-            if cancelled.is_set():
-                return
-            for displayed, recorded in zip(self._state["moves"], result.moves):
-                displayed["decision_seconds"] = recorded.decision_seconds
-            if result.moves:
-                self._state["last_decision_seconds"] = result.moves[-1].decision_seconds
-            self._state["status"] = "finished"
-            self._state["active_player"] = None
-            self._state["winner"] = result.winner
-            self._state["message"] = (
-                "Draw" if result.winner is None else f"Player {result.winner + 1} wins"
-            )
-            self._state["legal_actions"] = []
-            self._state["trace_path"] = None if trace_path is None else str(trace_path)
-            self._state["trace_error"] = trace_error
-            self._condition.notify_all()
-
     def _agent(self, configured: GuiPlayer, cancelled: threading.Event):
         if configured.kind == "human":
             return HumanAgent(lambda turn: self._select_human_action(turn, cancelled))
@@ -190,80 +69,48 @@ class ConnectFourGui:
             tree_reuse=configured.tree_reuse,
         )
 
-    def _select_human_action(
-        self, turn: HumanTurn, cancelled: threading.Event
-    ) -> ConnectFourAction:
-        with self._condition:
-            if cancelled.is_set():
-                raise RuntimeError("match cancelled")
-            self._pending_action = None
-            self._legal_actions = tuple(
-                action
-                for action in turn.legal_actions
-                if isinstance(action, ConnectFourAction)
-            )
-            self._state["status"] = "waiting_human"
-            self._state["active_player"] = turn.player
-            self._state["message"] = f"Player {turn.player + 1}, choose a column"
-            self._state["legal_actions"] = [
-                action.column for action in self._legal_actions
-            ]
-            self._condition.notify_all()
+    def _present_human_turn(self, turn: HumanTurn) -> None:
+        self._legal_actions = tuple(
+            action
+            for action in turn.legal_actions
+            if isinstance(action, ConnectFourAction)
+        )
+        self._state["status"] = "waiting_human"
+        self._state["active_player"] = turn.player
+        self._state["message"] = f"Player {turn.player + 1}, choose a column"
+        self._state["legal_actions"] = [
+            action.column for action in self._legal_actions
+        ]
 
-            while self._pending_action is None and not cancelled.is_set():
-                self._condition.wait()
-            if cancelled.is_set():
-                raise RuntimeError("match cancelled")
-            action = self._pending_action
-            if action is None:
-                raise RuntimeError("human move was not supplied")
-            return action
-
-    def _observe_move(
-        self, observation: MatchMoveObservation, cancelled: threading.Event
-    ) -> None:
-        with self._condition:
-            if cancelled.is_set():
-                return
-            remaining = max(
-                0.0, self._minimum_move_seconds - (monotonic() - self._last_published)
-            )
-        if cancelled.wait(remaining):
-            return
-
-        with self._condition:
-            if cancelled.is_set():
-                return
-            action = observation.action
-            if not isinstance(action, ConnectFourAction):
-                raise TypeError("Connect Four observer received another game's action")
-            previous_board = list(self._state["board"])
-            flat_board = [cell for row in observation.board for cell in row]
-            placed_index = next(
-                index
-                for index, (before, after) in enumerate(zip(previous_board, flat_board))
-                if before is None and after == observation.player
-            )
-            row, column = divmod(placed_index, 7)
-            moves = list(self._state["moves"])
-            moves.append(
-                {
-                    "ply": len(moves) + 1,
-                    "player": observation.player,
-                    "row": row,
-                    "column": column,
-                    "decision_seconds": observation.decision_seconds,
-                }
-            )
-            self._state["board"] = flat_board
-            self._state["moves"] = moves
-            self._state["active_player"] = 1 - observation.player
-            self._state["last_move"] = [row, column]
-            self._state["last_decision_seconds"] = observation.decision_seconds
-            self._state["legal_actions"] = []
-            self._state["message"] = f"Player {2 - observation.player} is thinking"
-            self._last_published = monotonic()
-            self._condition.notify_all()
+    def _present_move(self, observation: MatchMoveObservation) -> None:
+        action = observation.action
+        if not isinstance(action, ConnectFourAction):
+            raise TypeError("Connect Four observer received another game's action")
+        previous_board = list(self._state["board"])
+        flat_board = [cell for row in observation.board for cell in row]
+        placed_index = next(
+            index
+            for index, (before, after) in enumerate(zip(previous_board, flat_board))
+            if before is None and after == observation.player
+        )
+        row, column = divmod(placed_index, 7)
+        moves = list(self._state["moves"])
+        moves.append(
+            {
+                "ply": len(moves) + 1,
+                "player": observation.player,
+                "row": row,
+                "column": column,
+                "decision_seconds": observation.decision_seconds,
+            }
+        )
+        self._state["board"] = flat_board
+        self._state["moves"] = moves
+        self._state["active_player"] = 1 - observation.player
+        self._state["last_move"] = [row, column]
+        self._state["last_decision_seconds"] = observation.decision_seconds
+        self._state["legal_actions"] = []
+        self._state["message"] = f"Player {2 - observation.player} is thinking"
 
     def _initial_state(self) -> dict[str, object]:
         return {
