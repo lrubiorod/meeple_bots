@@ -2941,6 +2941,37 @@ class MatchApiTests(unittest.TestCase):
             self.assertEqual(manifest["row_counts"]["studies"], 2)
             self.assertTrue((output_dir / "root_actions.csv").is_file())
 
+    def test_extract_study_ids_do_not_collide_with_existing_suffixes(self) -> None:
+        from meeple_bots.extraction import extract_tournament
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = self._create_small_spotf_tournament(root).read_bytes()
+            paths = []
+            for index, name in enumerate(("run", "run", "run-2", "run-2", "run")):
+                path = root / str(index) / f"{name}.jsonl"
+                path.parent.mkdir()
+                path.write_bytes(original)
+                paths.append(path)
+            for order, expected in (
+                (paths, ["run", "run-2", "run-2-2", "run-2-3", "run-3"]),
+                ([paths[2], paths[0], paths[1]], ["run-2", "run", "run-3"]),
+            ):
+                with self.subTest(expected=expected):
+                    output = root / f"data-{len(order)}"
+                    summary = extract_tournament(order, output)
+                    studies = self._read_csv(output / "studies.csv")
+                    self.assertEqual([row["study_id"] for row in studies], expected)
+                    self.assertEqual([row["source"] for row in studies], [str(path) for path in order])
+                    self.assertEqual([row["study_id"] for row in summary["studies"]], expected)
+                    for table in ("matches.csv", "moves.csv", "categories.csv"):
+                        rows = self._read_csv(output / table)
+                        for match_number, study_id in enumerate(expected, 1):
+                            selected = [row for row in rows if int(row["match_number"]) == match_number]
+                            self.assertTrue(selected, table)
+                            self.assertEqual({row["study_id"] for row in selected}, {study_id})
+                            self.assertEqual({row["source_match_number"] for row in selected}, {"1"})
+
     def test_cli_extract_rejects_conflicting_agent_names_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

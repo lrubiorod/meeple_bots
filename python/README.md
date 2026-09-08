@@ -657,6 +657,12 @@ Extraction is available for every supported game. It starts with five generic st
 - `moves.csv`: one row per ply with its player, agent, outcome, action JSON, decision time,
   search iterations/nodes, root diagnostics, and tree-reuse metrics.
 
+`study_id` is unique within each extraction. It starts with the trace filename stem and,
+when already used, receives the next available numeric suffix (including collisions with
+original filenames that already contain suffixes). IDs are deterministic for the same ordered
+inputs; reordering or combining different inputs may change them. `studies.csv` retains the
+source path, and match-level tables reference the assigned ID and original match number.
+
 `config_json` preserves nested evaluator parameters and diagnostics options with sorted object
 keys. Only `name` and `self_play` are excluded: the name has its own column and self-play is
 aggregated separately across studies. When combining traces, the same agent name must have the

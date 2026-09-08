@@ -563,6 +563,7 @@ def _normalize_input_paths(input_paths: Path | Sequence[Path]) -> tuple[Path, ..
 def _load_study_sources(paths: tuple[Path, ...]) -> tuple[_StudySource, ...]:
     studies = []
     study_id_counts: dict[str, int] = {}
+    used_study_ids: set[str] = set()
     expected_game: str | None = None
     for path in paths:
         with path.open(encoding="utf-8") as source:
@@ -607,8 +608,12 @@ def _load_study_sources(paths: tuple[Path, ...]) -> tuple[_StudySource, ...]:
 
         base_id = path.stem or "study"
         occurrence = study_id_counts.get(base_id, 0) + 1
-        study_id_counts[base_id] = occurrence
         study_id = base_id if occurrence == 1 else f"{base_id}-{occurrence}"
+        while study_id in used_study_ids:
+            occurrence += 1
+            study_id = f"{base_id}-{occurrence}"
+        study_id_counts[base_id] = occurrence
+        used_study_ids.add(study_id)
         studies.append(
             _StudySource(
                 study_id=study_id,
