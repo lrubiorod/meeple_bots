@@ -107,6 +107,6 @@ behavior, and breaks the final score down across the nine spirits and three powe
 snapshots also track the H0 reachable-progress score, viable and led categories, and gemstone
 attrition. The report aggregates actual MCTS latency, iterations/nodes per second, budget use, and
 strategic evolution by game quarter. See the
-[Python guide](../../python/README.md#2-extract-analysis-tables) for the generated table list.
+[Python guide](../../python/studies.md#2-extract-analysis-tables) for the generated table list.
 Strategic quarters are based on the 48 collected tiles, so internal multi-action phases do not
 distort early-, middle-, and late-game comparisons.

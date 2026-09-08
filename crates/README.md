@@ -156,6 +156,44 @@ The binding only converts actions; legality remains in the Rust game implementat
 | Structural metric | `crates/evaluation` | Catalog, bindings, and Python report model. |
 | Python-only UI or report | `python/src/meeple_bots` | Public API or CLI registration as needed. |
 
+## Adding a game
+
+1. Implement authoritative rules in `games/<game>` using `Game`. Add only the capability
+   traits whose contracts the game satisfies; test legal actions, turn order, terminal outcomes
+   and utilities in that crate. Keep dependencies on core, not on concrete agents.
+2. Register the crate in the workspace and catalog. Add `GameId`, configured agent
+   constructors in `configuration.rs`, and `game_search_capabilities`. Expose heuristic
+   parameter schemas from `HeuristicGame`, not from Python constants.
+3. Connect match, observed-match, batch and trace dispatch. Preserve seeded setup and
+   per-seat randomness. Use generic replay where possible; add a game-owned analyzer when
+   domain-specific extraction requires one.
+4. Add typed action/state conversion and human callbacks at the PyO3 boundary. In Python,
+   register game/action types, native conversion, serialization and CLI identifiers. Export
+   public values through `meeple_bots`; reuse shared GUI/report machinery when adding a UI.
+5. Verify Random/MCTS and supported human pairings, observed versus retained traces,
+   invalid replay rejection, batch seat swaps, diagnostics and capability metadata. Rebuild
+   the extension before running Python integration tests.
+6. Document identifiers, supported options, action encoding and extraction guarantees in
+   the game guide. Keep reusable tests in Git and personal studies under `local/` or `results/`.
+
+## Adding an agent
+
+1. Implement `Agent<G>` in `agents/<agent>` against core contracts. Declare actual capability
+   bounds; do not import individual game crates into reusable production logic.
+2. Implement or deliberately retain defaults for all lifecycle hooks and decision statistics.
+   Test legal selection, seeded behavior and state reset/reuse across matches.
+3. Extend catalog configuration and participant construction/delegation. Handle selection,
+   `last_decision_stats`, start, action updates and end consistently. Construct each seat
+   independently; do not add branches for every possible opponent.
+4. Extend binding configuration, Python values/validation, profile parsing and serialization.
+   Preserve the complete agent configuration in traces so extraction can distinguish agents.
+   Game rules should not need changes to accommodate the agent.
+5. Test supported games and opponent types, traced/observed equivalence, batch independence,
+   errors and timing attribution. If the adapter changes dispatch cost, measure a bounded
+   release workload before claiming equivalent performance.
+6. Update the agent guide and relevant help/profile examples. Run the affected Rust suites,
+   rebuild the extension, then run Python integration tests; CI runs the full checks.
+
 ## Current boundaries
 
 The implemented games are sequential, deterministic, perfect-information, two-player, and

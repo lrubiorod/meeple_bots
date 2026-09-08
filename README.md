@@ -12,7 +12,7 @@ workflow.
 | Games | Tic-tac-toe, Connect Four, boop., and two-player Spirits of the Forest. |
 | Agents | Interactive human input, uniform random play, and configurable MCTS. |
 | Interfaces | Typed Python API, command-line commands, and local browser playrooms. |
-| Experiments | Reproducible batches, round-robin tournaments, trace extraction, and Boop reports. |
+| Experiments | Reproducible batches, round-robin tournaments, trace extraction, and generic, Boop and SPOTF reports. |
 | Analysis | Structural game sampling and local MCTS cost estimation. |
 
 Matches use seeded, independent random streams and return complete move histories, utilities, final
@@ -61,18 +61,18 @@ print(result.winner)
 print(result.final_board)
 ```
 
-The editable installation exposes Python changes immediately. After changing Rust bindings,
+The editable installation exposes Python changes immediately. After changing any Rust crate used by Python (including games and agents),
 rebuild the native extension with `maturin develop --release`.
 
 ## Choose a workflow
 
 | Task | Entry point | Guide |
 | --- | --- | --- |
-| Play or watch a game | `meeple-bots gui` | [Python interface](python/README.md#play-or-watch) |
-| Run a match | `meeple-bots match` or `Match` | [Python API](python/README.md#run-one-match) |
-| Compare agents | `batch` or `Batch` | [Python API](python/README.md#compare-two-agents) |
-| Configured study | `meeple-bots tournament` | [Study workflow](python/README.md#run-a-study) |
-| Build study artifacts | `extract`, then `report` | [Artifacts](python/README.md#study-artifacts) |
+| Play or watch a game | `meeple-bots gui` | [Python interface](python/usage.md#play-or-watch) |
+| Run a match | `meeple-bots match` or `Match` | [Python API](python/usage.md#run-one-match) |
+| Compare agents | `batch` or `Batch` | [Python API](python/usage.md#compare-two-agents) |
+| Configured study | `meeple-bots tournament` | [Study workflow](python/studies.md#run-a-study) |
+| Build study artifacts | `extract`, then `report` | [Artifacts](python/studies.md#study-artifacts) |
 | Estimate search cost | `analyze` or `evaluate_game` | [Evaluation](crates/evaluation/README.md) |
 
 Use `meeple-bots COMMAND --help` for the options installed in the active environment.
@@ -105,7 +105,7 @@ Personal configurations and generated data are ignored by Git. Shared references
 remain versioned: `configs/mcts/template.toml`, `heuristic.toml`, `boop-baseline.toml`,
 `spotf-baseline.toml`, and `configs/tournaments/template-study.toml`.
 Game rules, agents, reusable tournament/extraction/report tools, and their regression
-tests remain versioned. See [the Python guide](python/README.md#1-configure-and-run-the-tournament)
+tests remain versioned. See [the Python guide](python/studies.md#1-configure-and-run-the-tournament)
 to create your own local study; no personal experiment files are required.
 
 ## Development

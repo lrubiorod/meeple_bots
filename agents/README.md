@@ -237,7 +237,7 @@ transpositions = true
 Exactly one of `iterations` or `time_budget` is required, together with `rollout_depth`.
 `time_budget` is expressed in seconds and limits the search loop. Recorded `decision_seconds`
 includes selection and lifecycle maintenance, so total agent cost can exceed this budget.
-See [agent timing in studies](../python/README.md#1-configure-and-run-the-tournament).
+See [agent timing in studies](../python/studies.md#1-configure-and-run-the-tournament).
 `exploration` defaults to `sqrt(2)`,
 `cutoff_evaluator` defaults to neutral, `rollout_policy` defaults to uniform random, and
 `tree_reuse` and `transpositions` default to false. Evaluator
@@ -306,4 +306,4 @@ compatible perfect-information games. The possible development stages are record
 
 `HumanAgent` lives at the Python boundary. With no selector it prompts in the terminal; with a
 selector callback it can obtain actions from another interface. See
-[Human-controlled matches](../python/README.md#human-controlled-matches).
+[Human-controlled matches](../python/usage.md#human-controlled-matches).
