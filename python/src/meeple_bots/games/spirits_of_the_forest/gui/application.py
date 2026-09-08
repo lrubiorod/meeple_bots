@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ....gui.player import parse_gui_player
+from ...._capabilities import heuristic_indices
 from ....gui.application import GuiApplication
 from .controller import SpiritsOfTheForestGui
 
@@ -19,13 +20,13 @@ class SpiritsOfTheForestApplication(GuiApplication):
             payload.get("first"),
             "first",
             default_rollout_depth=64,
-            available_heuristics=(0,),
+            available_heuristics=heuristic_indices("spotf"),
         )
         second = parse_gui_player(
             payload.get("second"),
             "second",
             default_rollout_depth=64,
-            available_heuristics=(0,),
+            available_heuristics=heuristic_indices("spotf"),
         )
         return self._start_match(
             first,

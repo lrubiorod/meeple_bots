@@ -2209,9 +2209,31 @@ fn py_spirits_initial_state(seed: u64) -> NativeSpiritsState {
     native_spirits_state(&game, &state)
 }
 
+#[pyfunction(name = "game_search_capabilities")]
+fn py_game_search_capabilities(py: Python<'_>, game: &str) -> PyResult<Py<PyDict>> {
+    let capabilities = meeple_bots_catalog::game_search_capabilities(parse_game(game)?);
+    let result = PyDict::new(py);
+    result.set_item("turn_phase_conditions", capabilities.turn_phase_conditions)?;
+    let heuristics = PyDict::new(py);
+    for heuristic in capabilities.heuristics {
+        let parameters = PyDict::new(py);
+        for spec in heuristic.parameters {
+            let parameter = PyDict::new(py);
+            parameter.set_item("default", spec.default)?;
+            parameter.set_item("minimum", spec.minimum)?;
+            parameter.set_item("maximum", spec.maximum)?;
+            parameters.set_item(spec.name, parameter)?;
+        }
+        heuristics.set_item(heuristic.index, parameters)?;
+    }
+    result.set_item("heuristics", heuristics)?;
+    Ok(result.unbind())
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAgentConfig>()?;
+    module.add_function(wrap_pyfunction!(py_game_search_capabilities, module)?)?;
     module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;
     module.add_function(wrap_pyfunction!(py_benchmark_mcts_agent, module)?)?;
     module.add_function(wrap_pyfunction!(py_run_match, module)?)?;

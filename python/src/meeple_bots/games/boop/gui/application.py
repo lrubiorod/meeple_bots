@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ....gui.player import parse_gui_player
+from ...._capabilities import heuristic_indices
 from ....gui.application import GuiApplication
 from .controller import BoopGui
 
@@ -21,13 +22,13 @@ class BoopApplication(GuiApplication):
             payload.get("first"),
             "first",
             default_rollout_depth=15,
-            available_heuristics=(0, 1),
+            available_heuristics=heuristic_indices("boop"),
         )
         second = parse_gui_player(
             payload.get("second"),
             "second",
             default_rollout_depth=15,
-            available_heuristics=(0, 1),
+            available_heuristics=heuristic_indices("boop"),
         )
         seed = payload.get("seed", 0)
         delay = payload.get("minimum_move_seconds", 0.6)

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ....gui.player import parse_gui_player
+from ...._capabilities import heuristic_indices
 from ....gui.application import GuiApplication
 from .controller import TicTacToeGui
 
@@ -18,10 +19,12 @@ class TicTacToeApplication(GuiApplication):
 
     def start(self, payload: dict[str, Any]) -> dict[str, object]:
         first = parse_gui_player(
-            payload.get("first"), "first", default_rollout_depth=9
+            payload.get("first"), "first", default_rollout_depth=9,
+            available_heuristics=heuristic_indices("tic-tac-toe"),
         )
         second = parse_gui_player(
-            payload.get("second"), "second", default_rollout_depth=9
+            payload.get("second"), "second", default_rollout_depth=9,
+            available_heuristics=heuristic_indices("tic-tac-toe"),
         )
         seed = payload.get("seed", 0)
         delay = payload.get("minimum_move_seconds", 0.6)

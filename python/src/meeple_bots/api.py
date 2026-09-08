@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import TypeAlias
 
 from . import _native
+from ._capabilities import game_search_capabilities
 from ._concurrency import WorkerSetting, ordered_parallel_map, resolve_workers
 
 _MAX_U32 = 2**32 - 1
@@ -1432,7 +1433,7 @@ def _non_negative_u32(name: str, value: int) -> None:
 def _validate_agent_evaluators(game: Game, agent: Agent) -> None:
     if isinstance(agent, MctsAgent):
         if isinstance(agent.rollout_policy, ConditionalRollout):
-            if not isinstance(game, SpiritsOfTheForest):
+            if not game_search_capabilities(_game_display_name(game))["turn_phase_conditions"]:
                 raise ValueError(
                     "turn-phase rollout conditions are only supported by spotf"
                 )
@@ -1442,7 +1443,7 @@ def _validate_agent_evaluators(game: Game, agent: Agent) -> None:
         if agent.progressive_bias is not None:
             if (
                 agent.progressive_bias.condition is not None
-                and not isinstance(game, SpiritsOfTheForest)
+                and not game_search_capabilities(_game_display_name(game))["turn_phase_conditions"]
             ):
                 raise ValueError(
                     "turn-phase progressive bias conditions are only supported by spotf"
@@ -1542,16 +1543,14 @@ def _validate_game_evaluator(game: Game, evaluator: StateEvaluator | None) -> No
 
 
 def _validate_game_heuristic_params(game: Game, evaluator: GameHeuristic) -> None:
-    allowed: dict[str, tuple[float | None, float | None]] = {}
-    if isinstance(game, SpiritsOfTheForest) and evaluator.index == 0:
-        allowed = {"gemstone_early_bonus": (0.0, None)}
+    allowed = game_search_capabilities(_game_display_name(game))["heuristics"][evaluator.index]
     for name, value in evaluator.params.items():
         if name not in allowed:
             raise ValueError(
                 f"{_game_display_name(game)} heuristic {evaluator.index} "
                 f"does not accept parameter {name!r}"
             )
-        minimum, maximum = allowed[name]
+        minimum, maximum = allowed[name]["minimum"], allowed[name]["maximum"]
         if minimum is not None and value < minimum:
             raise ValueError(
                 f"{_game_display_name(game)} heuristic {evaluator.index} "
@@ -1568,18 +1567,14 @@ def _validate_game_heuristic(game: Game, heuristic: int | None) -> None:
     if heuristic is None:
         return
     _non_negative_u32("heuristic", heuristic)
-    if isinstance(game, SpiritsOfTheForest):
-        if heuristic != 0:
-            raise ValueError(
-                "spotf does not provide MCTS heuristic "
-                f"{heuristic}; available index: 0"
-            )
-        return
-    if not isinstance(game, Boop):
+    indices = tuple(game_search_capabilities(_game_display_name(game))["heuristics"])
+    if not indices:
         raise ValueError(f"{_game_display_name(game)} does not provide MCTS heuristics")
-    if heuristic not in (0, 1):
+    if heuristic not in indices:
+        available = (f"available index: {indices[0]}" if len(indices) == 1
+                     else f"available indices: {indices[0]}..{indices[-1]}")
         raise ValueError(
-            f"boop does not provide MCTS heuristic {heuristic}; available indices: 0..1"
+            f"{_game_display_name(game)} does not provide MCTS heuristic {heuristic}; {available}"
         )
 
 

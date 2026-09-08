@@ -115,6 +115,20 @@ Observed and unobserved matches share participant construction, so adding a vari
 require adding a branch for every opponent. Game-specific typed observers and action conversion
 remain in the bindings; concrete traces and final states are converted into catalog reports.
 
+## Search capability metadata
+
+`game_search_capabilities(GameId)` exposes the heuristic indices and their named parameter
+schemas (default, minimum and maximum), plus support for turn-phase conditions. Heuristic
+metadata comes directly from `HeuristicGame`; condition support shares the catalog validator's
+predicate. When adding a game, register this descriptor alongside its configured constructor.
+
+The private binding `_native.game_search_capabilities` publishes these descriptors. Python's
+`_capabilities` module caches them for API validation and GUI heuristic choices. Python retains
+value/type checks and presentation; native validation remains authoritative for Rust callers and
+for callers bypassing the Python facade. These descriptors cover the search metadata currently
+needed by Python, not a dynamic game/plugin registry or a complete enumeration of core traits.
+Rebuild the extension after changing a game's schema or catalog registration.
+
 ## Trace validation
 
 `analyze_seeded_trace` dispatches to the game-specific Boop/SPOTF analyzers or to a generic

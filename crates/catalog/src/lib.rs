@@ -46,6 +46,45 @@ pub enum GameId {
     TicTacToe,
 }
 
+/// Search options exposed by the registered game integration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GameSearchCapabilities {
+    pub heuristics: Vec<HeuristicDescriptor>,
+    pub turn_phase_conditions: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeuristicDescriptor {
+    pub index: u32,
+    pub parameters: &'static [meeple_bots_core::HeuristicParameterSpec],
+}
+
+/// Reuse the game-owned heuristic schemas used by native validation.
+pub fn game_search_capabilities(game: GameId) -> GameSearchCapabilities {
+    fn heuristics<G: HeuristicGame>(game: &G) -> Vec<HeuristicDescriptor> {
+        (0..game.heuristic_count())
+            .map(|index| HeuristicDescriptor {
+                index,
+                parameters: game
+                    .heuristic_parameter_specs(index)
+                    .expect("registered heuristic must provide its parameter schema"),
+            })
+            .collect()
+    }
+    GameSearchCapabilities {
+        heuristics: match game {
+            GameId::Boop => heuristics(&Boop),
+            GameId::SpiritsOfTheForest => heuristics(&spirits_of_the_forest_game(0)),
+            GameId::ConnectFour | GameId::TicTacToe => Vec::new(),
+        },
+        turn_phase_conditions: supports_turn_phase_conditions(game),
+    }
+}
+
+fn supports_turn_phase_conditions(game: GameId) -> bool {
+    matches!(game, GameId::SpiritsOfTheForest)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentConfig {
     Random,
@@ -988,7 +1027,9 @@ fn validate_selection_condition(
     condition: RolloutConditionConfig,
 ) -> Result<(), CatalogError> {
     match (game, condition) {
-        (GameId::SpiritsOfTheForest, RolloutConditionConfig::TurnPhase(_)) => Ok(()),
+        (game, RolloutConditionConfig::TurnPhase(_)) if supports_turn_phase_conditions(game) => {
+            Ok(())
+        }
         (_, RolloutConditionConfig::TurnPhase(_)) => Err(CatalogError::InvalidMctsConfig(
             "turn-phase progressive bias conditions are only supported by spotf",
         )),
@@ -1027,7 +1068,9 @@ fn validate_rollout_condition(
     condition: RolloutConditionConfig,
 ) -> Result<(), CatalogError> {
     match (game, condition) {
-        (GameId::SpiritsOfTheForest, RolloutConditionConfig::TurnPhase(_)) => Ok(()),
+        (game, RolloutConditionConfig::TurnPhase(_)) if supports_turn_phase_conditions(game) => {
+            Ok(())
+        }
         (_, RolloutConditionConfig::TurnPhase(_)) => Err(CatalogError::InvalidMctsConfig(
             "turn-phase rollout conditions are only supported by spotf",
         )),
