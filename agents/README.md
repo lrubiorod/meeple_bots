@@ -75,6 +75,7 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
+| `selection_policy` | `"uct"` | Tree selection: `uct` or `ucb1_tuned`. |
 | `iterations` | `1_000` | Exact iterations per decision; excludes `time_budget`. |
 | `time_budget` | `None` | Approximate total agent seconds per decision; excludes `iterations`. |
 | `exploration` | `sqrt(2)` | UCT balance between utility and less-visited branches. |
@@ -107,6 +108,36 @@ speed change how many iterations finish. Match traces record the actual decision
 iterations, and created nodes.
 
 ### Tree reuse
+
+`selection_policy="ucb1_tuned"` enables the variance-aware rule from
+[Auer, Cesa-Bianchi and Fischer (2002)](https://doi.org/10.1023/A:1013689704352).
+It uses the canonical formula, without an additional exploration multiplier; `exploration` is
+used only by UCT. For parent visits `N`, action visits `n`, empirical reward mean `m` and
+population variance `v` on `[0, 1]`, its score is:
+
+```text
+m + sqrt((ln(N) / n) * min(1/4, v + sqrt(2 * ln(N) / n)))
+```
+
+Utilities are stored on `[-1, 1]`. Their variance is divided by four, and the bonus is multiplied
+by two to express the score on the existing utility scale. The exploitation term is reversed
+at opponent nodes; the variance is unchanged. Unvisited actions have infinite priority.
+Tuned records squared utilities on tree nodes and both first and second moments on graph edges.
+With transpositions, its mean and variance use the same edge samples, rather than combining an
+edge count with a shared child's statistics. Root diagnostics and final visit-count tie breaks
+also use the edge mean. UCT retains its existing scoring and shared-child semantics. Reuse
+preserves the moments; resetting the search clears them. Progressive bias remains additive on
+the existing utility scale. UCT does not perform the extra moment accumulation, although the
+node/edge storage includes the new fields.
+
+```toml
+selection_policy = "ucb1_tuned"
+```
+
+The setting works in profiles, inline analysis agents, tournament grids, Python `MctsAgent`, and
+GUI selection controls. CLI matches also accept `--mcts-selection-policy ucb1_tuned`.
+The original bandit model assumes stationary rewards; MCTS samples evolve with tree search, so
+this is an experimental selection alternative, not a guarantee of better play.
 
 Tree reuse is deliberately optional. The unwrapped baseline `MctsAgent` keeps the original search
 path and supports non-cloneable actions. The enabled reuse wrapper requires the concrete

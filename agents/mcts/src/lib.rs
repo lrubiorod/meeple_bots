@@ -15,10 +15,19 @@ use meeple_bots_core::{
     TreeReuseStats, TwoPlayerZeroSumGame,
 };
 
+/// Tree selection rule. UCB1-Tuned uses its canonical variance bound and ignores `exploration`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SelectionPolicy {
+    #[default]
+    Uct,
+    Ucb1Tuned,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MctsConfig<P = RolloutPolicyConfig<NeutralEvaluator>> {
     pub budget: SearchBudget,
     pub exploration: f64,
+    pub selection_policy: SelectionPolicy,
     pub rollout_depth: u32,
     pub rollout_policy: P,
 }
@@ -56,6 +65,7 @@ impl Default for MctsConfig<RolloutPolicyConfig<NeutralEvaluator>> {
         Self {
             budget: SearchBudget::default(),
             exploration: std::f64::consts::SQRT_2,
+            selection_policy: SelectionPolicy::Uct,
             rollout_depth: 256,
             rollout_policy: RolloutPolicyConfig::default(),
         }
@@ -1059,6 +1069,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                     node_index,
                     maximizing,
                     self.config.exploration,
+                    self.config.selection_policy,
                     bias_weight,
                 );
                 let action = nodes[selected]
@@ -1090,6 +1101,9 @@ impl<C, P, B> MctsAgent<C, P, B> {
             for &visited in &path {
                 nodes[visited].visits += 1;
                 nodes[visited].total_utility += utility;
+                if self.config.selection_policy == SelectionPolicy::Ucb1Tuned {
+                    nodes[visited].total_squared_utility += utility * utility;
+                }
             }
             completed_iterations += 1;
         }
@@ -1266,6 +1280,8 @@ impl<C, P, B> MctsAgent<C, P, B> {
                         action,
                         child: child_index,
                         visits: 0,
+                        total_utility: 0.0,
+                        total_squared_utility: 0.0,
                         heuristic_value,
                     });
                     if let Some(action_index) = root_action_index {
@@ -1294,6 +1310,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                     node_index,
                     maximizing,
                     self.config.exploration,
+                    self.config.selection_policy,
                     bias_weight,
                 );
                 let action = graph.nodes[node_index].edges[edge_index].action.clone();
@@ -1329,7 +1346,12 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 graph.nodes[visited].total_utility += utility;
             }
             for &(parent, edge) in &path_edges {
-                graph.nodes[parent].edges[edge].visits += 1;
+                let edge = &mut graph.nodes[parent].edges[edge];
+                edge.visits += 1;
+                if self.config.selection_policy == SelectionPolicy::Ucb1Tuned {
+                    edge.total_utility += utility;
+                    edge.total_squared_utility += utility * utility;
+                }
             }
             completed_iterations += 1;
         }
@@ -1341,9 +1363,9 @@ impl<C, P, B> MctsAgent<C, P, B> {
             .enumerate()
             .max_by(|(_, left), (_, right)| {
                 left.visits.cmp(&right.visits).then_with(|| {
-                    graph.nodes[left.child]
-                        .mean_utility()
-                        .total_cmp(&graph.nodes[right.child].mean_utility())
+                    graph_edge_mean(&graph.nodes, left, self.config.selection_policy).total_cmp(
+                        &graph_edge_mean(&graph.nodes, right, self.config.selection_policy),
+                    )
                 })
             })
             .map(|(index, _)| index)
@@ -1361,7 +1383,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 .map(|((edge_index, edge), action_index)| RootActionStats {
                     action_index,
                     visits: edge.visits,
-                    mean_utility: graph.nodes[edge.child].mean_utility(),
+                    mean_utility: graph_edge_mean(&graph.nodes, edge, self.config.selection_policy),
                     heuristic_value: bias_enabled.then_some(edge.heuristic_value),
                     progressive_bias: bias_enabled
                         .then(|| graph_progressive_bias_term(edge, true, bias_weight)),
@@ -1522,6 +1544,8 @@ struct GraphEdge<A> {
     child: usize,
     visits: u32,
     heuristic_value: f64,
+    total_utility: f64,
+    total_squared_utility: f64,
 }
 
 struct Node<A> {
@@ -1531,6 +1555,7 @@ struct Node<A> {
     unexpanded: Vec<A>,
     visits: u32,
     total_utility: f64,
+    total_squared_utility: f64,
 }
 
 impl<G, C, P, B> Agent<G> for TreeReuseMctsAgent<G, C, P, B>
@@ -2203,6 +2228,7 @@ impl<A> Node<A> {
             unexpanded: unexpanded.into_iter().collect(),
             visits: 0,
             total_utility: 0.0,
+            total_squared_utility: 0.0,
         }
     }
 
@@ -2271,6 +2297,7 @@ fn best_child<A>(
     parent: usize,
     maximizing: bool,
     exploration: f64,
+    selection_policy: SelectionPolicy,
     bias_weight: f64,
 ) -> usize {
     let parent_visits = f64::from(nodes[parent].visits.max(1));
@@ -2284,6 +2311,7 @@ fn best_child<A>(
                 parent_visits,
                 maximizing,
                 exploration,
+                selection_policy,
                 bias_weight,
             )
             .total_cmp(&selection_score(
@@ -2291,6 +2319,7 @@ fn best_child<A>(
                 parent_visits,
                 maximizing,
                 exploration,
+                selection_policy,
                 bias_weight,
             ))
         })
@@ -2302,6 +2331,7 @@ fn best_graph_edge<S, A>(
     parent: usize,
     maximizing: bool,
     exploration: f64,
+    selection_policy: SelectionPolicy,
     bias_weight: f64,
 ) -> usize {
     let parent_visits = f64::from(nodes[parent].visits.max(1));
@@ -2316,6 +2346,7 @@ fn best_graph_edge<S, A>(
                 parent_visits,
                 maximizing,
                 exploration,
+                selection_policy,
                 bias_weight,
             )
             .total_cmp(&graph_selection_score(
@@ -2324,11 +2355,28 @@ fn best_graph_edge<S, A>(
                 parent_visits,
                 maximizing,
                 exploration,
+                selection_policy,
                 bias_weight,
             ))
         })
         .map(|(index, _)| index)
         .expect("parent has edges")
+}
+
+fn graph_edge_mean<S, A>(
+    nodes: &[GraphNode<S, A>],
+    edge: &GraphEdge<A>,
+    policy: SelectionPolicy,
+) -> f64 {
+    if policy == SelectionPolicy::Ucb1Tuned {
+        if edge.visits == 0 {
+            0.0
+        } else {
+            edge.total_utility / f64::from(edge.visits)
+        }
+    } else {
+        nodes[edge.child].mean_utility()
+    }
 }
 
 fn graph_selection_score<S, A>(
@@ -2337,10 +2385,20 @@ fn graph_selection_score<S, A>(
     parent_visits: f64,
     maximizing: bool,
     exploration: f64,
+    selection_policy: SelectionPolicy,
     bias_weight: f64,
 ) -> f64 {
     if edge.visits == 0 {
         return f64::INFINITY;
+    }
+    if selection_policy == SelectionPolicy::Ucb1Tuned {
+        return tuned_score(
+            edge.visits,
+            edge.total_utility,
+            edge.total_squared_utility,
+            parent_visits,
+            maximizing,
+        ) + graph_progressive_bias_term(edge, maximizing, bias_weight);
     }
     let child_mean = nodes[edge.child].mean_utility();
     let exploitation = if maximizing { child_mean } else { -child_mean };
@@ -2367,14 +2425,40 @@ fn selection_score<A>(
     parent_visits: f64,
     maximizing: bool,
     exploration: f64,
+    selection_policy: SelectionPolicy,
     bias_weight: f64,
 ) -> f64 {
-    let uct = uct_score(node, parent_visits, maximizing, exploration);
+    let uct = match selection_policy {
+        SelectionPolicy::Uct => uct_score(node, parent_visits, maximizing, exploration),
+        SelectionPolicy::Ucb1Tuned => tuned_score(
+            node.visits,
+            node.total_utility,
+            node.total_squared_utility,
+            parent_visits,
+            maximizing,
+        ),
+    };
     if bias_weight == 0.0 {
         uct
     } else {
         uct + progressive_bias_term(node, maximizing, bias_weight)
     }
+}
+
+// Equivalent to 2 * UCB1-Tuned([0, 1]) - 1. Keeping scores on the utility
+// scale preserves the existing progressive-bias scale. Variance is unchanged
+// by reversing the player perspective; converting [-1, 1] to [0, 1] divides it by 4.
+fn tuned_score(visits: u32, total: f64, squared: f64, parent_visits: f64, maximizing: bool) -> f64 {
+    if visits == 0 {
+        return f64::INFINITY;
+    }
+    let count = f64::from(visits);
+    let mean = total / count;
+    let variance = ((squared / count - mean * mean) / 4.0).clamp(0.0, 0.25);
+    let log_ratio = parent_visits.max(1.0).ln() / count;
+    let bound = (variance + (2.0 * log_ratio).sqrt()).min(0.25);
+    let signed_mean = if maximizing { mean } else { -mean };
+    signed_mean + 2.0 * (log_ratio * bound).sqrt()
 }
 
 fn progressive_bias_term<A>(node: &Node<A>, maximizing: bool, weight: f64) -> f64 {
@@ -2532,6 +2616,103 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tuned_matches_normalized_formula_and_handles_player_perspective() {
+        let n = 1000;
+        let parent = 1000.0_f64;
+        let mean = 0.4;
+        let squared_mean = 0.3;
+        let normalized_mean = (mean + 1.0) / 2.0;
+        let normalized_second = (squared_mean + 2.0 * mean + 1.0) / 4.0;
+        let variance = normalized_second - normalized_mean * normalized_mean;
+        let ratio = parent.ln() / f64::from(n);
+        let bonus = (ratio * (variance + (2.0 * ratio).sqrt()).min(0.25)).sqrt();
+        for maximizing in [false, true] {
+            let oriented_mean = if maximizing {
+                normalized_mean
+            } else {
+                1.0 - normalized_mean
+            };
+            let expected = 2.0 * (oriented_mean + bonus) - 1.0;
+            assert!((tuned_score(n, 400.0, 300.0, parent, maximizing) - expected).abs() < 1e-12);
+        }
+        assert!(tuned_score(n, 0.0, 1000.0, parent, true) > tuned_score(n, 0.0, 0.0, parent, true));
+        assert_eq!(tuned_score(0, 0.0, 0.0, 1.0, true), f64::INFINITY);
+        assert_eq!(tuned_score(1, 1.0, 1.0, 1.0, false), -1.0);
+    }
+
+    #[test]
+    fn tuned_graph_statistics_belong_to_the_edge_not_the_shared_child() {
+        let nodes = vec![GraphNode::new((), std::iter::empty::<u8>())];
+        let edge = GraphEdge {
+            action: 0,
+            child: 0,
+            visits: 1000,
+            total_utility: 400.0,
+            total_squared_utility: 300.0,
+            heuristic_value: 0.0,
+        };
+        let score = graph_selection_score(
+            &nodes,
+            &edge,
+            1000.0,
+            true,
+            99.0,
+            SelectionPolicy::Ucb1Tuned,
+            0.0,
+        );
+        assert_eq!(score, tuned_score(1000, 400.0, 300.0, 1000.0, true));
+        assert_eq!(
+            graph_edge_mean(&nodes, &edge, SelectionPolicy::Ucb1Tuned),
+            0.4
+        );
+        assert_eq!(graph_edge_mean(&nodes, &edge, SelectionPolicy::Uct), 0.0);
+    }
+
+    #[test]
+    fn tuned_backpropagates_moments_and_preserves_them_on_reuse() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        for graph in [false, true] {
+            let inner = MctsAgent::with_cutoff_evaluator(
+                MctsConfig {
+                    selection_policy: SelectionPolicy::Ucb1Tuned,
+                    budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
+                    rollout_depth: 0,
+                    ..MctsConfig::default()
+                },
+                FixedEvaluator(0.25),
+            );
+            let mut agent = TranspositionMctsAgent::new(inner, true, graph);
+            let chosen = agent
+                .select_action(
+                    DecisionContext::new(&game, &state, PlayerId::FIRST),
+                    &mut SplitMix64::new(4),
+                )
+                .unwrap();
+            if graph {
+                let edge = &agent.graph.as_ref().unwrap().nodes[0].edges[0];
+                assert_eq!(
+                    (edge.visits, edge.total_utility, edge.total_squared_utility),
+                    (1, 0.25, 0.0625)
+                );
+            } else {
+                let node = &agent.basic.tree.as_ref().unwrap().nodes[1];
+                assert_eq!(
+                    (node.visits, node.total_utility, node.total_squared_utility),
+                    (1, 0.25, 0.0625)
+                );
+            }
+            let mut next = state.clone();
+            game.apply_action(&mut next, &chosen).unwrap();
+            agent.on_action_applied(&game, &next, PlayerId::FIRST, &chosen);
+            if !graph {
+                let node = &agent.basic.tree.as_ref().unwrap().nodes[0];
+                assert_eq!(node.total_squared_utility, 0.0625);
+            }
+        }
+    }
+
+    #[test]
     fn total_budget_deducts_maintenance_and_reserves_finalization() {
         let mut clock = DecisionBudget::new();
         clock.pending_maintenance = Duration::from_millis(30);
@@ -2558,6 +2739,7 @@ mod tests {
                 for timed in [false, true] {
                     let mut agent = TranspositionMctsAgent::new(
                         MctsAgent::new(MctsConfig {
+                            selection_policy: Default::default(),
                             budget: if timed {
                                 SearchBudget::Time(Duration::from_secs(1))
                             } else {
@@ -2692,6 +2874,7 @@ mod tests {
                     let make_agent = |rollout_policy| {
                         TranspositionMctsAgent::new(
                             MctsAgent::new(MctsConfig {
+                                selection_policy: Default::default(),
                                 budget: SearchBudget::Iterations(NonZeroU32::new(64).unwrap()),
                                 exploration: 1.0,
                                 rollout_depth: 9,
@@ -2744,6 +2927,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(128).unwrap()),
             exploration: 1.0,
             rollout_depth: 9,
@@ -2827,6 +3011,7 @@ mod tests {
                 let mut agent = TranspositionMctsAgent::new(
                     MctsAgent::with_cutoff_evaluator(
                         MctsConfig {
+                            selection_policy: Default::default(),
                             budget: SearchBudget::Iterations(NonZeroU32::new(2).unwrap()),
                             exploration: 1.0,
                             rollout_depth,
@@ -3245,6 +3430,7 @@ mod tests {
             continuation_player,
         };
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(2_000).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 4,
@@ -3314,6 +3500,7 @@ mod tests {
     fn supports_actions_that_are_not_cloneable() {
         let game = NonCloneActionGame;
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 0,
@@ -3381,6 +3568,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Time(Duration::ZERO),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 2,
@@ -3404,6 +3592,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(4).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 2,
@@ -3520,6 +3709,7 @@ mod tests {
         let game = TicTacToe;
         for invalid in [f64::NAN, f64::INFINITY, -0.1] {
             let mut agent = MctsAgent::new(MctsConfig {
+                selection_policy: Default::default(),
                 budget: SearchBudget::default(),
                 exploration: invalid,
                 rollout_depth: 1,
@@ -3544,6 +3734,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 1,
@@ -3720,12 +3911,14 @@ mod tests {
 
         for seed in [0, 13, 42, 99] {
             let mut uniform = MctsAgent::new(MctsConfig {
+                selection_policy: SelectionPolicy::Uct,
                 budget,
                 exploration: std::f64::consts::SQRT_2,
                 rollout_depth: 9,
                 rollout_policy: RolloutPolicyConfig::<FailingEvaluator>::UniformRandom,
             });
             let mut epsilon = MctsAgent::new(MctsConfig {
+                selection_policy: SelectionPolicy::Uct,
                 budget,
                 exploration: std::f64::consts::SQRT_2,
                 rollout_depth: 9,
@@ -3779,12 +3972,14 @@ mod tests {
 
         for seed in [0, 13, 42, 99] {
             let mut uniform = MctsAgent::new(MctsConfig {
+                selection_policy: SelectionPolicy::Uct,
                 budget,
                 exploration: std::f64::consts::SQRT_2,
                 rollout_depth: 9,
                 rollout_policy: UniformRandom,
             });
             let mut conditional = MctsAgent::new(MctsConfig {
+                selection_policy: SelectionPolicy::Uct,
                 budget,
                 exploration: std::f64::consts::SQRT_2,
                 rollout_depth: 9,
@@ -3829,6 +4024,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let config = MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(256).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 9,
@@ -3869,6 +4065,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(9).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 1,
@@ -3903,6 +4100,7 @@ mod tests {
     fn disabled_root_diagnostics_do_not_report_action_stats() {
         let game = TicTacToe;
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(9).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 1,
@@ -3926,8 +4124,8 @@ mod tests {
         let mut higher = Node::new(Some(1_u8), 0.5, Vec::new());
         higher.visits = 4;
         assert!(
-            selection_score(&higher, 20.0, true, 0.0, 1.0)
-                > selection_score(&lower, 20.0, true, 0.0, 1.0)
+            selection_score(&higher, 20.0, true, 0.0, SelectionPolicy::Uct, 1.0)
+                > selection_score(&lower, 20.0, true, 0.0, SelectionPolicy::Uct, 1.0)
         );
 
         let early = progressive_bias_term(&higher, true, 1.0);
@@ -3941,6 +4139,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let config = MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(32).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 2,
@@ -3971,8 +4170,14 @@ mod tests {
         higher.visits = 4;
         let nodes = vec![parent, lower, higher];
 
-        assert_eq!(best_child(&nodes, 0, true, 0.0, 1.0), 2);
-        assert_eq!(best_child(&nodes, 0, false, 0.0, 1.0), 1);
+        assert_eq!(
+            best_child(&nodes, 0, true, 0.0, SelectionPolicy::Uct, 1.0),
+            2
+        );
+        assert_eq!(
+            best_child(&nodes, 0, false, 0.0, SelectionPolicy::Uct, 1.0),
+            1
+        );
     }
 
     #[test]
@@ -3980,6 +4185,7 @@ mod tests {
         let game = TicTacToe;
         for epsilon in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
             let mut agent = MctsAgent::new(MctsConfig {
+                selection_policy: Default::default(),
                 budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
                 exploration: std::f64::consts::SQRT_2,
                 rollout_depth: 0,
@@ -4000,6 +4206,7 @@ mod tests {
     fn conditional_rollout_validates_both_branches() {
         let game = TicTacToe;
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 0,
@@ -4024,6 +4231,7 @@ mod tests {
     fn rollout_policy_is_validated_once_per_search() {
         let game = TicTacToe;
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(32).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 2,
@@ -4046,6 +4254,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let config = MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(64).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 4,
@@ -4079,6 +4288,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let config = MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(64).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 4,
@@ -4113,6 +4323,7 @@ mod tests {
         let game = DiamondGame;
         let mut state = game.initial_state();
         let config = MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(4).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 4,
@@ -4161,6 +4372,7 @@ mod tests {
         };
         let mut state = game.initial_state();
         let config = MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(128).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 4,
@@ -4203,6 +4415,7 @@ mod tests {
         let game = TicTacToe;
         let mut state = game.initial_state();
         let config = MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(512).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 9,
@@ -4247,6 +4460,7 @@ mod tests {
         let game = TicTacToe;
         let mut state = game.initial_state();
         let config = MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 1,

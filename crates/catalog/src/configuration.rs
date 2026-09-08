@@ -386,6 +386,7 @@ pub fn configured_connect_four_mcts(
     };
     Ok(TranspositionMctsAgent::new(
         MctsAgent::new(MctsConfig {
+            selection_policy: config.search.selection_policy,
             budget: config.search.budget,
             exploration: config.search.exploration,
             rollout_depth: config.search.rollout_depth,
@@ -625,6 +626,7 @@ fn validate_search_config<P>(config: &MctsConfig<P>) -> Result<(), CatalogError>
 
 fn uniform_search_config(config: MctsConfig<ConfiguredRolloutPolicy>) -> MctsConfig<UniformRandom> {
     MctsConfig {
+        selection_policy: config.selection_policy,
         budget: config.budget,
         exploration: config.exploration,
         rollout_depth: config.rollout_depth,
@@ -641,6 +643,7 @@ fn standard_search_config(
         ));
     };
     Ok(MctsConfig {
+        selection_policy: config.selection_policy,
         budget: config.budget,
         exploration: config.exploration,
         rollout_depth: config.rollout_depth,

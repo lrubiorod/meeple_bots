@@ -86,7 +86,7 @@ def _player_name(index: int, player: GuiPlayer) -> str:
     reuse = "reuse" if player.tree_reuse else "fresh"
     return (
         f"gui-player-{index + 1}-mcts-{budget}-d{player.rollout_depth}"
-        f"-c{player.exploration:g}-h{heuristic}-{reuse}"
+        f"-c{player.exploration:g}-h{heuristic}-{reuse}-{player.selection_policy}"
     )
 
 
@@ -105,6 +105,7 @@ def _agent_dict(name: str, player: GuiPlayer) -> dict[str, object]:
         "time_budget": player.time_budget,
         "rollout_depth": player.rollout_depth,
         "exploration": player.exploration,
+        "selection_policy": player.selection_policy,
         "heuristic": player.heuristic,
         "cutoff_evaluator": evaluator,
         "rollout_policy": "uniform_random",

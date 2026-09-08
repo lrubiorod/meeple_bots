@@ -628,6 +628,7 @@ where
 {
     let iterations = NonZeroU32::new(iterations).expect("calibration count is non-zero");
     let mut agent = MctsAgent::new(MctsConfig {
+        selection_policy: Default::default(),
         budget: SearchBudget::Iterations(iterations),
         exploration: std::f64::consts::SQRT_2,
         rollout_depth,
@@ -760,6 +761,7 @@ mod tests {
     fn configured_agent_benchmark_times_exact_search_on_shared_positions() {
         let iterations = NonZeroU32::new(4).unwrap();
         let mut agent = MctsAgent::new(MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(iterations),
             rollout_depth: 4,
             ..MctsConfig::default()

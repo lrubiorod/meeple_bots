@@ -37,7 +37,7 @@ PAGE = r"""<!doctype html>
 <section class="mcts-configs">
 <div class="mcts-config" id="mcts-config-0" hidden>
 <strong>MCTS · Jugador 1</strong>
-<label>Presupuesto<select id="budget-mode-0"><option value="time">Tiempo</option><option value="iterations">Iteraciones</option></select></label>
+<label>Selección<select id="selection-policy-0"><option value="uct">UCT</option><option value="ucb1_tuned">UCB1-Tuned (ignora exploración)</option></select></label><label>Presupuesto<select id="budget-mode-0"><option value="time">Tiempo</option><option value="iterations">Iteraciones</option></select></label>
 <label id="time-budget-label-0">Tiempo por decisión (s)<input id="time-budget-0" type="number" min="0.001" step="0.1" value="1"></label>
 <label id="iterations-label-0" hidden>Iteraciones por decisión<input id="iterations-0" type="number" min="1" value="500"></label>
 <label>Profundidad<input id="depth-0" type="number" min="1" value="130"></label>
@@ -47,7 +47,7 @@ PAGE = r"""<!doctype html>
 </div>
 <div class="mcts-config" id="mcts-config-1">
 <strong>MCTS · Jugador 2</strong>
-<label>Presupuesto<select id="budget-mode-1"><option value="time">Tiempo</option><option value="iterations">Iteraciones</option></select></label>
+<label>Selección<select id="selection-policy-1"><option value="uct">UCT</option><option value="ucb1_tuned">UCB1-Tuned (ignora exploración)</option></select></label><label>Presupuesto<select id="budget-mode-1"><option value="time">Tiempo</option><option value="iterations">Iteraciones</option></select></label>
 <label id="time-budget-label-1">Tiempo por decisión (s)<input id="time-budget-1" type="number" min="0.001" step="0.1" value="1"></label>
 <label id="iterations-label-1" hidden>Iteraciones por decisión<input id="iterations-1" type="number" min="1" value="500"></label>
 <label>Profundidad<input id="depth-1" type="number" min="1" value="130"></label>
@@ -159,7 +159,7 @@ function initializeGui(){
     const kind=document.querySelector(`#player-${index}`).value;
     if(kind!=='mcts')return{kind};
     const heuristic=document.querySelector(`#heuristic-${index}`).value,mode=document.querySelector(`#budget-mode-${index}`).value;
-    return{kind,iterations:mode==='iterations'?Number(document.querySelector(`#iterations-${index}`).value):null,time_budget:mode==='time'?Number(document.querySelector(`#time-budget-${index}`).value):null,exploration:Number(document.querySelector(`#exploration-${index}`).value),rollout_depth:Number(document.querySelector(`#depth-${index}`).value),heuristic:heuristic==='none'?null:Number(heuristic),transpositions:document.querySelector(`#transpositions-${index}`).checked,tree_reuse:document.querySelector(`#tree-reuse-${index}`).checked};
+    return{kind,selection_policy:document.querySelector(`#selection-policy-${index}`).value,iterations:mode==='iterations'?Number(document.querySelector(`#iterations-${index}`).value):null,time_budget:mode==='time'?Number(document.querySelector(`#time-budget-${index}`).value):null,exploration:Number(document.querySelector(`#exploration-${index}`).value),rollout_depth:Number(document.querySelector(`#depth-${index}`).value),heuristic:heuristic==='none'?null:Number(heuristic),transpositions:document.querySelector(`#transpositions-${index}`).checked,tree_reuse:document.querySelector(`#tree-reuse-${index}`).checked};
   }
   function updateBudget(index){const timed=document.querySelector(`#budget-mode-${index}`).value==='time';document.querySelector(`#time-budget-label-${index}`).hidden=!timed;document.querySelector(`#iterations-label-${index}`).hidden=timed}
   function updateMctsConfig(index){document.querySelector(`#mcts-config-${index}`).hidden=document.querySelector(`#player-${index}`).value!=='mcts'}
@@ -169,6 +169,7 @@ function initializeGui(){
     document.querySelector(`#iterations-${player}`).value = baseline.iterations ?? 1000;
     document.querySelector(`#time-budget-${player}`).value = baseline.time_budget ?? 1;
     document.querySelector(`#depth-${player}`).value = baseline.rollout_depth;
+    document.querySelector(`#selection-policy-${player}`).value = baseline.selection_policy;
     document.querySelector(`#exploration-${player}`).value = baseline.exploration;
     document.querySelector(`#heuristic-${player}`).value = String(baseline.heuristic);
     document.querySelector(`#tree-reuse-${player}`).checked = baseline.tree_reuse;

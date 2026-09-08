@@ -181,6 +181,7 @@ def agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, object]:
         "time_budget": agent.time_budget,
         "rollout_depth": agent.rollout_depth,
         "exploration": agent.exploration,
+        "selection_policy": agent.selection_policy,
         "heuristic": agent.heuristic,
         "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator),
         "rollout_policy": _rollout_policy_name(agent),

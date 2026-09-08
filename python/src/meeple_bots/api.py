@@ -1034,6 +1034,7 @@ def benchmark_mcts_agent(
         agent.root_diagnostics,
         agent.tree_reuse,
         agent.transpositions,
+        agent.selection_policy,
     )
     return MctsAgentBenchmark(
         game=game,
@@ -1207,6 +1208,7 @@ def _native_agent(agent: Agent, game: Game):
             agent.root_diagnostics,
             agent.tree_reuse,
             agent.transpositions,
+            agent.selection_policy,
         )
     return _native.AgentConfig.human(
         _human_selector(agent, game),

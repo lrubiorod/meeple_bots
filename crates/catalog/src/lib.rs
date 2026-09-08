@@ -30,7 +30,9 @@ pub use meeple_bots_evaluation::{
 use meeple_bots_evaluation::{
     benchmark_mcts_agent as benchmark_typed_mcts_agent, evaluate_game as evaluate_typed_game,
 };
-pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, SearchBudget, UniformRandom};
+pub use meeple_bots_mcts_agent::{
+    MctsConfig, RolloutPolicyConfig, SearchBudget, SelectionPolicy, UniformRandom,
+};
 use meeple_bots_simulation::{
     BatchConfig, MatchError, MatchObserver, SplitMix64, TracedMatchResult, play_batch, play_match,
     play_match_with_trace as play_typed_match_with_trace, play_match_with_trace_and_observer,
@@ -1247,6 +1249,7 @@ mod tests {
     fn mcts(heuristic: Option<u32>) -> AgentConfig {
         AgentConfig::Mcts(MctsAgentConfig {
             search: MctsConfig {
+                selection_policy: Default::default(),
                 budget: SearchBudget::Iterations(NonZeroU32::new(4).unwrap()),
                 exploration: std::f64::consts::SQRT_2,
                 rollout_depth: 1,
@@ -1644,6 +1647,7 @@ mod tests {
         let game = spirits_of_the_forest_game(17);
         let state = game.initial_state();
         let base = MctsConfig {
+            selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(128).unwrap()),
             exploration: std::f64::consts::SQRT_2,
             rollout_depth: 32,

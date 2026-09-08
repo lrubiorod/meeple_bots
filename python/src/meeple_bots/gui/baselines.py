@@ -24,6 +24,7 @@ def _load_gui_baseline(filename: str) -> GuiPlayer:
         exploration=agent.exploration, rollout_depth=agent.rollout_depth,
         heuristic=agent.heuristic, tree_reuse=agent.tree_reuse,
         transpositions=agent.transpositions,
+        selection_policy=agent.selection_policy,
     )
     # Do not silently discard policies or evaluator parameters absent from the GUI.
     represented = MctsAgent(**{k: v for k, v in player.as_dict().items() if k != "kind"})

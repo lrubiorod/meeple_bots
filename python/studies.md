@@ -481,3 +481,8 @@ board zones by cell count; SPOTF reports both internal plies and physical player
 The JSONL trace is the durable source record. Extracted tables and reports can be regenerated from
 it without rerunning MCTS.
 
+
+Analysis schema 9 adds `selection_policy` to `agents.csv`. Historical MCTS configurations
+without that field mean `uct`; the original configuration remains preserved in `config_json`.
+UCB1-Tuned studies should change only `selection_policy`, keeping budgets, rollouts, evaluators,
+reuse and transpositions equal. The `exploration` setting only affects UCT.

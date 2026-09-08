@@ -22,6 +22,7 @@ class GuiPlayer:
     heuristic: int | None = None
     tree_reuse: bool = False
     transpositions: bool = False
+    selection_policy: str = "uct"
 
     def __post_init__(self) -> None:
         if self.kind not in ("human", "random", "mcts"):
@@ -35,6 +36,7 @@ class GuiPlayer:
                 heuristic=self.heuristic,
                 tree_reuse=self.tree_reuse,
                 transpositions=self.transpositions,
+                selection_policy=self.selection_policy,
             )
 
     def as_dict(self) -> dict[str, object]:
@@ -49,6 +51,7 @@ class GuiPlayer:
             "heuristic": self.heuristic,
             "tree_reuse": self.tree_reuse,
             "transpositions": self.transpositions,
+            "selection_policy": self.selection_policy,
         }
 
 
@@ -87,4 +90,5 @@ def parse_gui_player(
         heuristic=heuristic,
         tree_reuse=raw.get("tree_reuse", False),
         transpositions=raw.get("transpositions", False),
+        selection_policy=raw.get("selection_policy", "uct"),
     )

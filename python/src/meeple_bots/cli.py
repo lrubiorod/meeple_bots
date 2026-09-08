@@ -105,6 +105,7 @@ _TOURNAMENT_GRID_FIELDS = (
     (("time_budget",), "t"),
     (("rollout_depth",), "d"),
     (("exploration",), "c"),
+    (("selection_policy",), "selection"),
     (("heuristic_index",), "h"),
     (("cutoff_evaluator", "index"), "h"),
     (("rollout_heuristic_index",), "rh"),
@@ -179,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="approximate wall-clock seconds per MCTS decision",
     )
+    match.add_argument("--mcts-selection-policy", choices=("uct", "ucb1_tuned"), default="uct")
     match.add_argument("--mcts-exploration", type=float, default=sqrt_two())
     match.add_argument("--mcts-rollout-depth", type=int)
     match.add_argument(
@@ -644,6 +646,7 @@ def _load_tournament_agents(
         "iterations",
         "time_budget",
         "exploration",
+        "selection_policy",
         "rollout_depth",
         "use_heuristic",
         "heuristic_index",
@@ -678,6 +681,7 @@ def _load_tournament_agents(
         "iterations",
         "time_budget",
         "exploration",
+        "selection_policy",
         "rollout_depth",
         "use_heuristic",
         "heuristic_index",
@@ -846,6 +850,7 @@ def _build_tournament_mcts_agent(
 ) -> MctsAgent:
     agent = MctsAgent(
         **_mcts_budget_kwargs(values, f"tournament agent {name}"),
+        selection_policy=values.get("selection_policy", "uct"),
         exploration=values.get("exploration", sqrt_two()),
         rollout_depth=values["rollout_depth"],
         cutoff_evaluator=_configured_cutoff_evaluator(
@@ -1121,6 +1126,7 @@ def _batch_agent_description(name: str, agent: RandomAgent | MctsAgent) -> str:
         f"{name} ({_mcts_budget_description(agent)}, "
         f"rollout_depth={agent.rollout_depth}, "
         f"exploration={agent.exploration:.6f}, "
+        f"selection_policy={agent.selection_policy}, "
         f"cutoff={_evaluator_name(agent.cutoff_evaluator)}, "
         f"rollout={_rollout_policy_description(agent)}, "
         f"progressive_bias={_progressive_bias_description(agent.progressive_bias)}, "
@@ -1249,6 +1255,7 @@ def _mcts_configuration(args: argparse.Namespace) -> MctsAgent:
         ),
         time_budget=args.mcts_time_budget,
         exploration=args.mcts_exploration,
+        selection_policy=args.mcts_selection_policy,
         rollout_depth=(
             256 if args.mcts_rollout_depth is None else args.mcts_rollout_depth
         ),
@@ -1305,6 +1312,7 @@ def _agent(
             iterations=mcts.iterations,
             time_budget=mcts.time_budget,
             exploration=mcts.exploration,
+            selection_policy=mcts.selection_policy,
             rollout_depth=mcts.rollout_depth,
             cutoff_evaluator=(
                 NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic)
@@ -1327,6 +1335,7 @@ def _agent_dict(name: str, agent) -> dict[str, object]:
     )
     return {
         "type": name,
+        "selection_policy": agent.selection_policy if isinstance(agent, MctsAgent) else None,
         "iterations": agent.iterations if isinstance(agent, MctsAgent) else None,
         "time_budget": agent.time_budget if isinstance(agent, MctsAgent) else None,
         "rollout_depth": agent.rollout_depth if isinstance(agent, MctsAgent) else None,
@@ -1649,6 +1658,7 @@ def _configured_benchmark_dicts(
                 "time_budget": agent.time_budget,
                 "rollout_depth": agent.rollout_depth,
                 "exploration": agent.exploration,
+                "selection_policy": agent.selection_policy,
                 "heuristic": agent.heuristic,
                 "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator),
                 "rollout_policy": _rollout_policy_name(agent),

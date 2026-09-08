@@ -176,8 +176,11 @@ class MctsAgent:
     root_diagnostics: bool = False
     tree_reuse: bool = False
     transpositions: bool = False
+    selection_policy: str = "uct"
 
     def __post_init__(self) -> None:
+        if self.selection_policy not in ("uct", "ucb1_tuned"):
+            raise ValueError("selection_policy must be uct or ucb1_tuned")
         if self.iterations is None and self.time_budget is None:
             object.__setattr__(self, "iterations", 1_000)
         elif self.iterations is not None and self.time_budget is not None:

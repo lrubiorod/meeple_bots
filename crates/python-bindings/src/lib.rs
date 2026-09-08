@@ -85,6 +85,7 @@ impl PyAgentConfig {
         root_diagnostics=false,
         tree_reuse=false,
         transpositions=false,
+        selection_policy="uct",
     ))]
     // Preserve the Python keyword-argument interface.
     #[allow(clippy::too_many_arguments)]
@@ -115,6 +116,7 @@ impl PyAgentConfig {
         root_diagnostics: bool,
         tree_reuse: bool,
         transpositions: bool,
+        selection_policy: &str,
     ) -> PyResult<Self> {
         if !exploration.is_finite() || exploration < 0.0 {
             return Err(PyValueError::new_err(
@@ -130,6 +132,7 @@ impl PyAgentConfig {
         Ok(Self {
             inner: PythonAgentConfig::Automated(AgentConfig::Mcts(MctsAgentConfig {
                 search: MctsConfig {
+                    selection_policy: parse_selection_policy(selection_policy)?,
                     budget: parse_search_budget(iterations, time_budget)?,
                     exploration,
                     rollout_depth,
@@ -584,6 +587,7 @@ fn py_evaluate_game(
     root_diagnostics=false,
     tree_reuse=false,
     transpositions=false,
+    selection_policy="uct",
 ))]
 // Preserve the Python keyword-argument interface.
 #[allow(clippy::too_many_arguments)]
@@ -618,6 +622,7 @@ fn py_benchmark_mcts_agent(
     root_diagnostics: bool,
     tree_reuse: bool,
     transpositions: bool,
+    selection_policy: &str,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     if !exploration.is_finite() || exploration < 0.0 {
@@ -634,6 +639,7 @@ fn py_benchmark_mcts_agent(
         game,
         MctsAgentConfig {
             search: MctsConfig {
+                selection_policy: parse_selection_policy(selection_policy)?,
                 budget: parse_search_budget(iterations, time_budget)?,
                 exploration,
                 rollout_depth,
@@ -2246,4 +2252,14 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_analyze_trace, module)?)?;
     module.add_function(wrap_pyfunction!(py_spirits_initial_state, module)?)?;
     Ok(())
+}
+
+fn parse_selection_policy(value: &str) -> PyResult<meeple_bots_catalog::SelectionPolicy> {
+    match value {
+        "uct" => Ok(meeple_bots_catalog::SelectionPolicy::Uct),
+        "ucb1_tuned" => Ok(meeple_bots_catalog::SelectionPolicy::Ucb1Tuned),
+        _ => Err(PyValueError::new_err(
+            "selection_policy must be uct or ucb1_tuned",
+        )),
+    }
 }

@@ -2973,7 +2973,7 @@ class MatchApiTests(unittest.TestCase):
             )
             self.assertIsNone(manifest["source"])
             self.assertEqual(len(manifest["sources"]), 2)
-            self.assertEqual(manifest["analysis_schema_version"], 8)
+            self.assertEqual(manifest["analysis_schema_version"], 9)
             self.assertEqual(manifest["row_counts"]["studies"], 2)
             self.assertTrue((output_dir / "root_actions.csv").is_file())
 
@@ -3105,7 +3105,7 @@ class MatchApiTests(unittest.TestCase):
                     Path(output_dir, "manifest.json").read_text(encoding="utf-8")
                 )
                 self.assertEqual(exit_code, 0)
-                self.assertEqual(manifest["analysis_schema_version"], 8)
+                self.assertEqual(manifest["analysis_schema_version"], 9)
                 self.assertEqual(manifest["analysis"], "generic move-level extraction")
                 self.assertTrue(Path(output_dir, "moves.csv").is_file())
 

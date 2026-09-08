@@ -142,6 +142,7 @@ class SpiritsOfTheForestGui(GuiController):
             iterations=configured.iterations,
             time_budget=configured.time_budget,
             exploration=configured.exploration,
+            selection_policy=configured.selection_policy,
             rollout_depth=configured.rollout_depth,
             heuristic=configured.heuristic,
             tree_reuse=configured.tree_reuse,
