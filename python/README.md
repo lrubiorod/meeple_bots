@@ -585,7 +585,16 @@ For a study with its own ordering, `match_jobs`, `run_matches`, `tournament_head
 and `TournamentTrace` expose those same pieces. `TournamentTrace(..., resume=True)`
 validates an existing trace against its header and exposes `completed_match_numbers`;
 the caller must skip those jobs without changing their original identities. Duplicate
-numbers, conflicting plans, and truncated records are rejected. This lower-level
+numbers, conflicting plans, truncated records and incomplete results are rejected before
+opening the file for append. Results must contain consistent plies/moves, winner/utilities,
+finite timings and structured actions. The same validation runs before writing new results.
+The writer checks pairing identity, seats and seed against the plan, including paired seeds,
+self-play and seed wraparound. Game legality remains the responsibility of native replay during
+extraction; resumption does not rerun games.
+
+New headers include ordered `pairings`, making adjacent-grid schedules verifiable. Header equality
+is still required. Older round-robin headers can be used unchanged to resume their original plan;
+older adjacent headers without a pairing plan are rejected rather than guessed. This lower-level
 resumption is for Python study scripts; the CLI still protects existing output and
 requires `--overwrite` to replace it. Regenerate analysis using `extract` and `report`.
 
