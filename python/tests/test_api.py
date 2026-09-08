@@ -748,6 +748,28 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(benchmark.agent, agent)
         self.assertGreater(benchmark.milliseconds_per_iteration, 0.0)
 
+    def test_root_diagnostics_are_optional_for_every_game_and_search_mode(self) -> None:
+        for game in (Boop(), ConnectFour(), SpiritsOfTheForest(), TicTacToe()):
+            for transpositions in (False, True):
+                for enabled in (False, True):
+                    with self.subTest(game=game, transpositions=transpositions, enabled=enabled):
+                        result = Match(
+                            game=game,
+                            first=MctsAgent(
+                                iterations=4,
+                                rollout_depth=1,
+                                root_diagnostics=enabled,
+                                transpositions=transpositions,
+                            ),
+                            second=RandomAgent(),
+                            seed=7,
+                        ).run()
+                        self.assertTrue(result.moves)
+                        roots = result.moves[0].root_actions
+                        self.assertEqual(bool(roots), enabled)
+                        if enabled:
+                            self.assertEqual(sum(root.selected for root in roots), 1)
+
     def test_conditional_progressive_bias_records_root_diagnostics(self) -> None:
         bias = ProgressiveBias(0.25, GameHeuristic(0), TurnPhaseIs("collect"))
         result = Match(

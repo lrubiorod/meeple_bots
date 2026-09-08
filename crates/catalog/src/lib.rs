@@ -924,7 +924,8 @@ pub fn configured_tic_tac_toe_mcts(
 ) -> Result<TicTacToeMctsAgent, CatalogError> {
     validate_uninformed_agent(GameId::TicTacToe, &config)?;
     Ok(TranspositionMctsAgent::new(
-        MctsAgent::new(uniform_search_config(config.search)),
+        MctsAgent::new(uniform_search_config(config.search))
+            .with_root_diagnostics(config.root_diagnostics),
         config.tree_reuse,
         config.transpositions,
     ))
@@ -2057,6 +2058,43 @@ mod tests {
 
         assert_eq!(result.utilities.len(), 2);
         assert!((5..=9).contains(&result.plies));
+    }
+
+    #[test]
+    fn root_diagnostics_are_optional_for_every_game_and_search_mode() {
+        for game in [
+            GameId::Boop,
+            GameId::ConnectFour,
+            GameId::SpiritsOfTheForest,
+            GameId::TicTacToe,
+        ] {
+            for transpositions in [false, true] {
+                for enabled in [false, true] {
+                    let AgentConfig::Mcts(mut config) = mcts(None) else {
+                        unreachable!()
+                    };
+                    config.root_diagnostics = enabled;
+                    config.transpositions = transpositions;
+                    let report = run_match_with_trace(
+                        game,
+                        AgentConfig::Mcts(config),
+                        AgentConfig::Random,
+                        MatchConfig::default(),
+                    )
+                    .unwrap();
+                    assert!(!report.moves.is_empty());
+                    let roots = &report.moves[0].root_actions;
+                    assert_eq!(
+                        !roots.is_empty(),
+                        enabled,
+                        "{game:?}, transpositions={transpositions}"
+                    );
+                    if enabled {
+                        assert_eq!(roots.iter().filter(|root| root.selected).count(), 1);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
