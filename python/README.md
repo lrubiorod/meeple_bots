@@ -818,6 +818,13 @@ dispatch live under `meeple_bots.gui` and `meeple_bots.reporting`. The private
 `meeple_bots._native` module is an implementation detail; applications should import public values
 from `meeple_bots`.
 
+Report adapters share extraction-table validation and competitive statistics through
+`meeple_bots.reporting.common`. That module defines per-seat win/draw/loss records, score
+aggregation, win-rate Wilson intervals and first-player advantage. Game modules select their
+existing output columns and add domain-specific metrics and figures. Competitive results exclude
+self-play; the historical overall first-player statistic includes it and considers decisive games
+only. Wilson intervals describe win rate, not the score that awards half a point for draws.
+
 Rust remains the single source of truth for rules under the repository's top-level `games/`
 workspace. Python game packages provide presentation, reporting, and integration rather than a
 second rule implementation.

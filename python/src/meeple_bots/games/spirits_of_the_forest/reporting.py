@@ -15,7 +15,14 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from ...reporting import decision_timing_description, read_analysis_csv, wilson_interval
+from ...reporting import decision_timing_description
+
+from ...reporting.common import (
+    boolean as _boolean,
+    competitive_performance,
+    first_player_advantage as _first_player_advantage,
+    load_tables,
+)
 
 
 _REQUIRED_TABLES = (
@@ -75,49 +82,9 @@ def generate_spotf_report(
 
 
 def _load_tables(input_dir: Path, manifest: dict[str, object]) -> dict[str, pd.DataFrame]:
-    manifest_tables = manifest.get("tables")
-    row_counts = manifest.get("row_counts")
-    if not isinstance(manifest_tables, dict):
-        raise TypeError("extraction manifest tables must be an object")
-    if not isinstance(row_counts, dict):
-        raise TypeError("extraction manifest row_counts must be an object")
-
-    tables: dict[str, pd.DataFrame] = {}
-    for name in _REQUIRED_TABLES:
-        filename = manifest_tables.get(name)
-        if not isinstance(filename, str):
-            raise ValueError(f"extraction manifest does not define table {name}")
-        path = input_dir / filename
-        try:
-            table = read_analysis_csv(path, empty_as_missing=True)
-        except FileNotFoundError as error:
-            raise FileNotFoundError(f"extraction table not found: {path}") from error
-        expected_rows = row_counts.get(name)
-        if not isinstance(expected_rows, int):
-            raise TypeError(f"extraction row count for {name} must be an integer")
-        if len(table) != expected_rows:
-            raise ValueError(
-                f"extraction table {name} has {len(table)} rows; expected {expected_rows}"
-            )
-        tables[name] = table
-    root_filename = manifest_tables.get("root_actions")
-    if isinstance(root_filename, str):
-        root_path = input_dir / root_filename
-        root_actions = read_analysis_csv(root_path, empty_as_missing=True)
-        expected_root_rows = row_counts.get("root_actions")
-        if not isinstance(expected_root_rows, int):
-            raise TypeError("extraction row count for root_actions must be an integer")
-        if len(root_actions) != expected_root_rows:
-            raise ValueError(
-                "extraction table root_actions has "
-                f"{len(root_actions)} rows; expected {expected_root_rows}"
-            )
-        tables["root_actions"] = root_actions
-    else:
-        tables["root_actions"] = pd.DataFrame()
-    if tables["matches"].empty:
-        raise ValueError("cannot generate a report without completed matches")
-    return tables
+    return load_tables(
+        input_dir, manifest, _REQUIRED_TABLES, empty_as_missing=True, optional=("root_actions",)
+    )
 
 
 def _derive_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
@@ -186,102 +153,16 @@ def _root_selection(root_actions: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
-def _boolean(values: pd.Series) -> pd.Series:
-    if values.dtype == bool:
-        return values
-    result = values.astype(str).str.lower().map({"true": True, "false": False})
-    if result.isna().any():
-        raise ValueError("expected boolean CSV values")
-    return result.astype(bool)
-
-
 def _agent_performance(matches: pd.DataFrame, agents: list[str]) -> pd.DataFrame:
-    competitive = matches.loc[~matches["self_play"]]
-    rows = []
-    for agent in agents:
-        games = competitive.loc[
-            (competitive["player_0_agent"] == agent)
-            | (competitive["player_1_agent"] == agent)
-        ]
-        wins = int((games["winner_agent"] == agent).sum())
-        draws = int(games["winner_agent"].isna().sum())
-        low, high = wilson_interval(wins, len(games))
-        rows.append(
-            {
-                "agent": agent,
-                "games": len(games),
-                "wins": wins,
-                "losses": len(games) - wins - draws,
-                "draws": draws,
-                "win_rate": wins / len(games) if len(games) else 0.0,
-                "ci_low": low,
-                "ci_high": high,
-            }
-        )
-    return pd.DataFrame(rows)
+    return competitive_performance(matches, agents)[
+        ["agent", "games", "wins", "losses", "draws", "win_rate", "ci_low", "ci_high"]
+    ]
 
 
 def _pairwise_performance(matches: pd.DataFrame, agents: list[str]) -> pd.DataFrame:
-    competitive = matches.loc[~matches["self_play"]]
-    rows = []
-    for agent in agents:
-        for opponent in agents:
-            if agent == opponent:
-                continue
-            games = competitive.loc[
-                ((competitive["agent_a"] == agent) & (competitive["agent_b"] == opponent))
-                | (
-                    (competitive["agent_a"] == opponent)
-                    & (competitive["agent_b"] == agent)
-                )
-            ]
-            if games.empty:
-                continue
-            wins = int((games["winner_agent"] == agent).sum())
-            draws = int(games["winner_agent"].isna().sum())
-            low, high = wilson_interval(wins, len(games))
-            rows.append(
-                {
-                    "agent": agent,
-                    "opponent": opponent,
-                    "games": len(games),
-                    "wins": wins,
-                    "draws": draws,
-                    "win_rate": wins / len(games),
-                    "score_rate": (wins + 0.5 * draws) / len(games),
-                    "ci_low": low,
-                    "ci_high": high,
-                }
-            )
-    return pd.DataFrame(rows)
-
-
-def _first_player_advantage(matches: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    groups: list[tuple[str, pd.DataFrame]] = [("overall", matches)]
-    competitive = matches.loc[~matches["self_play"]].copy()
-    if not competitive.empty:
-        competitive["pairing"] = competitive.apply(
-            lambda row: " vs ".join(sorted((str(row["agent_a"]), str(row["agent_b"])))),
-            axis=1,
-        )
-        groups.extend((name, group) for name, group in competitive.groupby("pairing", sort=True))
-    for pairing, games in groups:
-        decisive = games.loc[games["winner_player"].notna()]
-        first_wins = int((decisive["winner_player"] == 0).sum())
-        low, high = wilson_interval(first_wins, len(decisive))
-        rows.append(
-            {
-                "pairing": pairing,
-                "games": len(games),
-                "decisive_games": len(decisive),
-                "player_0_wins": first_wins,
-                "player_0_win_rate": first_wins / len(decisive) if len(decisive) else 0.0,
-                "ci_low": low,
-                "ci_high": high,
-            }
-        )
-    return pd.DataFrame(rows)
+    table = competitive_performance(matches, agents, pairwise=True)
+    table = table.rename(columns={"score": "score_rate"})
+    return table[["agent", "opponent", "games", "wins", "draws", "win_rate", "score_rate", "ci_low", "ci_high"]]
 
 
 def _game_lengths(matches: pd.DataFrame, spotf_matches: pd.DataFrame) -> pd.DataFrame:

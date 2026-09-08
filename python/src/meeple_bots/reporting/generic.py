@@ -13,66 +13,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from . import decision_timing_description, read_analysis_csv
+from . import decision_timing_description
+from .common import (
+    competitive_results as _competitive_results,
+    performance as _performance,
+    load_tables,
+)
 
 
 def _load_tables(input_dir: Path, manifest: dict) -> dict[str, pd.DataFrame]:
-    filenames = manifest.get("tables")
-    counts = manifest.get("row_counts")
-    if not isinstance(filenames, dict) or not isinstance(counts, dict):
-        raise TypeError("extraction manifest tables and row_counts must be objects")
-    tables = {}
-    for name in ("agents", "matches", "moves"):
-        filename = filenames.get(name)
-        if not isinstance(filename, str):
-            raise ValueError(f"extraction manifest does not define table {name}")
-        # Preserve names such as 'NA'; convert only known numeric columns below.
-        table = read_analysis_csv(input_dir / filename, empty_as_missing=False)
-        expected = counts.get(name)
-        if not isinstance(expected, int):
-            raise TypeError(f"extraction row count for {name} must be an integer")
-        if len(table) != expected:
-            raise ValueError(
-                f"extraction table {name} has {len(table)} rows; expected {expected}"
-            )
-        tables[name] = table
-    if tables["matches"].empty:
-        raise ValueError("cannot generate a report without completed matches")
-    return tables
-
-
-def _competitive_results(matches: pd.DataFrame) -> pd.DataFrame:
-    self_play = matches["self_play"].astype(str).str.lower().map(
-        {"true": True, "false": False}
+    return load_tables(
+        input_dir, manifest, ("agents", "matches", "moves"), empty_as_missing=False
     )
-    if self_play.isna().any():
-        raise ValueError("expected boolean CSV values for self_play")
-    rows = []
-    for match in matches.loc[~self_play].itertuples(index=False):
-        winner = None if str(match.winner_player) == "" else int(match.winner_player)
-        players = (match.player_0_agent, match.player_1_agent)
-        for seat, agent in enumerate(players):
-            rows.append({
-                "agent": agent,
-                "opponent": players[1 - seat],
-                "seat": seat,
-                "wins": int(winner == seat),
-                "draws": int(winner is None),
-                "losses": int(winner is not None and winner != seat),
-            })
-    return pd.DataFrame(
-        rows, columns=["agent", "opponent", "seat", "wins", "draws", "losses"]
-    )
-
-
-def _performance(results: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
-    columns = [*keys, "games", "wins", "draws", "losses", "score"]
-    if results.empty:
-        return pd.DataFrame(columns=columns)
-    grouped = results.groupby(keys, as_index=False)[["wins", "draws", "losses"]].sum()
-    grouped["games"] = grouped[["wins", "draws", "losses"]].sum(axis=1)
-    grouped["score"] = (grouped["wins"] + 0.5 * grouped["draws"]) / grouped["games"]
-    return grouped[columns]
 
 
 def _decision_performance(moves: pd.DataFrame, agents: pd.DataFrame) -> pd.DataFrame:

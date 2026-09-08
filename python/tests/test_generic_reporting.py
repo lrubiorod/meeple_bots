@@ -93,6 +93,62 @@ class GenericReportingTests(unittest.TestCase):
         self.assertTrue((pairwise["games"] == 4).all())
         self.assertTrue(_competitive_results(matches.iloc[-1:]).empty)
 
+    def test_common_statistics_preserve_specialized_views_and_empty_pairs(self):
+        import pandas as pd
+        from meeple_bots.reporting.common import competitive_performance, first_player_advantage
+        from meeple_bots.games.boop import reporting as boop
+        from meeple_bots.games.spirits_of_the_forest import reporting as spotf
+
+        matches = pd.DataFrame([
+            ("NA", "beta", 0, False),
+            ("beta", "NA", 0, False),
+            ("NA", "beta", None, False),
+            ("NA", "NA", 0, True),
+        ], columns=["player_0_agent", "player_1_agent", "winner_player", "self_play"])
+        matches["agent_a"] = matches["player_0_agent"]
+        matches["agent_b"] = matches["player_1_agent"]
+        agents = ["beta", "NA", "unplayed"]
+        performance = competitive_performance(matches, agents).set_index("agent")
+        self.assertEqual(performance.index.tolist(), agents)
+        for name in agents[:2]:
+            self.assertEqual(performance.loc[name, ["games", "wins", "draws", "losses"]].tolist(), [3, 1, 1, 1])
+            self.assertEqual(performance.loc[name, "score"], 0.5)
+            self.assertAlmostEqual(performance.loc[name, "win_rate"], 1 / 3)
+        self.assertEqual(performance.loc["unplayed", "games"], 0)
+        self.assertEqual(performance.loc["unplayed", "ci_high"], 0)
+        for module in (boop, spotf):
+            pairs = module._pairwise_performance(matches, agents)
+            self.assertEqual(pairs["agent"].tolist(), ["beta", "NA"])
+            empty = module._pairwise_performance(matches.iloc[-1:], agents)
+            self.assertTrue(empty.empty)
+            self.assertEqual(empty.columns.tolist(), pairs.columns.tolist())
+            self.assertTrue((module._agent_performance(matches.iloc[-1:], agents)["games"] == 0).all())
+        self.assertEqual(spotf._pairwise_performance(matches, agents)["score_rate"].tolist(), [0.5, 0.5])
+        first = first_player_advantage(matches).set_index("pairing")
+        # Historical overall seat advantage includes self-play and excludes draws.
+        self.assertEqual(first.loc["overall", "games"], 4)
+        self.assertEqual(first.loc["overall", "decisive_games"], 3)
+        self.assertEqual(first.loc["NA vs beta", "decisive_games"], 2)
+        self.assertEqual(first.loc["overall", "player_0_win_rate"], 1)
+
+    def test_common_loader_validates_required_and_optional_row_counts(self):
+        from meeple_bots.reporting.common import load_tables
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "matches.csv").write_text("winner_player\n0\n")
+            (root / "roots.csv").write_text("agent\nNA\n")
+            manifest = {"tables": {"matches": "matches.csv"}, "row_counts": {"matches": 1}}
+            tables = load_tables(root, manifest, ("matches",), empty_as_missing=True, optional=("root_actions",))
+            self.assertTrue(tables["root_actions"].empty)
+            manifest["tables"]["root_actions"] = "roots.csv"
+            manifest["row_counts"]["root_actions"] = 2
+            with self.assertRaisesRegex(ValueError, "root_actions has 1 rows; expected 2"):
+                load_tables(root, manifest, ("matches",), empty_as_missing=True, optional=("root_actions",))
+            manifest["row_counts"]["matches"] = 0
+            with self.assertRaisesRegex(ValueError, "matches has 1 rows; expected 0"):
+                load_tables(root, manifest, ("matches",), empty_as_missing=False)
+
     def test_actual_iterations_and_throughput_use_matching_measurements(self):
         import pandas as pd
         from meeple_bots.reporting.generic import _decision_performance
