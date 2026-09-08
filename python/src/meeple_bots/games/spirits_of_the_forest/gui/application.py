@@ -31,16 +31,17 @@ class SpiritsOfTheForestApplication:
         )
         with self._lock:
             previous = self._game
-            self._game = SpiritsOfTheForestGui(trace_dir=self._trace_dir)
-            previous.cancel()
-            self._game.start(
+            candidate = SpiritsOfTheForestGui(trace_dir=self._trace_dir)
+            candidate.start(
                 first,
                 second,
                 seed=payload.get("seed", 0),
                 minimum_move_seconds=payload.get("minimum_move_seconds", 0.4),
                 save_trace=payload.get("save_trace", False),
             )
-            return self._game.snapshot()
+            previous.cancel()
+            self._game = candidate
+            return candidate.snapshot()
 
     def move(self, payload: dict[str, Any]) -> dict[str, object]:
         action = payload.get("action")

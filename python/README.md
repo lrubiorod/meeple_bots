@@ -210,6 +210,12 @@ Spirits of the Forest presents collection and gemstone decisions as separate pha
 face-up forest from the match seed, and exposes only heuristic `0`, with reachable category progress
 and stronger early- and mid-game gemstone conservation.
 
+Invalid start requests preserve the current match. Restarting a GUI controller cancels its
+previous execution: late callbacks and results cannot update the new match or consume its human
+input. Cancellation stops publication and wakes human waiters; it does not immediately interrupt
+an ongoing native simulation. A trace write already in progress may finish with the original
+match's metadata, without updating the new match.
+
 The server binds to `127.0.0.1:8765` by default. Use `--host`, `--port`, or `--no-browser` to change
 startup behavior, and `Ctrl+C` to stop it. Automated native matches release Python's GIL, keeping
 the page responsive during long decisions.

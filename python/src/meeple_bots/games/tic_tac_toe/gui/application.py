@@ -29,16 +29,17 @@ class TicTacToeApplication:
         delay = payload.get("minimum_move_seconds", 0.6)
         with self._lock:
             previous = self._game
-            self._game = TicTacToeGui(trace_dir=self._trace_dir)
-            previous.cancel()
-            self._game.start(
+            candidate = TicTacToeGui(trace_dir=self._trace_dir)
+            candidate.start(
                 first,
                 second,
                 seed=seed,
                 minimum_move_seconds=delay,
                 save_trace=payload.get("save_trace", False),
             )
-            return self._game.snapshot()
+            previous.cancel()
+            self._game = candidate
+            return candidate.snapshot()
 
     def move(self, payload: dict[str, Any]) -> dict[str, object]:
         row = payload.get("row")

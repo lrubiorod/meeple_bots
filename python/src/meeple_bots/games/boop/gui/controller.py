@@ -63,8 +63,8 @@ class BoopGui:
         if not isinstance(save_trace, bool):
             raise ValueError("save_trace must be a boolean")
 
-        self.cancel()
         with self._condition:
+            self.cancel()
             self._cancelled = threading.Event()
             self._pending_action = None
             self._legal_actions = ()
@@ -85,15 +85,15 @@ class BoopGui:
             )
             self._thread = threading.Thread(
                 target=self._run_match,
-                args=(seed,),
+                args=(seed, self._cancelled, self._players, save_trace),
                 name="meeple-bots-boop",
                 daemon=True,
             )
             self._thread.start()
 
     def cancel(self) -> None:
-        self._cancelled.set()
         with self._condition:
+            self._cancelled.set()
             self._condition.notify_all()
 
     def snapshot(self) -> dict[str, object]:
@@ -112,43 +112,54 @@ class BoopGui:
             self._state["legal_actions"] = []
             self._condition.notify_all()
 
-    def _run_match(self, seed: int) -> None:
+    def _run_match(
+        self,
+        seed: int,
+        cancelled: threading.Event,
+        players: tuple[GuiPlayer, GuiPlayer],
+        save_trace: bool,
+    ) -> None:
+        # Each worker keeps its own cancellation token and configuration.
+        if cancelled.is_set():
+            return
         started = monotonic()
         try:
             result = Match(
                 game=Boop(),
-                first=self._agent(0),
-                second=self._agent(1),
+                first=self._agent(players[0], cancelled),
+                second=self._agent(players[1], cancelled),
                 seed=seed,
                 max_plies=10_000,
-                observe_move=self._observe_move,
+                observe_move=lambda move: self._observe_move(move, cancelled),
             ).run()
         except (RuntimeError, TypeError, ValueError) as error:
-            if self._cancelled.is_set():
-                return
             with self._condition:
+                if cancelled.is_set():
+                    return
                 self._state["status"] = "error"
                 self._state["message"] = str(error)
                 self._condition.notify_all()
             return
 
-        if self._cancelled.is_set():
+        if cancelled.is_set():
             return
         trace_path = None
         trace_error = None
-        if self._save_trace:
+        if save_trace:
             try:
                 trace_path = write_gui_trace(
                     self._trace_dir,
                     game="boop",
                     max_plies=10000,
                     result=result,
-                    players=self._players,
+                    players=players,
                     duration_seconds=monotonic() - started,
                 )
             except Exception as error:
                 trace_error = str(error)
         with self._condition:
+            if cancelled.is_set():
+                return
             for displayed, recorded in zip(self._state["moves"], result.moves):
                 displayed["decision_seconds"] = recorded.decision_seconds
             if result.moves:
@@ -164,10 +175,9 @@ class BoopGui:
             self._state["trace_error"] = trace_error
             self._condition.notify_all()
 
-    def _agent(self, player: int):
-        configured = self._players[player]
+    def _agent(self, configured: GuiPlayer, cancelled: threading.Event):
         if configured.kind == "human":
-            return HumanAgent(self._select_human_action)
+            return HumanAgent(lambda turn: self._select_human_action(turn, cancelled))
         if configured.kind == "random":
             return RandomAgent()
         return MctsAgent(
@@ -179,9 +189,11 @@ class BoopGui:
             tree_reuse=configured.tree_reuse,
         )
 
-    def _select_human_action(self, turn: HumanTurn) -> BoopAction:
+    def _select_human_action(
+        self, turn: HumanTurn, cancelled: threading.Event
+    ) -> BoopAction:
         with self._condition:
-            if self._cancelled.is_set():
+            if cancelled.is_set():
                 raise RuntimeError("match cancelled")
             self._pending_action = None
             self._legal_actions = tuple(
@@ -204,23 +216,29 @@ class BoopGui:
             ]
             self._condition.notify_all()
 
-            while self._pending_action is None and not self._cancelled.is_set():
+            while self._pending_action is None and not cancelled.is_set():
                 self._condition.wait()
-            if self._cancelled.is_set():
+            if cancelled.is_set():
                 raise RuntimeError("match cancelled")
             action_index = self._pending_action
             if action_index is None:
                 raise RuntimeError("human move was not supplied")
             return self._legal_actions[action_index]
 
-    def _observe_move(self, observation: MatchMoveObservation) -> None:
-        elapsed = monotonic() - self._last_published
-        remaining = max(0.0, self._minimum_move_seconds - elapsed)
-        if self._cancelled.wait(remaining):
+    def _observe_move(
+        self, observation: MatchMoveObservation, cancelled: threading.Event
+    ) -> None:
+        with self._condition:
+            if cancelled.is_set():
+                return
+            remaining = max(
+                0.0, self._minimum_move_seconds - (monotonic() - self._last_published)
+            )
+        if cancelled.wait(remaining):
             return
 
         with self._condition:
-            if self._cancelled.is_set():
+            if cancelled.is_set():
                 return
             action = observation.action
             if not isinstance(action, BoopAction):
