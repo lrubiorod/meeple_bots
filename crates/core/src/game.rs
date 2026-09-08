@@ -6,6 +6,8 @@ use crate::{IllegalAction, PlayerId};
 pub enum PositionStatus {
     PlayerTurn(PlayerId),
     /// Reserved for games with stochastic transitions.
+    /// The current deterministic runner rejects this status; it does not sample
+    /// or apply chance outcomes.
     Chance,
     Terminal,
 }
@@ -13,8 +15,9 @@ pub enum PositionStatus {
 /// Authoritative rules and state transitions for a turn-based game.
 ///
 /// State and action representations remain owned by the concrete game. The
-/// observation GAT makes it possible for a future imperfect-information game
-/// to expose a restricted view without changing the simulation contract.
+/// observation GAT can represent a player-filtered view. It does not by itself
+/// provide hidden-information isolation: current agent lifecycle callbacks and
+/// simulation observers still receive the complete authoritative state.
 pub trait Game {
     type State: 'static;
     type Action: 'static;

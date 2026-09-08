@@ -32,6 +32,9 @@ pub struct RootActionStats {
 }
 
 /// Read-only decision boundary handed to an agent by the simulation.
+///
+/// Restricting `state()` does not isolate hidden information across the entire
+/// agent lifecycle: [`Agent`] callbacks currently receive the authoritative state.
 pub struct DecisionContext<'a, G: Game> {
     game: &'a G,
     state: &'a G::State,
@@ -65,13 +68,19 @@ impl<'a, G: Game> DecisionContext<'a, G> {
 }
 
 impl<'a, G: PerfectInformationGame> DecisionContext<'a, G> {
-    /// Full state access is deliberately available only for perfect-information games.
+    /// Full state access through this decision context requires perfect information.
     pub fn state(&self) -> &'a G::State {
         self.state
     }
 }
 
 /// A policy that selects strongly typed actions for G.
+///
+/// Lifecycle callbacks receive the complete authoritative state without requiring
+/// [`PerfectInformationGame`]. This contract is not a hidden-information boundary.
+/// Before supporting hidden-information games, redesign these callbacks to supply
+/// player-filtered observations or use a separate contract; `DecisionContext::state`
+/// alone cannot prevent an agent from retaining private information from callbacks.
 pub trait Agent<G: Game> {
     /// Starts a new match and assigns the seat controlled by this agent instance.
     fn on_match_start(&mut self, _game: &G, _state: &G::State, _player: PlayerId) {}

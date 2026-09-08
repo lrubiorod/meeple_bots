@@ -91,8 +91,13 @@ silently enter a search that assumes determinism or full state access.
 ## Agent contract
 
 `Agent<G>` selects one `G::Action` from a `DecisionContext`. Every agent can access the game, legal
-actions, active player, and player observation. Full state access exists only for agents whose game
-implements `PerfectInformationGame`.
+actions, active player, and player observation. `DecisionContext::state()` requires
+`PerfectInformationGame`, but this restriction applies only to that accessor.
+
+The lifecycle methods `on_match_start`, `on_action_applied` and `on_match_end` receive the full
+`G::State` without that bound. An agent could retain private information received there; supplying
+a filtered `observation()` alone would not prevent this. Simulation observers also receive full
+state. The current framework does not enforce hidden-information isolation.
 
 Randomness is explicit through `RandomSource`. The simulation crate derives a separate
 deterministic stream for each seat from the match seed, avoiding accidental coupling between the
@@ -198,7 +203,18 @@ The binding only converts actions; legality remains in the Rust game implementat
 
 The implemented games are sequential, deterministic, perfect-information, two-player, and
 zero-sum. `PositionStatus::Chance` and per-player observations reserve useful extension points, but
-chance execution and hidden-information search are not implemented yet.
+chance execution and hidden-information search are not implemented yet. The runner requires
+`DeterministicGame` and returns `MatchError::UnexpectedChance` if a game nevertheless reports
+`Chance`; the enum variant supplies neither outcome probabilities nor a transition mechanism.
+Seeded initial setup, such as SPOTF's shuffled forest, does not imply support for chance events
+during play.
+
+Before adding a hidden-information game, define a per-player view for every agent callback and
+review action visibility, legal-action exposure, retained agent memory and observer/trace access.
+Use filtered observations or a separate agent contract, then add tests proving private data is
+not exposed through any supported route. Before adding stochastic play, define outcome sampling,
+probabilities and RNG ownership in both simulation and compatible search agents. These are future
+integration requirements, not capabilities provided by the existing contracts.
 
 See the [agents guide](../agents/README.md) for current MCTS behavior, the
 [MCTS roadmap](../agents/MCTS_ROADMAP.md) for possible extensions, and the
