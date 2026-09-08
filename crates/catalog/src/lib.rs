@@ -1,4 +1,7 @@
-//! Runtime configuration boundary for the statically dispatched engine.
+//! Runtime configuration and independent participants for the typed engine.
+
+mod participant;
+pub use participant::ConfiguredAgent;
 
 use std::{error::Error, fmt, num::NonZeroU32};
 
@@ -23,7 +26,6 @@ use meeple_bots_mcts_agent::{
     TranspositionMctsAgent,
 };
 pub use meeple_bots_mcts_agent::{MctsConfig, RolloutPolicyConfig, SearchBudget, UniformRandom};
-use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{
     BatchConfig, MatchError, MatchObserver, SplitMix64, TracedMatchResult, play_batch, play_match,
     play_match_with_trace as play_typed_match_with_trace, play_match_with_trace_and_observer,
@@ -1348,31 +1350,9 @@ fn run_connect_four(
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<MatchResult, CatalogError> {
-    let game = ConnectFour;
-    let result = match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            play_match(&game, &mut RandomAgent, &mut RandomAgent, config)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_match(
-            &game,
-            &mut RandomAgent,
-            &mut configured_connect_four_mcts(second)?,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Random) => play_match(
-            &game,
-            &mut configured_connect_four_mcts(first)?,
-            &mut RandomAgent,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_match(
-            &game,
-            &mut configured_connect_four_mcts(first)?,
-            &mut configured_connect_four_mcts(second)?,
-            config,
-        ),
-    }?;
-    Ok(result)
+    let mut first = ConfiguredAgent::new(first, configured_connect_four_mcts)?;
+    let mut second = ConfiguredAgent::new(second, configured_connect_four_mcts)?;
+    Ok(play_match(&ConnectFour, &mut first, &mut second, config)?)
 }
 
 fn run_boop(
@@ -1380,31 +1360,9 @@ fn run_boop(
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<MatchResult, CatalogError> {
-    let game = Boop;
-    let result = match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            play_match(&game, &mut RandomAgent, &mut RandomAgent, config)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_match(
-            &game,
-            &mut RandomAgent,
-            &mut configured_boop_mcts(second)?,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Random) => play_match(
-            &game,
-            &mut configured_boop_mcts(first)?,
-            &mut RandomAgent,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_match(
-            &game,
-            &mut configured_boop_mcts(first)?,
-            &mut configured_boop_mcts(second)?,
-            config,
-        ),
-    }?;
-    Ok(result)
+    let mut first = ConfiguredAgent::new(first, configured_boop_mcts)?;
+    let mut second = ConfiguredAgent::new(second, configured_boop_mcts)?;
+    Ok(play_match(&Boop, &mut first, &mut second, config)?)
 }
 
 fn run_spirits_of_the_forest(
@@ -1412,31 +1370,14 @@ fn run_spirits_of_the_forest(
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<MatchResult, CatalogError> {
-    let game = spirits_of_the_forest_game(config.seed);
-    let result = match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            play_match(&game, &mut RandomAgent, &mut RandomAgent, config)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_match(
-            &game,
-            &mut RandomAgent,
-            &mut configured_spirits_of_the_forest_mcts(second)?,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Random) => play_match(
-            &game,
-            &mut configured_spirits_of_the_forest_mcts(first)?,
-            &mut RandomAgent,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_match(
-            &game,
-            &mut configured_spirits_of_the_forest_mcts(first)?,
-            &mut configured_spirits_of_the_forest_mcts(second)?,
-            config,
-        ),
-    }?;
-    Ok(result)
+    let mut first = ConfiguredAgent::new(first, configured_spirits_of_the_forest_mcts)?;
+    let mut second = ConfiguredAgent::new(second, configured_spirits_of_the_forest_mcts)?;
+    Ok(play_match(
+        &spirits_of_the_forest_game(config.seed),
+        &mut first,
+        &mut second,
+        config,
+    )?)
 }
 
 fn run_boop_with_trace(
@@ -1444,22 +1385,9 @@ fn run_boop_with_trace(
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
-    match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            run_boop_match_with_trace(&mut RandomAgent, &mut RandomAgent, config)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            run_boop_match_with_trace(&mut RandomAgent, &mut configured_boop_mcts(second)?, config)
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            run_boop_match_with_trace(&mut configured_boop_mcts(first)?, &mut RandomAgent, config)
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => run_boop_match_with_trace(
-            &mut configured_boop_mcts(first)?,
-            &mut configured_boop_mcts(second)?,
-            config,
-        ),
-    }
+    let mut first = ConfiguredAgent::new(first, configured_boop_mcts)?;
+    let mut second = ConfiguredAgent::new(second, configured_boop_mcts)?;
+    run_boop_match_with_trace(&mut first, &mut second, config)
 }
 
 fn run_spirits_of_the_forest_with_trace(
@@ -1467,32 +1395,9 @@ fn run_spirits_of_the_forest_with_trace(
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
-    match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            run_spirits_of_the_forest_match_with_trace(&mut RandomAgent, &mut RandomAgent, config)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            run_spirits_of_the_forest_match_with_trace(
-                &mut RandomAgent,
-                &mut configured_spirits_of_the_forest_mcts(second)?,
-                config,
-            )
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            run_spirits_of_the_forest_match_with_trace(
-                &mut configured_spirits_of_the_forest_mcts(first)?,
-                &mut RandomAgent,
-                config,
-            )
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
-            run_spirits_of_the_forest_match_with_trace(
-                &mut configured_spirits_of_the_forest_mcts(first)?,
-                &mut configured_spirits_of_the_forest_mcts(second)?,
-                config,
-            )
-        }
-    }
+    let mut first = ConfiguredAgent::new(first, configured_spirits_of_the_forest_mcts)?;
+    let mut second = ConfiguredAgent::new(second, configured_spirits_of_the_forest_mcts)?;
+    run_spirits_of_the_forest_match_with_trace(&mut first, &mut second, config)
 }
 
 fn run_connect_four_with_trace(
@@ -1500,26 +1405,9 @@ fn run_connect_four_with_trace(
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
-    match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            run_connect_four_match_with_trace(&mut RandomAgent, &mut RandomAgent, config)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => run_connect_four_match_with_trace(
-            &mut RandomAgent,
-            &mut configured_connect_four_mcts(second)?,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Random) => run_connect_four_match_with_trace(
-            &mut configured_connect_four_mcts(first)?,
-            &mut RandomAgent,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => run_connect_four_match_with_trace(
-            &mut configured_connect_four_mcts(first)?,
-            &mut configured_connect_four_mcts(second)?,
-            config,
-        ),
-    }
+    let mut first = ConfiguredAgent::new(first, configured_connect_four_mcts)?;
+    let mut second = ConfiguredAgent::new(second, configured_connect_four_mcts)?;
+    run_connect_four_match_with_trace(&mut first, &mut second, config)
 }
 
 fn run_tic_tac_toe(
@@ -1527,31 +1415,9 @@ fn run_tic_tac_toe(
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<MatchResult, CatalogError> {
-    let game = TicTacToe;
-    let result = match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            play_match(&game, &mut RandomAgent, &mut RandomAgent, config)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => play_match(
-            &game,
-            &mut RandomAgent,
-            &mut configured_tic_tac_toe_mcts(second)?,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Random) => play_match(
-            &game,
-            &mut configured_tic_tac_toe_mcts(first)?,
-            &mut RandomAgent,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => play_match(
-            &game,
-            &mut configured_tic_tac_toe_mcts(first)?,
-            &mut configured_tic_tac_toe_mcts(second)?,
-            config,
-        ),
-    }?;
-    Ok(result)
+    let mut first = ConfiguredAgent::new(first, configured_tic_tac_toe_mcts)?;
+    let mut second = ConfiguredAgent::new(second, configured_tic_tac_toe_mcts)?;
+    Ok(play_match(&TicTacToe, &mut first, &mut second, config)?)
 }
 
 fn run_tic_tac_toe_with_trace(
@@ -1559,26 +1425,9 @@ fn run_tic_tac_toe_with_trace(
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
-    match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            run_tic_tac_toe_match_with_trace(&mut RandomAgent, &mut RandomAgent, config)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => run_tic_tac_toe_match_with_trace(
-            &mut RandomAgent,
-            &mut configured_tic_tac_toe_mcts(second)?,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Random) => run_tic_tac_toe_match_with_trace(
-            &mut configured_tic_tac_toe_mcts(first)?,
-            &mut RandomAgent,
-            config,
-        ),
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => run_tic_tac_toe_match_with_trace(
-            &mut configured_tic_tac_toe_mcts(first)?,
-            &mut configured_tic_tac_toe_mcts(second)?,
-            config,
-        ),
-    }
+    let mut first = ConfiguredAgent::new(first, configured_tic_tac_toe_mcts)?;
+    let mut second = ConfiguredAgent::new(second, configured_tic_tac_toe_mcts)?;
+    run_tic_tac_toe_match_with_trace(&mut first, &mut second, config)
 }
 
 fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogMatchReport {
@@ -1950,25 +1799,14 @@ fn run_boop_batch(
     second: AgentConfig,
     config: BatchConfig,
 ) -> Result<Vec<MatchResult>, CatalogError> {
-    let results = match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            play_batch(&Boop, config, || RandomAgent, || RandomAgent)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            let second = configured_boop_mcts(second)?;
-            play_batch(&Boop, config, || RandomAgent, || second.clone())
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            let first = configured_boop_mcts(first)?;
-            play_batch(&Boop, config, || first.clone(), || RandomAgent)
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
-            let first = configured_boop_mcts(first)?;
-            let second = configured_boop_mcts(second)?;
-            play_batch(&Boop, config, || first.clone(), || second.clone())
-        }
-    }?;
-    Ok(results)
+    let first = ConfiguredAgent::new(first, configured_boop_mcts)?;
+    let second = ConfiguredAgent::new(second, configured_boop_mcts)?;
+    Ok(play_batch(
+        &Boop,
+        config,
+        || first.clone(),
+        || second.clone(),
+    )?)
 }
 
 fn run_connect_four_batch(
@@ -1976,25 +1814,14 @@ fn run_connect_four_batch(
     second: AgentConfig,
     config: BatchConfig,
 ) -> Result<Vec<MatchResult>, CatalogError> {
-    let results = match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            play_batch(&ConnectFour, config, || RandomAgent, || RandomAgent)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            let second = configured_connect_four_mcts(second)?;
-            play_batch(&ConnectFour, config, || RandomAgent, || second.clone())
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            let first = configured_connect_four_mcts(first)?;
-            play_batch(&ConnectFour, config, || first.clone(), || RandomAgent)
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
-            let first = configured_connect_four_mcts(first)?;
-            let second = configured_connect_four_mcts(second)?;
-            play_batch(&ConnectFour, config, || first.clone(), || second.clone())
-        }
-    }?;
-    Ok(results)
+    let first = ConfiguredAgent::new(first, configured_connect_four_mcts)?;
+    let second = ConfiguredAgent::new(second, configured_connect_four_mcts)?;
+    Ok(play_batch(
+        &ConnectFour,
+        config,
+        || first.clone(),
+        || second.clone(),
+    )?)
 }
 
 fn run_tic_tac_toe_batch(
@@ -2002,25 +1829,14 @@ fn run_tic_tac_toe_batch(
     second: AgentConfig,
     config: BatchConfig,
 ) -> Result<Vec<MatchResult>, CatalogError> {
-    let results = match (first, second) {
-        (AgentConfig::Random, AgentConfig::Random) => {
-            play_batch(&TicTacToe, config, || RandomAgent, || RandomAgent)
-        }
-        (AgentConfig::Random, AgentConfig::Mcts(second)) => {
-            let second = configured_tic_tac_toe_mcts(second)?;
-            play_batch(&TicTacToe, config, || RandomAgent, || second.clone())
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Random) => {
-            let first = configured_tic_tac_toe_mcts(first)?;
-            play_batch(&TicTacToe, config, || first.clone(), || RandomAgent)
-        }
-        (AgentConfig::Mcts(first), AgentConfig::Mcts(second)) => {
-            let first = configured_tic_tac_toe_mcts(first)?;
-            let second = configured_tic_tac_toe_mcts(second)?;
-            play_batch(&TicTacToe, config, || first.clone(), || second.clone())
-        }
-    }?;
-    Ok(results)
+    let first = ConfiguredAgent::new(first, configured_tic_tac_toe_mcts)?;
+    let second = ConfiguredAgent::new(second, configured_tic_tac_toe_mcts)?;
+    Ok(play_batch(
+        &TicTacToe,
+        config,
+        || first.clone(),
+        || second.clone(),
+    )?)
 }
 
 #[cfg(test)]
@@ -2047,7 +1863,110 @@ mod tests {
     }
 
     #[test]
-    fn runtime_catalog_dispatches_outside_the_match_loop() {
+    fn configured_participants_preserve_typed_traces_and_lifecycle() {
+        fn compare<G, M>(game: &G, agent: M)
+        where
+            G: DeterministicGame,
+            G::Action: Clone + PartialEq + std::fmt::Debug,
+            M: Agent<G> + Clone,
+        {
+            for seed in [3, 17] {
+                let config = MatchConfig {
+                    seed,
+                    ..MatchConfig::default()
+                };
+                let direct = play_typed_match_with_trace(
+                    game,
+                    &mut agent.clone(),
+                    &mut agent.clone(),
+                    config,
+                )
+                .unwrap();
+                let wrapped = play_typed_match_with_trace(
+                    game,
+                    &mut ConfiguredAgent::Mcts(agent.clone()),
+                    &mut ConfiguredAgent::Mcts(agent.clone()),
+                    config,
+                )
+                .unwrap();
+                assert_eq!(direct.result, wrapped.result);
+                assert_eq!(direct.actions.len(), wrapped.actions.len());
+                for (a, b) in direct.actions.iter().zip(&wrapped.actions) {
+                    assert_eq!(
+                        (a.player, &a.action, &a.decision_stats),
+                        (b.player, &b.action, &b.decision_stats)
+                    );
+                }
+            }
+        }
+        let AgentConfig::Mcts(mut config) = mcts(None) else {
+            unreachable!()
+        };
+        config.root_diagnostics = true;
+        config.tree_reuse = true;
+        for transpositions in [false, true] {
+            config.transpositions = transpositions;
+            compare(
+                &TicTacToe,
+                configured_tic_tac_toe_mcts(config.clone()).unwrap(),
+            );
+            compare(
+                &ConnectFour,
+                configured_connect_four_mcts(config.clone()).unwrap(),
+            );
+            compare(&Boop, configured_boop_mcts(config.clone()).unwrap());
+            compare(
+                &spirits_of_the_forest_game(17),
+                configured_spirits_of_the_forest_mcts(config.clone()).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn independent_participants_preserve_all_pairings_and_batch_seeds() {
+        for game in [
+            GameId::Boop,
+            GameId::ConnectFour,
+            GameId::TicTacToe,
+            GameId::SpiritsOfTheForest,
+        ] {
+            for first in [AgentConfig::Random, mcts(None)] {
+                for second in [AgentConfig::Random, mcts(None)] {
+                    let batch_config = BatchConfig {
+                        matches: NonZeroU32::new(2).unwrap(),
+                        seed: 7,
+                        max_plies: MatchConfig::default().max_plies,
+                    };
+                    let batch = run_batch(
+                        game,
+                        first.clone(),
+                        second.clone(),
+                        batch_config.seed,
+                        batch_config.matches,
+                        batch_config.max_plies,
+                    )
+                    .unwrap();
+                    let mut seeds = SplitMix64::new(batch_config.seed);
+                    for result in batch {
+                        let config = MatchConfig::new(seeds.next_u64(), batch_config.max_plies);
+                        assert_eq!(
+                            result,
+                            run_match(game, first.clone(), second.clone(), config).unwrap()
+                        );
+                        let trace =
+                            run_match_with_trace(game, first.clone(), second.clone(), config)
+                                .unwrap();
+                        assert_eq!(result.seed, trace.seed);
+                        assert_eq!(result.plies, trace.plies);
+                        assert_eq!(result.utilities, trace.utilities);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_catalog_runs_independently_configured_participants() {
         let result = run_match(
             GameId::TicTacToe,
             AgentConfig::Random,

@@ -2,8 +2,8 @@
 
 [Back to the project overview](../README.md)
 
-Meeple Bots keeps game states and actions strongly typed throughout simulation. Runtime choices are
-resolved once at the catalog boundary, before entering generic, performance-critical Rust loops.
+Meeple Bots keeps game states and actions strongly typed throughout simulation. The catalog selects a concrete game and constructs each participant independently. Search
+implementations remain statically typed; participant variants dispatch at agent-method boundaries.
 
 ## Layers
 
@@ -37,7 +37,7 @@ Python, or the catalog.
 A normal automated match follows one short path:
 
 1. Python converts a public game and agent configuration at the binding boundary.
-2. The catalog selects one concrete game and agent combination.
+2. The catalog selects a concrete game and constructs each seat independently.
 3. `play_match<G, A, B>` creates the initial state and independent seeded RNG streams.
 4. The active `Agent<G>` receives a read-only `DecisionContext` and returns one `G::Action`.
 5. The game validates and applies the action to its authoritative state.
@@ -103,9 +103,17 @@ two agents' random choices.
 The simulation functions are generic, so Rust monomorphizes every supported `G`, `A`, and `B`
 combination. There are no erased action types or agent trait objects inside the match loop.
 
-The catalog provides the dynamic edge needed by Python and the CLI. `GameId` and `AgentConfig`
-select the corresponding concrete call once, then convert the typed trace and final state into a
-catalog report.
+The catalog provides the dynamic edge needed by Python and the CLI. `GameId` selects the
+concrete game. `ConfiguredAgent<M>` in `catalog/src/participant.rs` represents Random or the
+configured, game-compatible MCTS type; each seat is built independently from `AgentConfig`.
+It delegates selection, diagnostics and every lifecycle hook. Variant dispatch occurs at those
+boundaries, not within MCTS iterations. Batch factories clone unplayed participant templates.
+SPOTF continues to construct a seeded game for every match.
+
+The bindings use one generic `PythonParticipant<M>` to add human selectors and their callbacks.
+Observed and unobserved matches share participant construction, so adding a variant does not
+require adding a branch for every opponent. Game-specific typed observers and action conversion
+remain in the bindings; concrete traces and final states are converted into catalog reports.
 
 ## Trace validation
 

@@ -9,23 +9,21 @@ use meeple_bots_boop::{
 use meeple_bots_catalog::{
     AgentConfig, CatalogAction, CatalogBoopPieceKind, CatalogBoopResolution, CatalogError,
     CatalogGemstoneSacrifice, CatalogMatchReport, CatalogPieceKind, CatalogPowerSource,
-    CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, CatalogTurnPhase,
-    ConfiguredRolloutPolicy, ConfiguredSelectionBias, ConnectFourMctsAgent, EvaluationConfig,
-    EvaluatorConfig, GameId, MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove,
-    RolloutConditionConfig, RolloutPolicyConfig, SearchBudget, TicTacToeMctsAgent,
-    analyze_seeded_trace, benchmark_mcts_agent, configured_boop_mcts, configured_connect_four_mcts,
-    configured_spirits_of_the_forest_mcts, configured_tic_tac_toe_mcts, evaluate_game,
-    run_boop_match_with_observer, run_boop_match_with_trace, run_connect_four_match_with_observer,
-    run_connect_four_match_with_trace, run_match_with_trace,
-    run_spirits_of_the_forest_match_with_observer, run_spirits_of_the_forest_match_with_trace,
-    run_tic_tac_toe_match_with_observer, run_tic_tac_toe_match_with_trace,
-    spirits_of_the_forest_game,
+    CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, CatalogTurnPhase, ConfiguredAgent,
+    ConfiguredRolloutPolicy, ConfiguredSelectionBias, EvaluationConfig, EvaluatorConfig, GameId,
+    MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, RolloutConditionConfig,
+    RolloutPolicyConfig, SearchBudget, analyze_seeded_trace, benchmark_mcts_agent,
+    configured_boop_mcts, configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
+    configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
+    run_boop_match_with_trace, run_connect_four_match_with_observer,
+    run_connect_four_match_with_trace, run_spirits_of_the_forest_match_with_observer,
+    run_spirits_of_the_forest_match_with_trace, run_tic_tac_toe_match_with_observer,
+    run_tic_tac_toe_match_with_trace, spirits_of_the_forest_game,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{
     Agent, AgentDecisionStats, AgentError, DecisionContext, Game, PlayerId, RandomSource,
 };
-use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{DecisionTiming, MatchObserver};
 use meeple_bots_spirits_of_the_forest::{
     ForestPosition, GemstoneSacrifice, PowerSource, ScoringCategory, Spirit, SpiritsOfTheForest,
@@ -209,219 +207,63 @@ struct PythonSpiritsMatchObserver<'a> {
     error: Option<String>,
 }
 
-enum PythonObservedAgent<'a, M> {
+enum PythonParticipant<'a, M> {
     Human(PythonHumanAgent<'a>),
-    Mcts(M),
-    Random(RandomAgent),
+    Automated(ConfiguredAgent<M>),
 }
 
-enum PythonObservedBoopAgent<'a> {
-    Human(PythonHumanAgent<'a>),
-    Mcts(meeple_bots_catalog::BoopMctsAgent),
-    Random(RandomAgent),
-}
-
-enum PythonObservedSpiritsAgent<'a> {
-    Human(PythonHumanAgent<'a>),
-    Mcts(meeple_bots_catalog::SpiritsOfTheForestMctsAgent),
-    Random(RandomAgent),
-}
-
-impl Agent<SpiritsOfTheForest> for PythonObservedSpiritsAgent<'_> {
-    fn on_match_start(
-        &mut self,
-        game: &SpiritsOfTheForest,
-        state: &SpiritsOfTheForestState,
-        player: PlayerId,
-    ) {
-        if let Self::Mcts(agent) = self {
-            agent.on_match_start(game, state, player);
+impl<'a, G: Game, M: Agent<G>> Agent<G> for PythonParticipant<'a, M>
+where
+    PythonHumanAgent<'a>: Agent<G>,
+{
+    fn on_match_start(&mut self, game: &G, state: &G::State, player: PlayerId) {
+        match self {
+            Self::Human(agent) => {
+                <PythonHumanAgent<'_> as Agent<G>>::on_match_start(agent, game, state, player)
+            }
+            Self::Automated(agent) => agent.on_match_start(game, state, player),
         }
     }
 
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
-        decision: DecisionContext<'_, SpiritsOfTheForest>,
+        decision: DecisionContext<'_, G>,
         rng: &mut R,
-    ) -> Result<SpiritsOfTheForestAction, AgentError> {
+    ) -> Result<G::Action, AgentError> {
         match self {
             Self::Human(agent) => agent.select_action(decision, rng),
-            Self::Mcts(agent) => agent.select_action(decision, rng),
-            Self::Random(agent) => agent.select_action(decision, rng),
+            Self::Automated(agent) => agent.select_action(decision, rng),
         }
     }
 
     fn last_decision_stats(&self) -> AgentDecisionStats {
         match self {
-            Self::Human(_) => AgentDecisionStats::default(),
-            Self::Mcts(agent) => agent.decision_stats(),
-            Self::Random(_) => AgentDecisionStats::default(),
+            Self::Human(agent) => <PythonHumanAgent<'_> as Agent<G>>::last_decision_stats(agent),
+            Self::Automated(agent) => agent.last_decision_stats(),
         }
     }
 
     fn on_action_applied(
         &mut self,
-        game: &SpiritsOfTheForest,
-        state: &SpiritsOfTheForestState,
+        game: &G,
+        state: &G::State,
         player: PlayerId,
-        action: &SpiritsOfTheForestAction,
+        action: &G::Action,
     ) {
-        if let Self::Mcts(agent) = self {
-            agent.on_action_applied(game, state, player, action);
-        }
-    }
-
-    fn on_match_end(&mut self, game: &SpiritsOfTheForest, state: &SpiritsOfTheForestState) {
-        if let Self::Mcts(agent) = self {
-            agent.on_match_end(game, state);
-        }
-    }
-}
-
-impl Agent<Boop> for PythonObservedBoopAgent<'_> {
-    fn on_match_start(&mut self, game: &Boop, state: &<Boop as Game>::State, player: PlayerId) {
-        if let Self::Mcts(agent) = self {
-            agent.on_match_start(game, state, player);
-        }
-    }
-
-    fn select_action<R: RandomSource + ?Sized>(
-        &mut self,
-        decision: DecisionContext<'_, Boop>,
-        rng: &mut R,
-    ) -> Result<BoopAction, AgentError> {
         match self {
-            Self::Human(agent) => agent.select_action(decision, rng),
-            Self::Mcts(agent) => agent.select_action(decision, rng),
-            Self::Random(agent) => agent.select_action(decision, rng),
+            Self::Human(agent) => <PythonHumanAgent<'_> as Agent<G>>::on_action_applied(
+                agent, game, state, player, action,
+            ),
+            Self::Automated(agent) => agent.on_action_applied(game, state, player, action),
         }
     }
 
-    fn last_decision_stats(&self) -> AgentDecisionStats {
+    fn on_match_end(&mut self, game: &G, state: &G::State) {
         match self {
-            Self::Human(_) => AgentDecisionStats::default(),
-            Self::Mcts(agent) => agent.decision_stats(),
-            Self::Random(_) => AgentDecisionStats::default(),
-        }
-    }
-
-    fn on_action_applied(
-        &mut self,
-        game: &Boop,
-        state: &<Boop as Game>::State,
-        player: PlayerId,
-        action: &BoopAction,
-    ) {
-        if let Self::Mcts(agent) = self {
-            agent.on_action_applied(game, state, player, action);
-        }
-    }
-
-    fn on_match_end(&mut self, game: &Boop, state: &<Boop as Game>::State) {
-        if let Self::Mcts(agent) = self {
-            agent.on_match_end(game, state);
-        }
-    }
-}
-
-impl Agent<TicTacToe> for PythonObservedAgent<'_, TicTacToeMctsAgent> {
-    fn on_match_start(
-        &mut self,
-        game: &TicTacToe,
-        state: &<TicTacToe as Game>::State,
-        player: PlayerId,
-    ) {
-        if let Self::Mcts(agent) = self {
-            agent.on_match_start(game, state, player);
-        }
-    }
-
-    fn select_action<R: RandomSource + ?Sized>(
-        &mut self,
-        decision: DecisionContext<'_, TicTacToe>,
-        rng: &mut R,
-    ) -> Result<TicTacToeAction, AgentError> {
-        match self {
-            Self::Human(agent) => agent.select_action(decision, rng),
-            Self::Mcts(agent) => agent.select_action(decision, rng),
-            Self::Random(agent) => agent.select_action(decision, rng),
-        }
-    }
-
-    fn last_decision_stats(&self) -> AgentDecisionStats {
-        match self {
-            Self::Human(_) => AgentDecisionStats::default(),
-            Self::Mcts(agent) => agent.decision_stats(),
-            Self::Random(_) => AgentDecisionStats::default(),
-        }
-    }
-
-    fn on_action_applied(
-        &mut self,
-        game: &TicTacToe,
-        state: &<TicTacToe as Game>::State,
-        player: PlayerId,
-        action: &TicTacToeAction,
-    ) {
-        if let Self::Mcts(agent) = self {
-            agent.on_action_applied(game, state, player, action);
-        }
-    }
-
-    fn on_match_end(&mut self, game: &TicTacToe, state: &<TicTacToe as Game>::State) {
-        if let Self::Mcts(agent) = self {
-            agent.on_match_end(game, state);
-        }
-    }
-}
-
-impl Agent<ConnectFour> for PythonObservedAgent<'_, ConnectFourMctsAgent> {
-    fn on_match_start(
-        &mut self,
-        game: &ConnectFour,
-        state: &<ConnectFour as Game>::State,
-        player: PlayerId,
-    ) {
-        if let Self::Mcts(agent) = self {
-            agent.on_match_start(game, state, player);
-        }
-    }
-
-    fn select_action<R: RandomSource + ?Sized>(
-        &mut self,
-        decision: DecisionContext<'_, ConnectFour>,
-        rng: &mut R,
-    ) -> Result<ConnectFourAction, AgentError> {
-        match self {
-            Self::Human(agent) => agent.select_action(decision, rng),
-            Self::Mcts(agent) => agent.select_action(decision, rng),
-            Self::Random(agent) => agent.select_action(decision, rng),
-        }
-    }
-
-    fn last_decision_stats(&self) -> AgentDecisionStats {
-        match self {
-            Self::Human(_) => AgentDecisionStats::default(),
-            Self::Mcts(agent) => agent.decision_stats(),
-            Self::Random(_) => AgentDecisionStats::default(),
-        }
-    }
-
-    fn on_action_applied(
-        &mut self,
-        game: &ConnectFour,
-        state: &<ConnectFour as Game>::State,
-        player: PlayerId,
-        action: &ConnectFourAction,
-    ) {
-        if let Self::Mcts(agent) = self {
-            agent.on_action_applied(game, state, player, action);
-        }
-    }
-
-    fn on_match_end(&mut self, game: &ConnectFour, state: &<ConnectFour as Game>::State) {
-        if let Self::Mcts(agent) = self {
-            agent.on_match_end(game, state);
+            Self::Human(agent) => {
+                <PythonHumanAgent<'_> as Agent<G>>::on_match_end(agent, game, state)
+            }
+            Self::Automated(agent) => agent.on_match_end(game, state),
         }
     }
 }
@@ -1534,31 +1376,25 @@ fn run_python_match(
         };
     }
 
-    match (first, second) {
-        (PythonAgentConfig::Automated(first), PythonAgentConfig::Automated(second)) => {
-            run_match_with_trace(game, first.clone(), second.clone(), config)
-        }
-        (PythonAgentConfig::Human { selector, observer }, PythonAgentConfig::Automated(second)) => {
-            run_with_human_first(game, selector, observer.as_ref(), second.clone(), config)
-        }
-        (PythonAgentConfig::Automated(first), PythonAgentConfig::Human { selector, observer }) => {
-            run_with_human_second(game, first.clone(), selector, observer.as_ref(), config)
-        }
-        (
-            PythonAgentConfig::Human {
-                selector: first,
-                observer: first_observer,
-            },
-            PythonAgentConfig::Human {
-                selector: second,
-                observer: second_observer,
-            },
-        ) => run_with_two_humans(
-            game,
-            first,
-            first_observer.as_ref(),
-            second,
-            second_observer.as_ref(),
+    match game {
+        GameId::Boop => run_boop_match_with_trace(
+            &mut python_participant(first, configured_boop_mcts)?,
+            &mut python_participant(second, configured_boop_mcts)?,
+            config,
+        ),
+        GameId::ConnectFour => run_connect_four_match_with_trace(
+            &mut python_participant(first, configured_connect_four_mcts)?,
+            &mut python_participant(second, configured_connect_four_mcts)?,
+            config,
+        ),
+        GameId::TicTacToe => run_tic_tac_toe_match_with_trace(
+            &mut python_participant(first, configured_tic_tac_toe_mcts)?,
+            &mut python_participant(second, configured_tic_tac_toe_mcts)?,
+            config,
+        ),
+        GameId::SpiritsOfTheForest => run_spirits_of_the_forest_match_with_trace(
+            &mut python_participant(first, configured_spirits_of_the_forest_mcts)?,
+            &mut python_participant(second, configured_spirits_of_the_forest_mcts)?,
             config,
         ),
     }
@@ -2008,8 +1844,8 @@ fn run_observed_tic_tac_toe_match(
     callback: &Py<PyAny>,
     config: MatchConfig,
 ) -> PyResult<CatalogMatchReport> {
-    let mut first = python_tic_tac_toe_agent(first)?;
-    let mut second = python_tic_tac_toe_agent(second)?;
+    let mut first = python_participant(first, configured_tic_tac_toe_mcts)?;
+    let mut second = python_participant(second, configured_tic_tac_toe_mcts)?;
     let mut observer = PythonTicTacToeMatchObserver {
         callback,
         error: None,
@@ -2032,8 +1868,8 @@ fn run_observed_boop_match(
     callback: &Py<PyAny>,
     config: MatchConfig,
 ) -> PyResult<CatalogMatchReport> {
-    let mut first = python_boop_agent(first)?;
-    let mut second = python_boop_agent(second)?;
+    let mut first = python_participant(first, configured_boop_mcts)?;
+    let mut second = python_participant(second, configured_boop_mcts)?;
     let mut observer = PythonBoopMatchObserver {
         callback,
         error: None,
@@ -2055,8 +1891,8 @@ fn run_observed_connect_four_match(
     callback: &Py<PyAny>,
     config: MatchConfig,
 ) -> PyResult<CatalogMatchReport> {
-    let mut first = python_connect_four_agent(first)?;
-    let mut second = python_connect_four_agent(second)?;
+    let mut first = python_participant(first, configured_connect_four_mcts)?;
+    let mut second = python_participant(second, configured_connect_four_mcts)?;
     let mut observer = PythonConnectFourMatchObserver {
         callback,
         error: None,
@@ -2079,8 +1915,8 @@ fn run_observed_spirits_match(
     callback: &Py<PyAny>,
     config: MatchConfig,
 ) -> PyResult<CatalogMatchReport> {
-    let mut first = python_spirits_agent(first)?;
-    let mut second = python_spirits_agent(second)?;
+    let mut first = python_participant(first, configured_spirits_of_the_forest_mcts)?;
+    let mut second = python_participant(second, configured_spirits_of_the_forest_mcts)?;
     let mut observer = PythonSpiritsMatchObserver {
         callback,
         error: None,
@@ -2100,238 +1936,20 @@ fn run_observed_spirits_match(
     Ok(report)
 }
 
-fn configured_tic_tac_toe_mcts_for_python(config: MctsAgentConfig) -> PyResult<TicTacToeMctsAgent> {
-    configured_tic_tac_toe_mcts(config).map_err(|error| PyRuntimeError::new_err(error.to_string()))
-}
-
-fn python_tic_tac_toe_agent(
-    configured: &PythonAgentConfig,
-) -> PyResult<PythonObservedAgent<'_, TicTacToeMctsAgent>> {
+fn python_participant<'a, M>(
+    configured: &'a PythonAgentConfig,
+    mcts: impl FnOnce(MctsAgentConfig) -> Result<M, CatalogError>,
+) -> PyResult<PythonParticipant<'a, M>> {
     match configured {
-        PythonAgentConfig::Automated(AgentConfig::Random) => {
-            Ok(PythonObservedAgent::Random(RandomAgent))
-        }
-        PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => Ok(PythonObservedAgent::Mcts(
-            configured_tic_tac_toe_mcts_for_python(config.clone())?,
-        )),
+        PythonAgentConfig::Automated(config) => ConfiguredAgent::new(config.clone(), mcts)
+            .map(PythonParticipant::Automated)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string())),
         PythonAgentConfig::Human { selector, observer } => {
-            Ok(PythonObservedAgent::Human(PythonHumanAgent {
+            Ok(PythonParticipant::Human(PythonHumanAgent {
                 selector,
                 observer: observer.as_ref(),
             }))
         }
-    }
-}
-
-fn python_connect_four_agent(
-    configured: &PythonAgentConfig,
-) -> PyResult<PythonObservedAgent<'_, ConnectFourMctsAgent>> {
-    match configured {
-        PythonAgentConfig::Automated(AgentConfig::Random) => {
-            Ok(PythonObservedAgent::Random(RandomAgent))
-        }
-        PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => Ok(PythonObservedAgent::Mcts(
-            configured_connect_four_mcts(config.clone())
-                .map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
-        )),
-        PythonAgentConfig::Human { selector, observer } => {
-            Ok(PythonObservedAgent::Human(PythonHumanAgent {
-                selector,
-                observer: observer.as_ref(),
-            }))
-        }
-    }
-}
-
-fn python_boop_agent(configured: &PythonAgentConfig) -> PyResult<PythonObservedBoopAgent<'_>> {
-    match configured {
-        PythonAgentConfig::Automated(AgentConfig::Random) => {
-            Ok(PythonObservedBoopAgent::Random(RandomAgent))
-        }
-        PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => {
-            Ok(PythonObservedBoopAgent::Mcts(
-                configured_boop_mcts(config.clone())
-                    .map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
-            ))
-        }
-        PythonAgentConfig::Human { selector, observer } => {
-            Ok(PythonObservedBoopAgent::Human(PythonHumanAgent {
-                selector,
-                observer: observer.as_ref(),
-            }))
-        }
-    }
-}
-
-fn python_spirits_agent(
-    configured: &PythonAgentConfig,
-) -> PyResult<PythonObservedSpiritsAgent<'_>> {
-    match configured {
-        PythonAgentConfig::Automated(AgentConfig::Random) => {
-            Ok(PythonObservedSpiritsAgent::Random(RandomAgent))
-        }
-        PythonAgentConfig::Automated(AgentConfig::Mcts(config)) => {
-            Ok(PythonObservedSpiritsAgent::Mcts(
-                configured_spirits_of_the_forest_mcts(config.clone())
-                    .map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
-            ))
-        }
-        PythonAgentConfig::Human { selector, observer } => {
-            Ok(PythonObservedSpiritsAgent::Human(PythonHumanAgent {
-                selector,
-                observer: observer.as_ref(),
-            }))
-        }
-    }
-}
-
-fn run_with_human_first(
-    game: GameId,
-    first: &Py<PyAny>,
-    observer: Option<&Py<PyAny>>,
-    second: AgentConfig,
-    config: MatchConfig,
-) -> Result<CatalogMatchReport, CatalogError> {
-    let mut first = PythonHumanAgent {
-        selector: first,
-        observer,
-    };
-    match (game, second) {
-        (GameId::Boop, AgentConfig::Random) => {
-            run_boop_match_with_trace(&mut first, &mut RandomAgent, config)
-        }
-        (GameId::Boop, AgentConfig::Mcts(configured)) => {
-            run_boop_match_with_trace(&mut first, &mut configured_boop_mcts(configured)?, config)
-        }
-        (GameId::ConnectFour, AgentConfig::Random) => {
-            run_connect_four_match_with_trace(&mut first, &mut RandomAgent, config)
-        }
-        (GameId::ConnectFour, AgentConfig::Mcts(configured)) => run_connect_four_match_with_trace(
-            &mut first,
-            &mut configured_connect_four_mcts(configured)?,
-            config,
-        ),
-        (GameId::SpiritsOfTheForest, AgentConfig::Random) => {
-            run_spirits_of_the_forest_match_with_trace(&mut first, &mut RandomAgent, config)
-        }
-        (GameId::SpiritsOfTheForest, AgentConfig::Mcts(configured)) => {
-            run_spirits_of_the_forest_match_with_trace(
-                &mut first,
-                &mut configured_spirits_of_the_forest_mcts(configured)?,
-                config,
-            )
-        }
-        (GameId::TicTacToe, AgentConfig::Random) => {
-            run_tic_tac_toe_match_with_trace(&mut first, &mut RandomAgent, config)
-        }
-        (GameId::TicTacToe, AgentConfig::Mcts(configured)) => run_tic_tac_toe_match_with_trace(
-            &mut first,
-            &mut configured_tic_tac_toe_mcts(configured)?,
-            config,
-        ),
-    }
-}
-
-fn run_with_human_second(
-    game: GameId,
-    first: AgentConfig,
-    second: &Py<PyAny>,
-    observer: Option<&Py<PyAny>>,
-    config: MatchConfig,
-) -> Result<CatalogMatchReport, CatalogError> {
-    let mut second = PythonHumanAgent {
-        selector: second,
-        observer,
-    };
-    match (game, first) {
-        (GameId::Boop, AgentConfig::Random) => {
-            run_boop_match_with_trace(&mut RandomAgent, &mut second, config)
-        }
-        (GameId::Boop, AgentConfig::Mcts(configured)) => {
-            run_boop_match_with_trace(&mut configured_boop_mcts(configured)?, &mut second, config)
-        }
-        (GameId::ConnectFour, AgentConfig::Random) => {
-            run_connect_four_match_with_trace(&mut RandomAgent, &mut second, config)
-        }
-        (GameId::ConnectFour, AgentConfig::Mcts(configured)) => run_connect_four_match_with_trace(
-            &mut configured_connect_four_mcts(configured)?,
-            &mut second,
-            config,
-        ),
-        (GameId::SpiritsOfTheForest, AgentConfig::Random) => {
-            run_spirits_of_the_forest_match_with_trace(&mut RandomAgent, &mut second, config)
-        }
-        (GameId::SpiritsOfTheForest, AgentConfig::Mcts(configured)) => {
-            run_spirits_of_the_forest_match_with_trace(
-                &mut configured_spirits_of_the_forest_mcts(configured)?,
-                &mut second,
-                config,
-            )
-        }
-        (GameId::TicTacToe, AgentConfig::Random) => {
-            run_tic_tac_toe_match_with_trace(&mut RandomAgent, &mut second, config)
-        }
-        (GameId::TicTacToe, AgentConfig::Mcts(configured)) => run_tic_tac_toe_match_with_trace(
-            &mut configured_tic_tac_toe_mcts(configured)?,
-            &mut second,
-            config,
-        ),
-    }
-}
-
-fn run_with_two_humans(
-    game: GameId,
-    first: &Py<PyAny>,
-    first_observer: Option<&Py<PyAny>>,
-    second: &Py<PyAny>,
-    second_observer: Option<&Py<PyAny>>,
-    config: MatchConfig,
-) -> Result<CatalogMatchReport, CatalogError> {
-    match game {
-        GameId::Boop => run_boop_match_with_trace(
-            &mut PythonHumanAgent {
-                selector: first,
-                observer: first_observer,
-            },
-            &mut PythonHumanAgent {
-                selector: second,
-                observer: second_observer,
-            },
-            config,
-        ),
-        GameId::ConnectFour => run_connect_four_match_with_trace(
-            &mut PythonHumanAgent {
-                selector: first,
-                observer: first_observer,
-            },
-            &mut PythonHumanAgent {
-                selector: second,
-                observer: second_observer,
-            },
-            config,
-        ),
-        GameId::SpiritsOfTheForest => run_spirits_of_the_forest_match_with_trace(
-            &mut PythonHumanAgent {
-                selector: first,
-                observer: first_observer,
-            },
-            &mut PythonHumanAgent {
-                selector: second,
-                observer: second_observer,
-            },
-            config,
-        ),
-        GameId::TicTacToe => run_tic_tac_toe_match_with_trace(
-            &mut PythonHumanAgent {
-                selector: first,
-                observer: first_observer,
-            },
-            &mut PythonHumanAgent {
-                selector: second,
-                observer: second_observer,
-            },
-            config,
-        ),
     }
 }
 
