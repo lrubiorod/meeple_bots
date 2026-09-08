@@ -15,6 +15,7 @@ from ....api import (
     TicTacToeAction,
 )
 from ....gui.player import GuiPlayer
+from ....gui.baselines import TIC_TAC_TOE_BASELINE
 from ....gui.controller import GuiController
 
 
@@ -29,7 +30,7 @@ class TicTacToeGui(GuiController):
             max_plies=9,
             players=(
                 GuiPlayer("human", rollout_depth=9),
-                GuiPlayer("mcts", rollout_depth=9),
+                TIC_TAC_TOE_BASELINE,
             ),
             delay=0.6,
         )
@@ -67,6 +68,7 @@ class TicTacToeGui(GuiController):
             exploration=configured.exploration,
             rollout_depth=configured.rollout_depth,
             tree_reuse=configured.tree_reuse,
+            transpositions=configured.transpositions,
         )
 
     def _present_human_turn(self, turn: HumanTurn) -> None:

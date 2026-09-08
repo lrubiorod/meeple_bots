@@ -1,5 +1,9 @@
 """Single-page browser client for Spirits of the Forest."""
 
+import json
+
+from ....gui.baselines import SPOTF_BASELINE
+
 PAGE = r"""<!doctype html>
 <html lang="es">
 <head>
@@ -39,7 +43,7 @@ PAGE = r"""<!doctype html>
 <label>Profundidad<input id="depth-0" type="number" min="1" value="130"></label>
 <label>Exploración<input id="exploration-0" type="number" min="0" step="0.1" value="1"></label>
 <label>Heurística<select id="heuristic-0"><option value="0">H0 · Progreso alcanzable</option><option value="none" selected>Ninguna</option></select></label>
-<label><input id="tree-reuse-0" type="checkbox" checked> Reutilizar árbol</label>
+<label><input id="transpositions-0" type="checkbox"> Transposiciones</label><label><input id="tree-reuse-0" type="checkbox" checked> Reutilizar árbol</label>
 </div>
 <div class="mcts-config" id="mcts-config-1">
 <strong>MCTS · Jugador 2</strong>
@@ -49,7 +53,7 @@ PAGE = r"""<!doctype html>
 <label>Profundidad<input id="depth-1" type="number" min="1" value="130"></label>
 <label>Exploración<input id="exploration-1" type="number" min="0" step="0.1" value="1"></label>
 <label>Heurística<select id="heuristic-1"><option value="0">H0 · Progreso alcanzable</option><option value="none" selected>Ninguna</option></select></label>
-<label><input id="tree-reuse-1" type="checkbox" checked> Reutilizar árbol</label>
+<label><input id="transpositions-1" type="checkbox"> Transposiciones</label><label><input id="tree-reuse-1" type="checkbox" checked> Reutilizar árbol</label>
 </div>
 </section>
 <section class="players" id="players"></section>
@@ -155,10 +159,21 @@ function initializeGui(){
     const kind=document.querySelector(`#player-${index}`).value;
     if(kind!=='mcts')return{kind};
     const heuristic=document.querySelector(`#heuristic-${index}`).value,mode=document.querySelector(`#budget-mode-${index}`).value;
-    return{kind,iterations:mode==='iterations'?Number(document.querySelector(`#iterations-${index}`).value):null,time_budget:mode==='time'?Number(document.querySelector(`#time-budget-${index}`).value):null,exploration:Number(document.querySelector(`#exploration-${index}`).value),rollout_depth:Number(document.querySelector(`#depth-${index}`).value),heuristic:heuristic==='none'?null:Number(heuristic),tree_reuse:document.querySelector(`#tree-reuse-${index}`).checked};
+    return{kind,iterations:mode==='iterations'?Number(document.querySelector(`#iterations-${index}`).value):null,time_budget:mode==='time'?Number(document.querySelector(`#time-budget-${index}`).value):null,exploration:Number(document.querySelector(`#exploration-${index}`).value),rollout_depth:Number(document.querySelector(`#depth-${index}`).value),heuristic:heuristic==='none'?null:Number(heuristic),transpositions:document.querySelector(`#transpositions-${index}`).checked,tree_reuse:document.querySelector(`#tree-reuse-${index}`).checked};
   }
   function updateBudget(index){const timed=document.querySelector(`#budget-mode-${index}`).value==='time';document.querySelector(`#time-budget-label-${index}`).hidden=!timed;document.querySelector(`#iterations-label-${index}`).hidden=timed}
   function updateMctsConfig(index){document.querySelector(`#mcts-config-${index}`).hidden=document.querySelector(`#player-${index}`).value!=='mcts'}
+  const baseline = __MCTS_BASELINE__;
+  for (const player of [0, 1]) {
+    document.querySelector(`#budget-mode-${player}`).value = baseline.time_budget === null ? 'iterations' : 'time';
+    document.querySelector(`#iterations-${player}`).value = baseline.iterations ?? 1000;
+    document.querySelector(`#time-budget-${player}`).value = baseline.time_budget ?? 1;
+    document.querySelector(`#depth-${player}`).value = baseline.rollout_depth;
+    document.querySelector(`#exploration-${player}`).value = baseline.exploration;
+    document.querySelector(`#heuristic-${player}`).value = String(baseline.heuristic);
+    document.querySelector(`#tree-reuse-${player}`).checked = baseline.tree_reuse;
+    document.querySelector(`#transpositions-${player}`).checked = baseline.transpositions;
+  }
   for(const index of [0,1]){document.querySelector(`#player-${index}`).onchange=()=>updateMctsConfig(index);document.querySelector(`#budget-mode-${index}`).onchange=()=>updateBudget(index);updateMctsConfig(index);updateBudget(index)}
   document.querySelector('#start').onclick=async()=>{try{review=null;selection=null;document.querySelector('#error').textContent='';state=await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({first:playerConfig(0),second:playerConfig(1),seed:Number(document.querySelector('#seed').value),minimum_move_seconds:Number(document.querySelector('#pace').value),save_trace:document.querySelector('#save-trace').checked})});render()}catch(error){document.querySelector('#error').textContent=error.message}};
   setInterval(async()=>{if(!state||!['playing','waiting_human'].includes(state.status))return;try{state=await api('/api/state');render()}catch(error){}},250);
@@ -239,3 +254,6 @@ function initializeGui(){
 if(typeof document!=='undefined')initializeGui();
 </script>
 </body></html>"""
+
+
+PAGE = PAGE.replace("__MCTS_BASELINE__", json.dumps(SPOTF_BASELINE.as_dict()))

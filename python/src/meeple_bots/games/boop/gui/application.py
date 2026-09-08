@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ....gui.baselines import BOOP_BASELINE
 from ....gui.player import parse_gui_player
 from ...._capabilities import heuristic_indices
 from ....gui.application import GuiApplication
@@ -22,12 +23,14 @@ class BoopApplication(GuiApplication):
             payload.get("first"),
             "first",
             default_rollout_depth=15,
+            default_mcts=BOOP_BASELINE,
             available_heuristics=heuristic_indices("boop"),
         )
         second = parse_gui_player(
             payload.get("second"),
             "second",
             default_rollout_depth=15,
+            default_mcts=BOOP_BASELINE,
             available_heuristics=heuristic_indices("boop"),
         )
         seed = payload.get("seed", 0)

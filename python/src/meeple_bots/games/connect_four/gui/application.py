@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ....gui.player import parse_gui_player
+from ....gui.baselines import CONNECT_FOUR_BASELINE
 from ...._capabilities import heuristic_indices
 from ....gui.application import GuiApplication
 from .controller import ConnectFourGui
@@ -20,10 +21,12 @@ class ConnectFourApplication(GuiApplication):
     def start(self, payload: dict[str, Any]) -> dict[str, object]:
         first = parse_gui_player(
             payload.get("first"), "first", default_rollout_depth=64,
+            default_mcts=CONNECT_FOUR_BASELINE,
             available_heuristics=heuristic_indices("connect-four"),
         )
         second = parse_gui_player(
             payload.get("second"), "second", default_rollout_depth=64,
+            default_mcts=CONNECT_FOUR_BASELINE,
             available_heuristics=heuristic_indices("connect-four"),
         )
         seed = payload.get("seed", 0)

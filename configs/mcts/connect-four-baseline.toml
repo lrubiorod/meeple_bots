@@ -1,0 +1,10 @@
+# Reference opponent for interactive play; not a solved-game guarantee.
+# Full-length uniform rollouts, with a fixed search budget and subtree reuse.
+name = "connect-four-baseline"
+iterations = 50000
+rollout_depth = 42
+exploration = 1.4142135623730951
+cutoff_evaluator = { kind = "neutral" }
+rollout_policy = { kind = "uniform_random" }
+tree_reuse = true
+transpositions = false

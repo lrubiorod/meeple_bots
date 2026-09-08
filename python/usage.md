@@ -174,7 +174,33 @@ meeple-bots gui --game spotf
 ```
 
 Each seat can be human, Random, or MCTS. Before a match, the page configures player types, MCTS
-budget, seed, and minimum display interval. Boop also exposes both cutoff heuristics and asks humans
+budget, seed, and minimum display interval. All four GUIs start with these MCTS
+reference settings for either seat:
+
+| Game | Iterations per decision | Rollout depth | Reference profile |
+| --- | ---: | ---: | --- |
+| Tic-tac-toe | 10,000 | 9 | [tic-tac-toe-baseline.toml](../configs/mcts/tic-tac-toe-baseline.toml) |
+| Connect Four | 50,000 | 42 | [connect-four-baseline.toml](../configs/mcts/connect-four-baseline.toml) |
+| Boop | 15,000 | 16 | [boop-baseline.toml](../configs/mcts/boop-baseline.toml) |
+| Spirits of the Forest | 100,000 | 130 | [spotf-baseline.toml](../configs/mcts/spotf-baseline.toml) |
+
+Tic-tac-toe and Connect Four use UCT with exploration `sqrt(2)`, uniform rollouts long enough to
+reach terminal states, and tree reuse, without heuristics or transpositions. Boop uses exploration
+`0.25`, cutoff heuristic `0`, tree reuse and transpositions. SPOTF uses exploration `1.0`, cutoff
+heuristic `0` and tree reuse, with transpositions disabled. Both use uniform rollouts and expose
+exploration and transpositions as editable fields. These are intended as competent interactive
+opponents, not guaranteed perfect or superhuman players. Decision time depends on the machine
+and position. All displayed settings remain editable; switching player types preserves edits.
+The GUI reads the reference TOML files at process startup. With an editable installation, edit
+`configs/mcts/<game>-baseline.toml` and restart the GUI to load the new defaults. Installed wheels
+include those same files and work without a repository checkout. Resolution does not depend on
+the shell's working directory. Invalid profiles or settings unsupported by the GUI produce an error
+instead of silently falling back to different defaults.
+The profile only initializes the controls: changing a field affects the next match without writing
+to the TOML. Restarting the GUI process restores the profile's values. Both iteration and time
+budgets are supported. Load the file explicitly for CLI matches.
+
+Boop also exposes both cutoff heuristics and asks humans
 to choose a graduation or recovery when a placement has several legal resolutions.
 Spirits of the Forest presents collection and gemstone decisions as separate phases, derives its
 face-up forest from the match seed, and exposes only heuristic `0`, with reachable category progress
@@ -301,4 +327,3 @@ seconds per decision used for the suggested benchmark points; it does not length
 that duration. Repeated `--agent-config` values add sequential, exact-profile latency measurements
 and a fastest-to-slowest comparison; they do not measure playing strength. Its measurements,
 fields, and interpretation are kept in the [evaluation guide](../crates/evaluation/README.md).
-

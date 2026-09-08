@@ -24,3 +24,10 @@ bindings = "pyo3"
 manifest-path = "crates/python-bindings/Cargo.toml"
 module-name = "meeple_bots._native"
 python-source = "python/src"
+# Ship the same profiles read by GUI source checkouts; no duplicated defaults.
+include = [
+    "configs/mcts/tic-tac-toe-baseline.toml",
+    "configs/mcts/connect-four-baseline.toml",
+    "configs/mcts/boop-baseline.toml",
+    "configs/mcts/spotf-baseline.toml",
+]

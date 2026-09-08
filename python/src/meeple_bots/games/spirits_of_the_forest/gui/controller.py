@@ -24,6 +24,7 @@ from ....api import (
     TakeSpiritTile,
     _initial_spirits_state,
 )
+from ....gui.baselines import SPOTF_BASELINE
 from ....gui.player import GuiPlayer
 from ....gui.controller import GuiController
 
@@ -37,7 +38,7 @@ class SpiritsOfTheForestGui(GuiController):
             max_plies=256,
             players=(
                 GuiPlayer("human", rollout_depth=64),
-                GuiPlayer("mcts", rollout_depth=64),
+                SPOTF_BASELINE,
             ),
             delay=0.4,
         )
@@ -144,6 +145,7 @@ class SpiritsOfTheForestGui(GuiController):
             rollout_depth=configured.rollout_depth,
             heuristic=configured.heuristic,
             tree_reuse=configured.tree_reuse,
+            transpositions=configured.transpositions,
         )
 
     def _present_human_turn(self, turn: HumanTurn) -> None:

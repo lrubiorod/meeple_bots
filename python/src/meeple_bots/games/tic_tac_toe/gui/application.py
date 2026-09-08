@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ....gui.player import parse_gui_player
+from ....gui.baselines import TIC_TAC_TOE_BASELINE
 from ...._capabilities import heuristic_indices
 from ....gui.application import GuiApplication
 from .controller import TicTacToeGui
@@ -20,10 +21,12 @@ class TicTacToeApplication(GuiApplication):
     def start(self, payload: dict[str, Any]) -> dict[str, object]:
         first = parse_gui_player(
             payload.get("first"), "first", default_rollout_depth=9,
+            default_mcts=TIC_TAC_TOE_BASELINE,
             available_heuristics=heuristic_indices("tic-tac-toe"),
         )
         second = parse_gui_player(
             payload.get("second"), "second", default_rollout_depth=9,
+            default_mcts=TIC_TAC_TOE_BASELINE,
             available_heuristics=heuristic_indices("tic-tac-toe"),
         )
         seed = payload.get("seed", 0)

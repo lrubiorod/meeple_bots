@@ -1,5 +1,9 @@
 """Self-contained browser page for the Boop GUI."""
 
+import json
+
+from ....gui.baselines import BOOP_BASELINE
+
 PAGE = r"""<!doctype html>
 <html lang="es">
 <head>
@@ -149,13 +153,13 @@ PAGE = r"""<!doctype html>
             <div class="player-head"><span class="player-name">Jugador 1</span><span class="token"></span></div>
             <div class="pool-line"><span>Reserva</span><b id="pool-0">8 kittens · 0 cats</b></div>
             <label>Control<select id="player-0"><option value="human">Humano</option><option value="mcts">MCTS</option><option value="random">Random</option></select></label>
-            <div class="mcts-options hidden" id="mcts-0"><label>Presupuesto<select id="budget-mode-0"><option value="iterations">Iteraciones</option><option value="time">Tiempo</option></select></label><label class="budget-field" id="iterations-label-0">Iteraciones<input id="iterations-0" type="number" min="1" value="1000"></label><label class="budget-field hidden" id="time-label-0">Tiempo por decisión (s)<input id="time-budget-0" type="number" min="0.001" step="0.1" value="1"></label><label>Profundidad<input id="depth-0" type="number" min="1" value="15"></label><label class="wide">Heurística<select id="heuristic-0"><option value="none">Sin heurística</option><option value="0">0 · Balance de gatos</option><option value="1">1 · Estratégica</option></select></label><label class="wide"><input id="tree-reuse-0" type="checkbox"> Reutilizar árbol</label></div>
+            <div class="mcts-options hidden" id="mcts-0"><label>Presupuesto<select id="budget-mode-0"><option value="iterations">Iteraciones</option><option value="time">Tiempo</option></select></label><label class="budget-field" id="iterations-label-0">Iteraciones<input id="iterations-0" type="number" min="1" value="1000"></label><label class="budget-field hidden" id="time-label-0">Tiempo por decisión (s)<input id="time-budget-0" type="number" min="0.001" step="0.1" value="1"></label><label>Profundidad<input id="depth-0" type="number" min="1" value="15"></label><label class="wide">Heurística<select id="heuristic-0"><option value="none">Sin heurística</option><option value="0">0 · Balance de gatos</option><option value="1">1 · Estratégica</option></select></label><label><input id="transpositions-0" type="checkbox"> Transposiciones</label><label>Exploración<input id="exploration-0" type="number" min="0" step="0.05" value="0.25"></label><label class="wide"><input id="tree-reuse-0" type="checkbox"> Reutilizar árbol</label></div>
           </div>
           <div class="player" id="player-card-1" style="--player-color:var(--second)">
             <div class="player-head"><span class="player-name">Jugador 2</span><span class="token"></span></div>
             <div class="pool-line"><span>Reserva</span><b id="pool-1">8 kittens · 0 cats</b></div>
             <label>Control<select id="player-1"><option value="mcts">MCTS</option><option value="human">Humano</option><option value="random">Random</option></select></label>
-            <div class="mcts-options" id="mcts-1"><label>Presupuesto<select id="budget-mode-1"><option value="iterations">Iteraciones</option><option value="time">Tiempo</option></select></label><label class="budget-field" id="iterations-label-1">Iteraciones<input id="iterations-1" type="number" min="1" value="1000"></label><label class="budget-field hidden" id="time-label-1">Tiempo por decisión (s)<input id="time-budget-1" type="number" min="0.001" step="0.1" value="1"></label><label>Profundidad<input id="depth-1" type="number" min="1" value="15"></label><label class="wide">Heurística<select id="heuristic-1"><option value="0">0 · Balance de gatos</option><option value="1">1 · Estratégica</option><option value="none">Sin heurística</option></select></label><label class="wide"><input id="tree-reuse-1" type="checkbox"> Reutilizar árbol</label></div>
+            <div class="mcts-options" id="mcts-1"><label>Presupuesto<select id="budget-mode-1"><option value="iterations">Iteraciones</option><option value="time">Tiempo</option></select></label><label class="budget-field" id="iterations-label-1">Iteraciones<input id="iterations-1" type="number" min="1" value="1000"></label><label class="budget-field hidden" id="time-label-1">Tiempo por decisión (s)<input id="time-budget-1" type="number" min="0.001" step="0.1" value="1"></label><label>Profundidad<input id="depth-1" type="number" min="1" value="15"></label><label class="wide">Heurística<select id="heuristic-1"><option value="0">0 · Balance de gatos</option><option value="1">1 · Estratégica</option><option value="none">Sin heurística</option></select></label><label><input id="transpositions-1" type="checkbox"> Transposiciones</label><label>Exploración<input id="exploration-1" type="number" min="0" step="0.05" value="0.25"></label><label class="wide"><input id="tree-reuse-1" type="checkbox"> Reutilizar árbol</label></div>
           </div>
         </div>
         <div class="pace"><div class="pace-line"><span>Intervalo mínimo entre jugadas</span><b id="pace-value">0.6 s</b></div><input id="pace" type="range" min="0" max="3" step="0.1" value="0.6"></div>
@@ -238,6 +242,8 @@ PAGE = r"""<!doctype html>
         time_budget: timed ? Number(document.querySelector(`#time-budget-${index}`).value) : null,
         rollout_depth: Number(document.querySelector(`#depth-${index}`).value),
         heuristic: heuristic === 'none' ? null : Number(heuristic),
+        exploration: Number(document.querySelector(`#exploration-${index}`).value),
+        transpositions: document.querySelector(`#transpositions-${index}`).checked,
         tree_reuse: document.querySelector(`#tree-reuse-${index}`).checked,
       };
     }
@@ -403,6 +409,17 @@ PAGE = r"""<!doctype html>
       try { state = await api('/api/state'); render(); } catch (_) {}
       window.setTimeout(poll, 120);
     }
+  const baseline = __MCTS_BASELINE__;
+  for (const player of [0, 1]) {
+    document.querySelector(`#budget-mode-${player}`).value = baseline.time_budget === null ? 'iterations' : 'time';
+    document.querySelector(`#iterations-${player}`).value = baseline.iterations ?? 1000;
+    document.querySelector(`#time-budget-${player}`).value = baseline.time_budget ?? 1;
+    document.querySelector(`#depth-${player}`).value = baseline.rollout_depth;
+    document.querySelector(`#exploration-${player}`).value = baseline.exploration;
+    document.querySelector(`#heuristic-${player}`).value = String(baseline.heuristic);
+    document.querySelector(`#tree-reuse-${player}`).checked = baseline.tree_reuse;
+    document.querySelector(`#transpositions-${player}`).checked = baseline.transpositions;
+  }
     updateAgentFields();
     for (const player of [0, 1]) updateBudgetFields(player);
     poll();
@@ -410,3 +427,6 @@ PAGE = r"""<!doctype html>
 </body>
 </html>
 """
+
+
+PAGE = PAGE.replace("__MCTS_BASELINE__", json.dumps(BOOP_BASELINE.as_dict()))

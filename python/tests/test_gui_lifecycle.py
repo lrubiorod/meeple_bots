@@ -32,7 +32,7 @@ class GuiLifecycleTests(unittest.TestCase):
                                  0.4 if game == "spirits_of_the_forest" else 0.6)
                 if game == "boop":
                     self.assertEqual(before["players"][1]["heuristic"], 0)
-                    self.assertEqual(before["players"][1]["iterations"], 1000)
+                    self.assertEqual(before["players"][1]["iterations"], 15000)
                 with patch.object(gui, "_prepare_start", side_effect=ValueError("bad initial state")):
                     with self.assertRaisesRegex(ValueError, "bad initial state"):
                         gui.start(GuiPlayer("random"), GuiPlayer("random"))

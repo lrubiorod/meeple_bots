@@ -1,5 +1,9 @@
 """Self-contained browser page for the tic-tac-toe GUI."""
 
+import json
+
+from ....gui.baselines import TIC_TAC_TOE_BASELINE
+
 PAGE = r"""<!doctype html>
 <html lang="es">
 <head>
@@ -242,6 +246,14 @@ PAGE = r"""<!doctype html>
       try { state = await api('/api/state'); render(); } catch (_) {}
       window.setTimeout(poll, 120);
     }
+    const baseline = __MCTS_BASELINE__;
+    for (const player of [0, 1]) {
+      document.querySelector(`#budget-mode-${player}`).value = baseline.time_budget === null ? 'iterations' : 'time';
+    document.querySelector(`#iterations-${player}`).value = baseline.iterations ?? 1000;
+    document.querySelector(`#time-budget-${player}`).value = baseline.time_budget ?? 1;
+      document.querySelector(`#depth-${player}`).value = baseline.rollout_depth;
+      document.querySelector(`#tree-reuse-${player}`).checked = baseline.tree_reuse;
+    }
     updateAgentFields();
     for (const player of [0, 1]) updateBudgetFields(player);
     poll();
@@ -249,3 +261,5 @@ PAGE = r"""<!doctype html>
 </body>
 </html>
 """
+
+PAGE = PAGE.replace("__MCTS_BASELINE__", json.dumps(TIC_TAC_TOE_BASELINE.as_dict()))

@@ -103,7 +103,8 @@ Personal scripts and experiments belong under `local/`; tournament definitions u
 `configs/tournaments/`; generated traces, tables, and reports under `results/`.
 Personal configurations and generated data are ignored by Git. Shared references
 remain versioned: `configs/mcts/template.toml`, `heuristic.toml`, `boop-baseline.toml`,
-`spotf-baseline.toml`, and `configs/tournaments/template-study.toml`.
+`spotf-baseline.toml`, `tic-tac-toe-baseline.toml`, `connect-four-baseline.toml`, and
+`configs/tournaments/template-study.toml`.
 Game rules, agents, reusable tournament/extraction/report tools, and their regression
 tests remain versioned. See [the Python guide](python/studies.md#1-configure-and-run-the-tournament)
 to create your own local study; no personal experiment files are required.

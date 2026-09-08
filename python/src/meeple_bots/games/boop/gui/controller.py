@@ -18,6 +18,7 @@ from ....api import (
     MctsAgent,
     RandomAgent,
 )
+from ....gui.baselines import BOOP_BASELINE
 from ....gui.player import GuiPlayer
 from ....gui.controller import GuiController
 
@@ -33,7 +34,7 @@ class BoopGui(GuiController):
             max_plies=10_000,
             players=(
                 GuiPlayer("human", rollout_depth=15),
-                GuiPlayer("mcts", iterations=1_000, rollout_depth=15, heuristic=0),
+                BOOP_BASELINE,
             ),
             delay=0.6,
         )
@@ -66,6 +67,7 @@ class BoopGui(GuiController):
             rollout_depth=configured.rollout_depth,
             heuristic=configured.heuristic,
             tree_reuse=configured.tree_reuse,
+            transpositions=configured.transpositions,
         )
 
     def _present_human_turn(self, turn: HumanTurn) -> None:

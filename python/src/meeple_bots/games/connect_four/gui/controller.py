@@ -15,6 +15,7 @@ from ....api import (
     RandomAgent,
 )
 from ....gui.player import GuiPlayer
+from ....gui.baselines import CONNECT_FOUR_BASELINE
 from ....gui.controller import GuiController
 
 
@@ -29,7 +30,7 @@ class ConnectFourGui(GuiController):
             max_plies=42,
             players=(
                 GuiPlayer("human", rollout_depth=64),
-                GuiPlayer("mcts", rollout_depth=64),
+                CONNECT_FOUR_BASELINE,
             ),
             delay=0.6,
         )
@@ -67,6 +68,7 @@ class ConnectFourGui(GuiController):
             exploration=configured.exploration,
             rollout_depth=configured.rollout_depth,
             tree_reuse=configured.tree_reuse,
+            transpositions=configured.transpositions,
         )
 
     def _present_human_turn(self, turn: HumanTurn) -> None:
