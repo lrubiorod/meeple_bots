@@ -818,6 +818,17 @@ dispatch live under `meeple_bots.gui` and `meeple_bots.reporting`. The private
 `meeple_bots._native` module is an implementation detail; applications should import public values
 from `meeple_bots`.
 
+The Python facade is organized by responsibility:
+
+- `_agent_config.py` defines agent/evaluator/rollout configuration values and their
+  game-independent validation. `api.py` re-exports them and coordinates game-aware validation,
+  match/batch execution and native conversion.
+- `_mcts_profiles.py` parses TOML and inline MCTS profiles. `cli.py` imports these helpers and
+  handles command dispatch, study execution and terminal output.
+
+Public imports remain under `meeple_bots` and `meeple_bots.api`; internal modules do not import
+back from their entry points. CLI profile helper names remain available at their existing paths.
+
 Browser controllers share worker startup, cancellation, human waits, display pacing, trace
 completion and stale-callback protection in `meeple_bots.gui.controller.GuiController`.
 Game subclasses supply idle and seeded state, input validation, board/move presentation and

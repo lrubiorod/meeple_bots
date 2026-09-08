@@ -115,6 +115,14 @@ Observed and unobserved matches share participant construction, so adding a vari
 require adding a branch for every opponent. Game-specific typed observers and action conversion
 remain in the bindings; concrete traces and final states are converted into catalog reports.
 
+## Catalog modules
+
+`catalog/src/configuration.rs` owns MCTS configuration types, policy/evaluator adapters,
+game-specific constructors and validation. `participant.rs` delegates the agent contract to an
+independently configured participant. `lib.rs` retains catalog identifiers, descriptors, errors,
+match/evaluation dispatch and trace conversion. Public configuration types and constructors are
+explicitly re-exported at the crate root, preserving existing Rust and binding imports.
+
 ## Search capability metadata
 
 `game_search_capabilities(GameId)` exposes the heuristic indices and their named parameter
