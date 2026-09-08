@@ -86,6 +86,8 @@ impl PyAgentConfig {
         tree_reuse=false,
         transpositions=false,
     ))]
+    // Preserve the Python keyword-argument interface.
+    #[allow(clippy::too_many_arguments)]
     fn mcts(
         iterations: Option<u32>,
         exploration: f64,
@@ -583,6 +585,8 @@ fn py_evaluate_game(
     tree_reuse=false,
     transpositions=false,
 ))]
+// Preserve the Python keyword-argument interface.
+#[allow(clippy::too_many_arguments)]
 fn py_benchmark_mcts_agent(
     py: Python<'_>,
     game: &str,
@@ -785,6 +789,8 @@ fn parse_turn_phase(phase: &str) -> PyResult<CatalogTurnPhase> {
     }
 }
 
+// Mirrors the primary/fallback fields of the native Python entry points.
+#[allow(clippy::too_many_arguments)]
 fn parse_configured_rollout_policy(
     policy: &str,
     evaluator: Option<&str>,
@@ -1154,10 +1160,10 @@ fn py_run_match(
     let max_plies = NonZeroU32::new(max_plies)
         .ok_or_else(|| PyValueError::new_err("max_plies must be greater than zero"))?;
     let config = MatchConfig::new(seed, max_plies);
-    if let Some(observer) = observer.as_ref() {
-        if !observer.bind(py).is_callable() {
-            return Err(PyValueError::new_err("match observer must be callable"));
-        }
+    if let Some(observer) = observer.as_ref()
+        && !observer.bind(py).is_callable()
+    {
+        return Err(PyValueError::new_err("match observer must be callable"));
     }
     let first = clone_python_agent_config(py, &first.inner);
     let second = clone_python_agent_config(py, &second.inner);

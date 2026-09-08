@@ -113,17 +113,23 @@ to create your own local study; no personal experiment files are required.
 Run Rust validation from the repository root:
 
 ```bash
-cargo fmt --all -- --check
-cargo check --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
-Run Python tests from the activated virtual environment:
+Rebuild the native extension after changing any Rust crate used by Python, then run the
+Python suite from the activated virtual environment:
 
 ```bash
+maturin develop --release --locked --extras report
 python -m unittest discover -s python/tests -v
 ```
+
+[CI](.github/workflows/ci.yml) runs these checks on pushes and pull requests, using Ubuntu 24.04,
+Rust 1.97.1 and Python 3.12. Node 24 is installed explicitly for GUI JavaScript tests.
+It installs report dependencies so analysis tests run too.
+Superseded runs on the same branch are cancelled; no studies or generated results are uploaded.
 
 Use a release build for MCTS experiments. An unoptimized native module can make the same search
 dramatically slower and invalidate timing comparisons.

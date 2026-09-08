@@ -863,6 +863,8 @@ impl<C, P, B> MctsAgent<C, P, B> {
             .ok_or(AgentError::NoLegalActions)
     }
 
+    // Keep the borrowed search inputs explicit; grouping them would only wrap this call.
+    #[allow(clippy::too_many_arguments)]
     fn search_tree<G, R>(
         &mut self,
         game: &G,
@@ -992,7 +994,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
 
                 let maximizing = active_player == root_player;
                 let selected = best_child(
-                    &nodes,
+                    nodes,
                     node_index,
                     maximizing,
                     self.config.exploration,
@@ -2315,6 +2317,8 @@ where
     )
 }
 
+// Policy, evaluator and per-search memory have independent ownership and lifetimes.
+#[allow(clippy::too_many_arguments)]
 fn rollout_with_memory<G, P, C, R>(
     game: &G,
     state: &mut G::State,
@@ -2418,12 +2422,14 @@ mod tests {
 
     #[test]
     fn mast_averages_credit_each_occurrence_from_the_acting_players_perspective() {
-        let mut memory = RolloutMemory::<u8>::default();
-        memory.trajectory = vec![
-            (PlayerId::FIRST, 0),
-            (PlayerId::SECOND, 0),
-            (PlayerId::FIRST, 0),
-        ];
+        let mut memory = RolloutMemory::<u8> {
+            trajectory: vec![
+                (PlayerId::FIRST, 0),
+                (PlayerId::SECOND, 0),
+                (PlayerId::FIRST, 0),
+            ],
+            ..Default::default()
+        };
         memory.finish_simulation(PlayerId::SECOND, 0.5);
         memory.trajectory.push((PlayerId::FIRST, 0));
         memory.finish_simulation(PlayerId::SECOND, -1.0);

@@ -16,6 +16,8 @@ use meeple_bots_mcts_agent::{
 use meeple_bots_spirits_of_the_forest::{SpiritsOfTheForest, SpiritsOfTheForestAction, TurnPhase};
 use meeple_bots_tic_tac_toe::TicTacToe;
 
+// Configuration is constructed outside search; keep the existing value-based public API.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentConfig {
     Random,

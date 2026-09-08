@@ -68,6 +68,13 @@ REPORT_DEPENDENCIES_AVAILABLE = all(
 
 
 class MatchApiTests(unittest.TestCase):
+    def stop_gui(self, gui):
+        """Finish cancelled callbacks before interpreter shutdown, even after a failure."""
+        gui.cancel()
+        if gui._thread is not None:
+            gui._thread.join(5)
+            self.assertFalse(gui._thread.is_alive(), "GUI worker did not exit")
+
     @staticmethod
     def wait_for_gui(gui, predicate, timeout=2.0):
         deadline = time.monotonic() + timeout
@@ -348,6 +355,7 @@ class MatchApiTests(unittest.TestCase):
 
     def test_tic_tac_toe_gui_runs_agents_and_accepts_human_moves(self) -> None:
         watched = TicTacToeGui()
+        self.addCleanup(self.stop_gui, watched)
         watched.start(
             GuiPlayer("random"),
             GuiPlayer("random"),
@@ -362,6 +370,7 @@ class MatchApiTests(unittest.TestCase):
         )
 
         played = TicTacToeGui()
+        self.addCleanup(self.stop_gui, played)
         played.start(
             GuiPlayer("human"),
             GuiPlayer("human"),
@@ -383,6 +392,7 @@ class MatchApiTests(unittest.TestCase):
 
     def test_connect_four_gui_runs_agents_and_accepts_columns(self) -> None:
         watched = ConnectFourGui()
+        self.addCleanup(self.stop_gui, watched)
         watched.start(
             GuiPlayer("random"),
             GuiPlayer("random"),
@@ -394,6 +404,7 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(sum(cell is not None for cell in finished["board"]), len(finished["moves"]))
 
         played = ConnectFourGui()
+        self.addCleanup(self.stop_gui, played)
         played.start(
             GuiPlayer("human"),
             GuiPlayer("human"),
@@ -416,6 +427,7 @@ class MatchApiTests(unittest.TestCase):
 
     def test_boop_gui_runs_agents_and_accepts_action_indices(self) -> None:
         watched = BoopGui()
+        self.addCleanup(self.stop_gui, watched)
         watched.start(
             GuiPlayer("random"),
             GuiPlayer("random"),
@@ -437,6 +449,7 @@ class MatchApiTests(unittest.TestCase):
         self.assertEqual(pieces_in_pools, 16 - pieces_on_board)
 
         played = BoopGui()
+        self.addCleanup(self.stop_gui, played)
         played.start(
             GuiPlayer("human"),
             GuiPlayer("human"),
@@ -1124,6 +1137,7 @@ class MatchApiTests(unittest.TestCase):
                 Match(game=SpiritsOfTheForest(), first=MctsAgent(heuristic=heuristic))
 
         gui = SpiritsOfTheForestGui()
+        self.addCleanup(self.stop_gui, gui)
         gui.start(
             GuiPlayer("human"),
             GuiPlayer("random"),

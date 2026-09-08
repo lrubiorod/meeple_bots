@@ -235,7 +235,7 @@ fn winner_facts(state: &BoopState, winner: PlayerId) -> (bool, bool, Vec<Winning
     let winning_lines: Vec<_> = [PlayerId::FIRST, PlayerId::SECOND]
         .into_iter()
         .flat_map(|player| {
-            cat_lines(&state, player).map(move |line| WinningLineAnalysis {
+            cat_lines(state, player).map(move |line| WinningLineAnalysis {
                 player,
                 line,
                 orientation: line_orientation(line),
