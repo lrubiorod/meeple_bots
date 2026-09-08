@@ -11,6 +11,23 @@ from pathlib import Path
 _REPORT_TARGETS = ("index.html", "summary.json", "figures", "tables")
 
 
+def read_analysis_csv(path: Path, *, empty_as_missing: bool):
+    """Preserve literal identifiers; only empty cells may represent missing data."""
+    import pandas as pd
+
+    identifiers = (
+        "agent_name", "agent", "agent_a", "agent_b", "player_0_agent", "player_1_agent",
+        "winner_agent", "actor_agent", "target_agent", "reservation_agent",
+        "first_graduation_agent", "study_id", "source",
+    )
+    return pd.read_csv(
+        path,
+        keep_default_na=False,
+        na_values=[""] if empty_as_missing else [],
+        dtype={column: str for column in identifiers},
+    )
+
+
 def decision_timing_description(manifest: dict) -> str:
     """Explain the measurement boundary, including historical extractions."""
     if manifest.get("decision_timing_scope") == "agent_total_v1":

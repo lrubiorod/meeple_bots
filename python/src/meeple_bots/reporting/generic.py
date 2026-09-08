@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from . import decision_timing_description
+from . import decision_timing_description, read_analysis_csv
 
 
 def _load_tables(input_dir: Path, manifest: dict) -> dict[str, pd.DataFrame]:
@@ -27,7 +27,7 @@ def _load_tables(input_dir: Path, manifest: dict) -> dict[str, pd.DataFrame]:
         if not isinstance(filename, str):
             raise ValueError(f"extraction manifest does not define table {name}")
         # Preserve names such as 'NA'; convert only known numeric columns below.
-        table = pd.read_csv(input_dir / filename, keep_default_na=False)
+        table = read_analysis_csv(input_dir / filename, empty_as_missing=False)
         expected = counts.get(name)
         if not isinstance(expected, int):
             raise TypeError(f"extraction row count for {name} must be an integer")

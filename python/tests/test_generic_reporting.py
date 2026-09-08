@@ -1,5 +1,6 @@
 """Validate common report metrics and the tournament/extract/report workflow."""
 
+import csv
 import importlib.util
 import io
 import json
@@ -19,6 +20,55 @@ REPORT_AVAILABLE = all(
 
 @unittest.skipUnless(REPORT_AVAILABLE, "optional report dependencies are not installed")
 class GenericReportingTests(unittest.TestCase):
+    def test_specialized_reports_preserve_names_and_real_missing_values(self):
+        import pandas as pd
+        from meeple_bots.games.boop import reporting as boop
+        from meeple_bots.games.spirits_of_the_forest import reporting as spotf
+
+        for module in (boop, spotf):
+            for name in ("NA", "N/A", "NULL", "nan", "001"):
+                with self.subTest(report=module.__name__, name=name), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    manifest = {"tables": {}, "row_counts": {}}
+                    fixtures = {
+                        "agents": (["agent_name", "iterations"], [[name, ""], ["beta", 8]]),
+                        "matches": (
+                            ["agent_a", "agent_b", "player_0_agent", "player_1_agent", "winner_agent", "winner_player", "self_play"],
+                            [[name, "beta", name, "beta", name, 0, False],
+                             [name, "beta", "beta", name, "beta", 0, False],
+                             [name, "beta", name, "beta", "", "", False]],
+                        ),
+                        "root_actions": (["agent", "mean_utility"], [[name, ""], ["beta", 0.5]]),
+                    }
+                    for table in (*module._REQUIRED_TABLES, "root_actions"):
+                        columns, rows = fixtures.get(table, (["agent"], []))
+                        filename = f"{table}.csv"
+                        with (root / filename).open("w", newline="") as output:
+                            writer = csv.writer(output)
+                            writer.writerow(columns)
+                            writer.writerows(rows)
+                        manifest["tables"][table] = filename
+                        manifest["row_counts"][table] = len(rows)
+                    tables = module._load_tables(root, manifest)
+                    self.assertEqual(tables["agents"]["agent_name"].tolist(), [name, "beta"])
+                    self.assertTrue(pd.isna(tables["agents"].iloc[0]["iterations"]))
+                    matches = tables["matches"]
+                    self.assertEqual(matches["winner_agent"].iloc[0], name)
+                    self.assertTrue(pd.isna(matches["winner_agent"].iloc[2]))
+                    self.assertEqual(matches["winner_player"].iloc[0], 0)
+                    matches["self_play"] = module._boolean(matches["self_play"])
+                    agents = tables["agents"]["agent_name"].tolist()
+                    performance = module._agent_performance(matches, agents)
+                    for row in performance.to_dict(orient="records"):
+                        self.assertEqual([row[key] for key in ("games", "wins", "losses", "draws")], [3, 1, 1, 1])
+                        self.assertAlmostEqual(row["win_rate"], 1 / 3)
+                    pairwise = module._pairwise_performance(matches, agents)
+                    self.assertEqual(set(pairwise["agent"]), {name, "beta"})
+                    self.assertTrue((pairwise["wins"] == 1).all())
+                    if module is spotf:
+                        self.assertEqual(tables["root_actions"]["agent"].iloc[0], name)
+                        self.assertTrue(pd.isna(tables["root_actions"]["mean_utility"].iloc[0]))
+
     def test_competitive_scores_seats_and_self_play(self):
         import pandas as pd
         from meeple_bots.reporting.generic import _competitive_results, _performance

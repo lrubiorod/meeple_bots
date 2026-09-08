@@ -716,6 +716,12 @@ contract.
 
 ### 3. Generate a tournament report
 
+Report readers preserve identifiers as literal text, including names such as `NA`, `NULL`,
+`nan` or `001`. Boop/SPOTF treat only empty CSV cells as missing values, retaining real draws
+and absent numeric measurements. To repair affected reports, regenerate them from the existing
+extracted CSVs; no match rerun or re-extraction is needed for this reader correction.
+
+
 Install the optional plotting and statistics dependencies once:
 
 ```bash

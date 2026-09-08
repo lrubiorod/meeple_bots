@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from ...reporting import decision_timing_description, wilson_interval
+from ...reporting import decision_timing_description, read_analysis_csv, wilson_interval
 
 
 _REQUIRED_TABLES = (
@@ -81,7 +81,7 @@ def _load_tables(input_dir: Path, manifest: dict[str, object]) -> dict[str, pd.D
             raise ValueError(f"extraction manifest does not define table {name}")
         path = input_dir / filename
         try:
-            table = pd.read_csv(path)
+            table = read_analysis_csv(path, empty_as_missing=True)
         except FileNotFoundError as error:
             raise FileNotFoundError(f"extraction table not found: {path}") from error
         expected_rows = row_counts.get(name)
