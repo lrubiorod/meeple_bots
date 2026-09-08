@@ -29,5 +29,6 @@ include = [
     "configs/mcts/tic-tac-toe-baseline.toml",
     "configs/mcts/connect-four-baseline.toml",
     "configs/mcts/boop-baseline.toml",
+    "configs/mcts/cant-stop-baseline.toml",
     "configs/mcts/spotf-baseline.toml",
 ]

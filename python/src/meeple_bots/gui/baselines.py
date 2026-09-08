@@ -37,3 +37,5 @@ TIC_TAC_TOE_BASELINE = _load_gui_baseline("tic-tac-toe-baseline.toml")
 CONNECT_FOUR_BASELINE = _load_gui_baseline("connect-four-baseline.toml")
 BOOP_BASELINE = _load_gui_baseline("boop-baseline.toml")
 SPOTF_BASELINE = _load_gui_baseline("spotf-baseline.toml")
+
+CANT_STOP_BASELINE = _load_gui_baseline("cant-stop-baseline.toml")

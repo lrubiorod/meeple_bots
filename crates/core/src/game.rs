@@ -1,13 +1,11 @@
-use crate::{IllegalAction, PlayerId};
+use crate::{IllegalAction, PlayerId, RandomSource};
 
 /// Whose decision is required at a position, or whether the game has ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum PositionStatus {
     PlayerTurn(PlayerId),
-    /// Reserved for games with stochastic transitions.
-    /// The current deterministic runner rejects this status; it does not sample
-    /// or apply chance outcomes.
+    /// A public stochastic event sampled by the environment, never by a player.
     Chance,
     Terminal,
 }
@@ -39,6 +37,20 @@ pub trait Game {
         state: &mut Self::State,
         action: &Self::Action,
     ) -> Result<(), IllegalAction>;
+
+    /// Sample a public event according to its probability distribution. Apply it with
+    /// `apply_action`; event actions must not appear in `legal_actions`. Sampling must
+    /// only use the supplied RNG, never a hidden seed stored in the authoritative state.
+    /// Deterministic games keep the default implementation.
+    fn sample_chance<R: RandomSource + ?Sized>(
+        &self,
+        _state: &Self::State,
+        _rng: &mut R,
+    ) -> Result<Self::Action, IllegalAction> {
+        Err(IllegalAction::new(
+            "this game does not support chance events",
+        ))
+    }
 
     fn observation<'a>(&'a self, state: &'a Self::State, player: PlayerId)
     -> Self::Observation<'a>;

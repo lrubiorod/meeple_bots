@@ -1,5 +1,8 @@
 //! Monte Carlo Tree Search for deterministic, perfect-information games.
 
+mod stochastic;
+pub use stochastic::StochasticMctsAgent;
+
 use std::{
     cmp::Ordering,
     collections::HashMap,
@@ -125,7 +128,7 @@ impl<A: Eq + Hash> RolloutMemory<A> {
     }
 }
 
-pub trait StateEvaluator<G: DeterministicGame> {
+pub trait StateEvaluator<G: meeple_bots_core::Game> {
     fn evaluate(
         &self,
         game: &G,
@@ -137,7 +140,7 @@ pub trait StateEvaluator<G: DeterministicGame> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NeutralEvaluator;
 
-impl<G: DeterministicGame> StateEvaluator<G> for NeutralEvaluator {
+impl<G: meeple_bots_core::Game> StateEvaluator<G> for NeutralEvaluator {
     fn evaluate(
         &self,
         _game: &G,
@@ -161,7 +164,7 @@ impl GameHeuristic {
 
 impl<G> StateEvaluator<G> for GameHeuristic
 where
-    G: DeterministicGame + HeuristicGame,
+    G: HeuristicGame,
 {
     fn evaluate(
         &self,

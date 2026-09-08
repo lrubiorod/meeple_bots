@@ -171,10 +171,14 @@ meeple-bots gui
 meeple-bots gui --game connect-four
 meeple-bots gui --game boop
 meeple-bots gui --game spotf
+meeple-bots gui --game cant-stop
 ```
 
+Can't Stop uses a separate public-chance session and GUI. See [its guide](../games/cant-stop/README.md)
+for dice events, supported MCTS options and the current tournament integration boundary.
+
 Each seat can be human, Random, or MCTS. Before a match, the page configures player types, MCTS
-budget, seed, and minimum display interval. All four GUIs start with these MCTS
+budget, seed, and minimum display interval. The four deterministic-game GUIs start with these MCTS
 reference settings for either seat:
 
 | Game | Iterations per decision | Rollout depth | Reference profile |

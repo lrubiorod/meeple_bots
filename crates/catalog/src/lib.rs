@@ -1,5 +1,7 @@
 //! Runtime configuration and independent participants for the typed engine.
 
+pub mod cant_stop;
+
 mod configuration;
 pub use configuration::{
     AgentConfig, BoopMctsAgent, ConfiguredRolloutPolicy, ConfiguredSelectionBias,

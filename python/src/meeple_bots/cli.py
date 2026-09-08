@@ -154,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     gui.add_argument(
         "--game",
         type=_game_tag,
-        choices=_PLAYABLE_GAMES,
+        choices=[*_PLAYABLE_GAMES, "cant-stop"],
         default="tic-tac-toe",
     )
     gui.add_argument("--host", default="127.0.0.1")

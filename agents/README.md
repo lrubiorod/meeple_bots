@@ -347,3 +347,13 @@ compatible perfect-information games. The possible development stages are record
 `HumanAgent` lives at the Python boundary. With no selector it prompts in the terminal; with a
 selector callback it can obtain actions from another interface. See
 [Human-controlled matches](../python/usage.md#human-controlled-matches).
+
+## Public-chance MCTS
+
+`StochasticMctsAgent` accepts two-player, perfect-information games with public chance events.
+It samples those events with the search RNG, independently of actual match outcomes. Its decision
+edges accumulate results across chance outcomes, with distinct successor states as continuations.
+UCT and UCB1-Tuned therefore optimize player actions, never chance outcomes. The initial
+implementation uses uniform rollouts, a bounded action horizon, configurable cutoff evaluation,
+and a fresh tree per decision. Deterministic MCTS and its optional techniques remain unchanged.
+See [Can't Stop integration](../games/cant-stop/README.md#engine-integration) for supported options.

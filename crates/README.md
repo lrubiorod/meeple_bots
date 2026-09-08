@@ -201,13 +201,15 @@ The binding only converts actions; legality remains in the Rust game implementat
 
 ## Current boundaries
 
-The implemented games are sequential, deterministic, perfect-information, two-player, and
-zero-sum. `PositionStatus::Chance` and per-player observations reserve useful extension points, but
-chance execution and hidden-information search are not implemented yet. The runner requires
-`DeterministicGame` and returns `MatchError::UnexpectedChance` if a game nevertheless reports
-`Chance`; the enum variant supplies neither outcome probabilities nor a transition mechanism.
-Seeded initial setup, such as SPOTF's shuffled forest, does not imply support for chance events
-during play.
+The implemented games are sequential, perfect-information, two-player and zero-sum. Can't Stop
+adds public stochastic events. `Game::sample_chance` returns a sampled event, applied through
+`apply_action`; event actions never belong to a player's legal-action list. The generic simulator
+accepts `Game` and resolves `Chance` with an independent RNG stream. Agent and observer callbacks
+receive each resolved event. Traces preserve outcomes in `chance_events` with an `after_ply`
+position for replay; chance-only chains have a separate cap equal to `max_plies`.
+The original MCTS wrappers remain restricted to `DeterministicGame`; `StochasticMctsAgent`
+provides sampled-outcome search without retained trees. See [Can't Stop](../games/cant-stop/README.md)
+for the typed catalog session and the current Python integration boundary.
 
 Before adding a hidden-information game, define a per-player view for every agent callback and
 review action visibility, legal-action exposure, retained agent memory and observer/trace access.

@@ -1,5 +1,7 @@
 //! Private PyO3 boundary for the public Python package.
 
+mod cant_stop;
+
 use std::{collections::BTreeMap, num::NonZeroU32, time::Duration};
 
 use meeple_bots_boop::{
@@ -2245,6 +2247,7 @@ fn py_game_search_capabilities(py: Python<'_>, game: &str) -> PyResult<Py<PyDict
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAgentConfig>()?;
+    module.add_class::<cant_stop::PyCantStopSession>()?;
     module.add_function(wrap_pyfunction!(py_game_search_capabilities, module)?)?;
     module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;
     module.add_function(wrap_pyfunction!(py_benchmark_mcts_agent, module)?)?;

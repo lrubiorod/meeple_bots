@@ -68,6 +68,13 @@ impl<G: Game, M: Agent<G>> Agent<G> for ConfiguredAgent<M> {
         }
     }
 
+    fn on_chance_applied(&mut self, game: &G, state: &G::State, event: &G::Action) {
+        match self {
+            Self::Random(agent) => agent.on_chance_applied(game, state, event),
+            Self::Mcts(agent) => agent.on_chance_applied(game, state, event),
+        }
+    }
+
     fn on_match_end(&mut self, game: &G, state: &G::State) {
         match self {
             Self::Random(agent) => <RandomAgent as Agent<G>>::on_match_end(agent, game, state),

@@ -1,0 +1,10 @@
+# Initial interactive reference for sampled public-chance MCTS; not strength calibrated.
+name = "cant-stop-baseline"
+iterations = 2000
+rollout_depth = 100
+exploration = 1.4142135623730951
+selection_policy = "uct"
+cutoff_evaluator = { kind = "game_heuristic", index = 0 }
+rollout_policy = { kind = "uniform_random" }
+tree_reuse = false
+transpositions = false

@@ -8,8 +8,8 @@ use std::{
 };
 
 use meeple_bots_core::{
-    Agent, AgentDecisionStats, AgentError, DecisionContext, DeterministicGame, Game, IllegalAction,
-    PlayerId, PositionStatus, RandomSource,
+    Agent, AgentDecisionStats, AgentError, DecisionContext, Game, IllegalAction, PlayerId,
+    PositionStatus, RandomSource,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +45,7 @@ pub enum MatchError {
     UnsupportedPlayerCount(u8),
     InvalidPlayer(PlayerId),
     UnexpectedChance,
+    Chance(IllegalAction),
     PlyLimitExceeded(u32),
     Agent {
         player: PlayerId,
@@ -64,6 +65,7 @@ impl fmt::Display for MatchError {
                 write!(formatter, "the two-player runner received {count} players")
             }
             Self::InvalidPlayer(player) => write!(formatter, "invalid player {player}"),
+            Self::Chance(source) => write!(formatter, "chance event failed: {source}"),
             Self::UnexpectedChance => {
                 formatter.write_str("a deterministic game requested a chance transition")
             }
@@ -133,6 +135,8 @@ pub trait MatchObserver<G: Game> {
     /// retain moves should add it to that player's last move, not the rival's.
     fn on_remaining_maintenance(&mut self, _player: PlayerId, _time: Duration) {}
 
+    fn on_chance(&mut self, _game: &G, _state: &G::State, _event: &G::Action) {}
+
     fn on_finish(&mut self, _game: &G, _state: &G::State, _result: &MatchResult) {}
 }
 
@@ -144,7 +148,15 @@ impl<G: Game> MatchObserver<G> for NoopObserver {}
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActionTrace<A> {
     pub actions: Vec<TracedAction<A>>,
+    pub chance_events: Vec<TracedChance<A>>,
     pub unassigned_maintenance_time: [Duration; 2],
+}
+
+/// Chance events ordered by occurrence; `after_ply` interleaves them with player actions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TracedChance<A> {
+    pub after_ply: usize,
+    pub event: A,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -162,6 +174,7 @@ pub struct TracedAction<A> {
 pub struct TracedMatchResult<A> {
     pub result: MatchResult,
     pub actions: Vec<TracedAction<A>>,
+    pub chance_events: Vec<TracedChance<A>>,
     /// Lifecycle time for seats that never selected an action.
     pub unassigned_maintenance_time: [Duration; 2],
 }
@@ -170,6 +183,7 @@ impl<A> Default for ActionTrace<A> {
     fn default() -> Self {
         Self {
             actions: Vec::new(),
+            chance_events: Vec::new(),
             unassigned_maintenance_time: [Duration::ZERO; 2],
         }
     }
@@ -200,6 +214,13 @@ where
             selection_time: decision_time.selection,
             maintenance_time: decision_time.maintenance,
             decision_stats,
+        });
+    }
+
+    fn on_chance(&mut self, _game: &G, _state: &G::State, event: &A) {
+        self.chance_events.push(TracedChance {
+            after_ply: self.actions.len(),
+            event: event.clone(),
         });
     }
 
@@ -235,6 +256,11 @@ where
 
     fn on_start(&mut self, game: &G, state: &G::State) {
         self.observer.on_start(game, state);
+    }
+
+    fn on_chance(&mut self, game: &G, state: &G::State, event: &A) {
+        self.trace.on_chance(game, state, event);
+        self.observer.on_chance(game, state, event);
     }
 
     fn on_action(
@@ -301,7 +327,7 @@ pub fn play_match<G, A, B>(
     config: MatchConfig,
 ) -> Result<MatchResult, MatchError>
 where
-    G: DeterministicGame,
+    G: Game,
     A: Agent<G>,
     B: Agent<G>,
 {
@@ -315,7 +341,7 @@ pub fn play_match_with_trace<G, A, B>(
     config: MatchConfig,
 ) -> Result<TracedMatchResult<G::Action>, MatchError>
 where
-    G: DeterministicGame,
+    G: Game,
     G::Action: Clone,
     A: Agent<G>,
     B: Agent<G>,
@@ -326,6 +352,7 @@ where
     Ok(TracedMatchResult {
         result,
         actions: trace.actions,
+        chance_events: trace.chance_events,
         unassigned_maintenance_time: trace.unassigned_maintenance_time,
     })
 }
@@ -339,7 +366,7 @@ pub fn play_match_with_trace_and_observer<G, A, B, O>(
     observer: &mut O,
 ) -> Result<TracedMatchResult<G::Action>, MatchError>
 where
-    G: DeterministicGame,
+    G: Game,
     G::Action: Clone,
     A: Agent<G>,
     B: Agent<G>,
@@ -354,6 +381,7 @@ where
     Ok(TracedMatchResult {
         result,
         actions: tracing_observer.trace.actions,
+        chance_events: tracing_observer.trace.chance_events,
         unassigned_maintenance_time: tracing_observer.trace.unassigned_maintenance_time,
     })
 }
@@ -366,7 +394,7 @@ pub fn play_match_with_observer<G, A, B, O>(
     observer: &mut O,
 ) -> Result<MatchResult, MatchError>
 where
-    G: DeterministicGame,
+    G: Game,
     A: Agent<G>,
     B: Agent<G>,
     O: MatchObserver<G>,
@@ -378,6 +406,8 @@ where
     let mut state = game.initial_state();
     let mut first_rng = SplitMix64::new(config.seed ^ 0xA076_1D64_78BD_642F);
     let mut second_rng = SplitMix64::new(config.seed ^ 0xE703_7ED1_A0B4_28DB);
+    let mut chance_rng = SplitMix64::new(config.seed ^ 0x8EBC_6AF0_9C88_C6E3);
+    let mut chance_events = 0_u32;
     let mut plies = 0;
     let timed = observer.measures_decision_time();
     let mut pending_maintenance = [
@@ -457,7 +487,23 @@ where
                 };
                 observer.on_action(game, &state, player, &action, timing, decision_stats);
             }
-            PositionStatus::Chance => return Err(MatchError::UnexpectedChance),
+            PositionStatus::Chance => {
+                // Also bound chance-only loops from a broken or unlucky game.
+                if chance_events >= config.max_plies.get() {
+                    return Err(MatchError::PlyLimitExceeded(config.max_plies.get()));
+                }
+                let event = game
+                    .sample_chance(&state, &mut chance_rng)
+                    .map_err(MatchError::Chance)?;
+                game.apply_action(&mut state, &event)
+                    .map_err(MatchError::Chance)?;
+                chance_events += 1;
+                pending_maintenance[0] +=
+                    measure(timed, || first.on_chance_applied(game, &state, &event)).1;
+                pending_maintenance[1] +=
+                    measure(timed, || second.on_chance_applied(game, &state, &event)).1;
+                observer.on_chance(game, &state, &event);
+            }
             _ => return Err(MatchError::UnexpectedChance),
         }
     }
@@ -477,7 +523,7 @@ pub fn play_batch<G, A, B, FA, FB>(
     mut make_second: FB,
 ) -> Result<Vec<MatchResult>, MatchError>
 where
-    G: DeterministicGame,
+    G: Game,
     A: Agent<G>,
     B: Agent<G>,
     FA: FnMut() -> A,
@@ -572,7 +618,7 @@ mod tests {
         }
     }
 
-    impl DeterministicGame for LifecycleGame {}
+    impl meeple_bots_core::DeterministicGame for LifecycleGame {}
 
     #[derive(Default)]
     struct LifecycleAgent {

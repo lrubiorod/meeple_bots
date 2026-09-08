@@ -37,6 +37,7 @@ python -m meeple_bots gui
 python -m meeple_bots gui --game connect-four
 python -m meeple_bots gui --game boop
 python -m meeple_bots gui --game spotf
+python -m meeple_bots gui --game cant-stop
 ```
 
 Run one terminal match:
@@ -103,7 +104,7 @@ Personal scripts and experiments belong under `local/`; tournament definitions u
 `configs/tournaments/`; generated traces, tables, and reports under `results/`.
 Personal configurations and generated data are ignored by Git. Shared references
 remain versioned: `configs/mcts/template.toml`, `heuristic.toml`, `boop-baseline.toml`,
-`spotf-baseline.toml`, `tic-tac-toe-baseline.toml`, `connect-four-baseline.toml`, and
+`spotf-baseline.toml`, `cant-stop-baseline.toml`, `tic-tac-toe-baseline.toml`, `connect-four-baseline.toml`, and
 `configs/tournaments/template-study.toml`.
 Game rules, agents, reusable tournament/extraction/report tools, and their regression
 tests remain versioned. See [the Python guide](python/studies.md#1-configure-and-run-the-tournament)
@@ -134,3 +135,6 @@ Superseded runs on the same branch are cancelled; no studies or generated result
 
 Use a release build for MCTS experiments. An unoptimized native module can make the same search
 dramatically slower and invalidate timing comparisons.
+
+[Can't Stop](games/cant-stop/README.md) is the first public-chance game, available through its
+GUI and Python session API. Its dice events are recorded separately from player decisions.

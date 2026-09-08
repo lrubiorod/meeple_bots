@@ -7,7 +7,7 @@ use super::{
 use meeple_bots_boop::Boop;
 use meeple_bots_connect_four::ConnectFour;
 use meeple_bots_core::{
-    AgentError, DeterministicGame, Game, HeuristicGame, HeuristicParameters, PlayerId, RandomSource,
+    AgentError, Game, HeuristicGame, HeuristicParameters, PlayerId, RandomSource,
 };
 use meeple_bots_mcts_agent::{
     MctsAgent, MctsConfig, PolicyCondition, RolloutMemory, RolloutPolicy, RolloutPolicyConfig,
@@ -317,7 +317,7 @@ impl RolloutPolicy<SpiritsOfTheForest> for ConfiguredRolloutPolicy {
 
 impl<G> StateEvaluator<G> for EvaluatorConfig
 where
-    G: DeterministicGame + HeuristicGame,
+    G: HeuristicGame,
 {
     fn evaluate(
         &self,

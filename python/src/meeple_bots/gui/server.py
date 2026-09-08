@@ -101,7 +101,11 @@ def run_gui(
 ) -> None:
     """Select and serve one supported game's GUI."""
 
-    if game == "boop":
+    if game == "cant-stop":
+        from ..games.cant_stop.gui import PAGE, CantStopApplication
+
+        application = CantStopApplication()
+    elif game == "boop":
         from ..games.boop.gui import PAGE, BoopApplication
 
         application = BoopApplication()
@@ -123,7 +127,7 @@ def run_gui(
     else:
         raise ValueError(
             f"graphical interface is not available for {game}; "
-            "available games: boop, connect-four, spotf, tic-tac-toe"
+            "available games: cant-stop, boop, connect-four, spotf, tic-tac-toe"
         )
 
     serve_gui(

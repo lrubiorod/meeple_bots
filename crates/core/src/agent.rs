@@ -105,5 +105,8 @@ pub trait Agent<G: Game> {
     ) {
     }
 
+    /// Observe a public chance event after it has been applied.
+    fn on_chance_applied(&mut self, _game: &G, _state: &G::State, _event: &G::Action) {}
+
     fn on_match_end(&mut self, _game: &G, _state: &G::State) {}
 }

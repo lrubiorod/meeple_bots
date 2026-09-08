@@ -66,6 +66,7 @@ from .api import (
 )
 
 __all__ = [
+    "CantStopSession",
     "Boop",
     "BoopAction",
     "BoopGraduateLine",
@@ -129,3 +130,5 @@ __all__ = [
     "benchmark_mcts_agent",
     "evaluate_game",
 ]
+
+from .games.cant_stop import CantStopSession
