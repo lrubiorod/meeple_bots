@@ -76,7 +76,7 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `iterations` | `1_000` | Exact iterations per decision; excludes `time_budget`. |
-| `time_budget` | `None` | Approximate search-loop seconds per decision; excludes `iterations`. |
+| `time_budget` | `None` | Approximate total agent seconds per decision; excludes `iterations`. |
 | `exploration` | `sqrt(2)` | UCT balance between utility and less-visited branches. |
 | `rollout_depth` | `256` | Maximum simulated actions after expansion. |
 | `cutoff_evaluator` | `NeutralEvaluator()` | Evaluator used only when a rollout reaches its depth cutoff. |
@@ -235,8 +235,17 @@ transpositions = true
 ```
 
 Exactly one of `iterations` or `time_budget` is required, together with `rollout_depth`.
-`time_budget` is expressed in seconds and limits the search loop. Recorded `decision_seconds`
-includes selection and lifecycle maintenance, so total agent cost can exceed this budget.
+`time_budget` is expressed in seconds and targets total agent cost per decision. MCTS subtracts
+its measured lifecycle maintenance since the previous decision and includes preparation in the
+selection timer. It reserves the previous decision's finalization cost (diagnostics, action
+extraction and temporary tree disposal) before searching. This accounting applies to plain MCTS,
+tree reuse and transpositions; iteration budgets remain exact and unchanged.
+At least one complete iteration runs even when maintenance consumes the allowance. Uninterruptible
+operations, changing finalization costs, external statistics copying and end-of-match cleanup can
+still exceed the target. There is no next decision to compensate final cleanup. First decisions
+have no finalization estimate. Only this agent's work counts, not opponent thinking or GUI delays.
+Recorded `decision_seconds` remains the measured total; equal configured budgets are approximate,
+so comparisons must still check observed totals.
 See [agent timing in studies](../python/studies.md#1-configure-and-run-the-tournament).
 `exploration` defaults to `sqrt(2)`,
 `cutoff_evaluator` defaults to neutral, `rollout_policy` defaults to uniform random, and

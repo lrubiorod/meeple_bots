@@ -208,8 +208,10 @@ higher per-decision latency because multiple single-threaded MCTS searches share
 benchmarks on an otherwise idle system for stable isolated comparisons, or under intentional load
 when that load represents deployment.
 
-A `time_budget` is checked only between complete MCTS iterations. The reported decision may exceed
-the requested time by one iteration, and at least one iteration always runs. Seeded time-budget
+A `time_budget` targets approximate total agent cost, deducting measured pending maintenance and
+reserving the previous decision's finalization cost. Preparation counts toward the allowance.
+The search checks its remaining allowance between complete iterations; at least one always runs.
+Indivisible operations, estimation error and final match cleanup can exceed the requested time. Seeded time-budget
 searches are not exactly reproducible because system load changes the completed iteration count.
 
 ## Compatibility fields

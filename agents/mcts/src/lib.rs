@@ -716,6 +716,63 @@ where
     Ok(best_actions.swap_remove(tie_index))
 }
 
+/// Tracks agent work only: opponent search and GUI delays never consume this budget.
+#[derive(Debug)]
+struct DecisionBudget {
+    pending_maintenance: Duration,
+    tail_reserve: Duration,
+    started: Option<Instant>,
+    allowance: Duration,
+    search_finished: Option<Instant>,
+}
+
+impl Clone for DecisionBudget {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl DecisionBudget {
+    const fn new() -> Self {
+        Self {
+            pending_maintenance: Duration::ZERO,
+            tail_reserve: Duration::ZERO,
+            started: None,
+            allowance: Duration::ZERO,
+            search_finished: None,
+        }
+    }
+
+    fn begin(&mut self, budget: SearchBudget) {
+        self.search_finished = None;
+        if let SearchBudget::Time(limit) = budget {
+            self.started = Some(Instant::now());
+            self.allowance = limit
+                .saturating_sub(self.pending_maintenance)
+                .saturating_sub(self.tail_reserve);
+        } else {
+            self.started = None;
+        }
+        self.pending_maintenance = Duration::ZERO;
+    }
+
+    fn exhausted(&self) -> bool {
+        self.started
+            .is_some_and(|start| start.elapsed() >= self.allowance)
+    }
+
+    fn finish_search(&mut self) {
+        self.search_finished = self.started.map(|_| Instant::now());
+    }
+
+    fn finish(&mut self) {
+        if let Some(start) = self.search_finished.take() {
+            self.tail_reserve = start.elapsed();
+        }
+        self.started = None;
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MctsAgent<
     C = NeutralEvaluator,
@@ -728,6 +785,7 @@ pub struct MctsAgent<
     pub root_diagnostics: bool,
     last_search_stats: Option<MctsSearchStats>,
     last_root_actions: Vec<RootActionStats>,
+    decision_budget: DecisionBudget,
 }
 
 impl Default for MctsAgent<NeutralEvaluator, RolloutPolicyConfig<NeutralEvaluator>> {
@@ -745,6 +803,7 @@ impl<P> MctsAgent<NeutralEvaluator, P> {
             root_diagnostics: false,
             last_search_stats: None,
             last_root_actions: Vec::new(),
+            decision_budget: DecisionBudget::new(),
         }
     }
 }
@@ -758,6 +817,7 @@ impl<C, P> MctsAgent<C, P> {
             root_diagnostics: false,
             last_search_stats: None,
             last_root_actions: Vec::new(),
+            decision_budget: DecisionBudget::new(),
         }
     }
 }
@@ -775,6 +835,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
             root_diagnostics: false,
             last_search_stats: None,
             last_root_actions: Vec::new(),
+            decision_budget: DecisionBudget::new(),
         }
     }
 
@@ -901,8 +962,8 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 SearchBudget::Iterations(iterations) => {
                     completed_iterations >= u64::from(iterations.get())
                 }
-                SearchBudget::Time(duration) => {
-                    completed_iterations > 0 && search_started.elapsed() >= duration
+                SearchBudget::Time(_) => {
+                    completed_iterations > 0 && self.decision_budget.exhausted()
                 }
             };
             if budget_exhausted {
@@ -1033,6 +1094,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
             completed_iterations += 1;
         }
 
+        self.decision_budget.finish_search();
         let selected_index = nodes[0]
             .children
             .iter()
@@ -1123,8 +1185,8 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 SearchBudget::Iterations(iterations) => {
                     completed_iterations >= u64::from(iterations.get())
                 }
-                SearchBudget::Time(duration) => {
-                    completed_iterations > 0 && search_started.elapsed() >= duration
+                SearchBudget::Time(_) => {
+                    completed_iterations > 0 && self.decision_budget.exhausted()
                 }
             };
             if budget_exhausted {
@@ -1272,6 +1334,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
             completed_iterations += 1;
         }
 
+        self.decision_budget.finish_search();
         let selected_edge = graph.nodes[0]
             .edges
             .iter()
@@ -1480,8 +1543,14 @@ where
     B: SelectionBias<G>,
 {
     fn on_match_start(&mut self, _game: &G, _state: &G::State, player: PlayerId) {
+        self.inner.decision_budget = DecisionBudget::new();
+        let timed = matches!(self.inner.config.budget, SearchBudget::Time(_));
+        let started = timed.then(Instant::now);
         self.reset_tree();
         self.owner = Some(player);
+        if let Some(start) = started {
+            self.inner.decision_budget.pending_maintenance += start.elapsed();
+        }
     }
 
     fn select_action<R: RandomSource + ?Sized>(
@@ -1492,98 +1561,102 @@ where
         if !self.enabled {
             return self.inner.select_action(decision, rng);
         }
+        self.inner.decision_budget.begin(self.inner.config.budget);
+        let result = (|| {
+            self.inner.last_search_stats = None;
+            self.inner.last_root_actions.clear();
+            self.inner.config.validate().map_err(AgentError::message)?;
+            self.inner.config.rollout_policy.validate()?;
 
-        self.inner.last_search_stats = None;
-        self.inner.last_root_actions.clear();
-        self.inner.config.validate().map_err(AgentError::message)?;
-        self.inner.config.rollout_policy.validate()?;
-
-        let game = decision.game();
-        let root_state = decision.state();
-        let root_player = decision.player();
-        if game.status(root_state) != PositionStatus::PlayerTurn(root_player) {
-            return Err(AgentError::message(
-                "MCTS received a position for the wrong player",
-            ));
-        }
-        if self.owner.is_none() {
-            self.owner = Some(root_player);
-        }
-        if self.owner != Some(root_player) {
-            self.pending_reuse_stats.resets += 1;
-            self.tree = None;
-            self.owner = Some(root_player);
-        }
-
-        let tree_matches = self
-            .tree
-            .as_ref()
-            .is_some_and(|tree| tree.game == *game && tree.state == *root_state);
-        if self.tree.is_some() && !tree_matches {
-            self.record_transition_miss();
-        }
-
-        let fresh_tree = self.tree.is_none();
-        if fresh_tree {
-            let root = Node::new(None, 0.0, game.legal_actions(root_state));
-            if root.unexpanded.is_empty() {
-                return Err(AgentError::NoLegalActions);
+            let game = decision.game();
+            let root_state = decision.state();
+            let root_player = decision.player();
+            if game.status(root_state) != PositionStatus::PlayerTurn(root_player) {
+                return Err(AgentError::message(
+                    "MCTS received a position for the wrong player",
+                ));
             }
-            self.tree = Some(ReusableTree {
-                game: game.clone(),
-                state: root_state.clone(),
-                nodes: vec![root],
-            });
-        }
+            if self.owner.is_none() {
+                self.owner = Some(root_player);
+            }
+            if self.owner != Some(root_player) {
+                self.pending_reuse_stats.resets += 1;
+                self.tree = None;
+                self.owner = Some(root_player);
+            }
 
-        let mut reuse_stats = std::mem::take(&mut self.pending_reuse_stats);
-        if !fresh_tree {
-            let tree = self.tree.as_ref().expect("tree was initialized");
-            reuse_stats.reused_root_visits = tree.nodes[0].visits;
-            reuse_stats.reused_nodes = tree.nodes.len() as u64;
-        }
+            let tree_matches = self
+                .tree
+                .as_ref()
+                .is_some_and(|tree| tree.game == *game && tree.state == *root_state);
+            if self.tree.is_some() && !tree_matches {
+                self.record_transition_miss();
+            }
 
-        let root_action_indices = if self.inner.root_diagnostics {
-            let tree = self.tree.as_ref().expect("tree was initialized");
-            match map_root_action_indices(game, root_state, &tree.nodes) {
-                Ok(indices) => Some(indices),
+            let fresh_tree = self.tree.is_none();
+            if fresh_tree {
+                let root = Node::new(None, 0.0, game.legal_actions(root_state));
+                if root.unexpanded.is_empty() {
+                    return Err(AgentError::NoLegalActions);
+                }
+                self.tree = Some(ReusableTree {
+                    game: game.clone(),
+                    state: root_state.clone(),
+                    nodes: vec![root],
+                });
+            }
+
+            let mut reuse_stats = std::mem::take(&mut self.pending_reuse_stats);
+            if !fresh_tree {
+                let tree = self.tree.as_ref().expect("tree was initialized");
+                reuse_stats.reused_root_visits = tree.nodes[0].visits;
+                reuse_stats.reused_nodes = tree.nodes.len() as u64;
+            }
+
+            let root_action_indices = if self.inner.root_diagnostics {
+                let tree = self.tree.as_ref().expect("tree was initialized");
+                match map_root_action_indices(game, root_state, &tree.nodes) {
+                    Ok(indices) => Some(indices),
+                    Err(error) => {
+                        self.tree = None;
+                        reuse_stats.resets += 1;
+                        self.last_reuse_stats = Some(reuse_stats);
+                        return Err(error);
+                    }
+                }
+            } else {
+                None
+            };
+
+            let tree = self.tree.as_mut().expect("tree was initialized");
+            let selected = self.inner.search_tree(
+                game,
+                root_state,
+                root_player,
+                &mut tree.nodes,
+                root_action_indices,
+                fresh_tree,
+                rng,
+            );
+            let selected_index = match selected {
+                Ok(index) => index,
                 Err(error) => {
                     self.tree = None;
                     reuse_stats.resets += 1;
                     self.last_reuse_stats = Some(reuse_stats);
                     return Err(error);
                 }
-            }
-        } else {
-            None
-        };
-
-        let tree = self.tree.as_mut().expect("tree was initialized");
-        let selected = self.inner.search_tree(
-            game,
-            root_state,
-            root_player,
-            &mut tree.nodes,
-            root_action_indices,
-            fresh_tree,
-            rng,
-        );
-        let selected_index = match selected {
-            Ok(index) => index,
-            Err(error) => {
-                self.tree = None;
-                reuse_stats.resets += 1;
-                self.last_reuse_stats = Some(reuse_stats);
-                return Err(error);
-            }
-        };
-        let action = tree.nodes[selected_index]
-            .action
-            .as_ref()
-            .cloned()
-            .ok_or(AgentError::NoLegalActions)?;
-        self.last_reuse_stats = Some(reuse_stats);
-        Ok(action)
+            };
+            let action = tree.nodes[selected_index]
+                .action
+                .as_ref()
+                .cloned()
+                .ok_or(AgentError::NoLegalActions)?;
+            self.last_reuse_stats = Some(reuse_stats);
+            Ok(action)
+        })();
+        self.inner.decision_budget.finish();
+        result
     }
 
     fn last_decision_stats(&self) -> AgentDecisionStats {
@@ -1597,40 +1670,49 @@ where
         player: PlayerId,
         action: &G::Action,
     ) {
-        if !self.enabled || self.tree.is_none() {
-            return;
-        }
-        self.pending_reuse_stats.transition_attempts += 1;
-
-        let transition = self.tree.as_mut().and_then(|tree| {
-            if tree.game != *game {
-                return None;
+        let timed = matches!(self.inner.config.budget, SearchBudget::Time(_));
+        let started = timed.then(Instant::now);
+        (|| {
+            if !self.enabled || self.tree.is_none() {
+                return;
             }
-            let mut expected_state = tree.state.clone();
-            if game.apply_action(&mut expected_state, action).is_err() || expected_state != *state {
-                return None;
-            }
-            let child_index = tree.nodes[0]
-                .children
-                .iter()
-                .copied()
-                .find(|index| tree.nodes[*index].action.as_ref() == Some(action))?;
-            let (retained, pruned) = compact_to_subtree(&mut tree.nodes, child_index);
-            tree.state = state.clone();
-            Some((retained, pruned))
-        });
+            self.pending_reuse_stats.transition_attempts += 1;
 
-        if let Some((retained, pruned)) = transition {
-            self.pending_reuse_stats.transition_hits += 1;
-            self.pending_reuse_stats.reused_nodes = retained as u64;
-            self.pending_reuse_stats.pruned_nodes += pruned as u64;
-            if self.owner == Some(player) {
-                self.pending_reuse_stats.own_action_hits += 1;
+            let transition = self.tree.as_mut().and_then(|tree| {
+                if tree.game != *game {
+                    return None;
+                }
+                let mut expected_state = tree.state.clone();
+                if game.apply_action(&mut expected_state, action).is_err()
+                    || expected_state != *state
+                {
+                    return None;
+                }
+                let child_index = tree.nodes[0]
+                    .children
+                    .iter()
+                    .copied()
+                    .find(|index| tree.nodes[*index].action.as_ref() == Some(action))?;
+                let (retained, pruned) = compact_to_subtree(&mut tree.nodes, child_index);
+                tree.state = state.clone();
+                Some((retained, pruned))
+            });
+
+            if let Some((retained, pruned)) = transition {
+                self.pending_reuse_stats.transition_hits += 1;
+                self.pending_reuse_stats.reused_nodes = retained as u64;
+                self.pending_reuse_stats.pruned_nodes += pruned as u64;
+                if self.owner == Some(player) {
+                    self.pending_reuse_stats.own_action_hits += 1;
+                } else {
+                    self.pending_reuse_stats.opponent_action_hits += 1;
+                }
             } else {
-                self.pending_reuse_stats.opponent_action_hits += 1;
+                self.record_transition_miss();
             }
-        } else {
-            self.record_transition_miss();
+        })();
+        if let Some(start) = started {
+            self.inner.decision_budget.pending_maintenance += start.elapsed();
         }
     }
 
@@ -1774,8 +1856,14 @@ where
             self.basic.on_match_start(game, state, player);
             return;
         }
+        self.basic.inner.decision_budget = DecisionBudget::new();
+        let timed = matches!(self.basic.inner.config.budget, SearchBudget::Time(_));
+        let started = timed.then(Instant::now);
         self.reset_graph();
         self.owner = Some(player);
+        if let Some(start) = started {
+            self.basic.inner.decision_budget.pending_maintenance += start.elapsed();
+        }
     }
 
     fn select_action<R: RandomSource + ?Sized>(
@@ -1786,102 +1874,109 @@ where
         if !self.enabled {
             return self.basic.select_action(decision, rng);
         }
-
-        self.basic.inner.last_search_stats = None;
-        self.basic.inner.last_root_actions.clear();
         self.basic
             .inner
-            .config
-            .validate()
-            .map_err(AgentError::message)?;
-        self.basic.inner.config.rollout_policy.validate()?;
+            .decision_budget
+            .begin(self.basic.inner.config.budget);
+        let result = (|| {
+            self.basic.inner.last_search_stats = None;
+            self.basic.inner.last_root_actions.clear();
+            self.basic
+                .inner
+                .config
+                .validate()
+                .map_err(AgentError::message)?;
+            self.basic.inner.config.rollout_policy.validate()?;
 
-        let game = decision.game();
-        let root_state = decision.state();
-        let root_player = decision.player();
-        if game.status(root_state) != PositionStatus::PlayerTurn(root_player) {
-            return Err(AgentError::message(
-                "MCTS received a position for the wrong player",
-            ));
-        }
-        if self.owner.is_none() {
-            self.owner = Some(root_player);
-        }
-        if self.owner != Some(root_player) {
-            self.pending_reuse_stats.resets += 1;
-            self.graph = None;
-            self.owner = Some(root_player);
-        }
-
-        let graph_matches = self
-            .graph
-            .as_ref()
-            .is_some_and(|graph| graph.game == *game && graph.nodes[0].state == *root_state);
-        if self.graph.is_some() && !graph_matches {
-            self.record_transition_miss();
-        }
-
-        let fresh_graph = self.graph.is_none();
-        if fresh_graph {
-            let root = GraphNode::new(root_state.clone(), game.legal_actions(root_state));
-            if root.unexpanded.is_empty() {
-                return Err(AgentError::NoLegalActions);
+            let game = decision.game();
+            let root_state = decision.state();
+            let root_player = decision.player();
+            if game.status(root_state) != PositionStatus::PlayerTurn(root_player) {
+                return Err(AgentError::message(
+                    "MCTS received a position for the wrong player",
+                ));
             }
-            self.graph = Some(ReusableGraph {
-                game: game.clone(),
-                nodes: vec![root],
-                state_indices: HashMap::from([(root_state.clone(), 0)]),
-            });
-        }
+            if self.owner.is_none() {
+                self.owner = Some(root_player);
+            }
+            if self.owner != Some(root_player) {
+                self.pending_reuse_stats.resets += 1;
+                self.graph = None;
+                self.owner = Some(root_player);
+            }
 
-        let mut reuse_stats = std::mem::take(&mut self.pending_reuse_stats);
-        if self.basic.tree_reuse_enabled() && !fresh_graph {
-            let graph = self.graph.as_ref().expect("graph was initialized");
-            reuse_stats.reused_root_visits = graph.nodes[0].visits;
-            reuse_stats.reused_nodes = graph.nodes.len() as u64;
-        }
+            let graph_matches = self
+                .graph
+                .as_ref()
+                .is_some_and(|graph| graph.game == *game && graph.nodes[0].state == *root_state);
+            if self.graph.is_some() && !graph_matches {
+                self.record_transition_miss();
+            }
 
-        let root_action_indices = if self.basic.inner.root_diagnostics {
-            let graph = self.graph.as_ref().expect("graph was initialized");
-            match map_graph_root_action_indices(game, root_state, &graph.nodes) {
-                Ok(indices) => Some(indices),
+            let fresh_graph = self.graph.is_none();
+            if fresh_graph {
+                let root = GraphNode::new(root_state.clone(), game.legal_actions(root_state));
+                if root.unexpanded.is_empty() {
+                    return Err(AgentError::NoLegalActions);
+                }
+                self.graph = Some(ReusableGraph {
+                    game: game.clone(),
+                    nodes: vec![root],
+                    state_indices: HashMap::from([(root_state.clone(), 0)]),
+                });
+            }
+
+            let mut reuse_stats = std::mem::take(&mut self.pending_reuse_stats);
+            if self.basic.tree_reuse_enabled() && !fresh_graph {
+                let graph = self.graph.as_ref().expect("graph was initialized");
+                reuse_stats.reused_root_visits = graph.nodes[0].visits;
+                reuse_stats.reused_nodes = graph.nodes.len() as u64;
+            }
+
+            let root_action_indices = if self.basic.inner.root_diagnostics {
+                let graph = self.graph.as_ref().expect("graph was initialized");
+                match map_graph_root_action_indices(game, root_state, &graph.nodes) {
+                    Ok(indices) => Some(indices),
+                    Err(error) => {
+                        self.graph = None;
+                        reuse_stats.resets += 1;
+                        self.last_reuse_stats = Some(reuse_stats);
+                        return Err(error);
+                    }
+                }
+            } else {
+                None
+            };
+
+            let graph = self.graph.as_mut().expect("graph was initialized");
+            let selected = self.basic.inner.search_graph(
+                game,
+                root_player,
+                graph,
+                root_action_indices,
+                fresh_graph,
+                rng,
+            );
+            let selected_edge = match selected {
+                Ok(index) => index,
                 Err(error) => {
                     self.graph = None;
                     reuse_stats.resets += 1;
                     self.last_reuse_stats = Some(reuse_stats);
                     return Err(error);
                 }
-            }
-        } else {
-            None
-        };
-
-        let graph = self.graph.as_mut().expect("graph was initialized");
-        let selected = self.basic.inner.search_graph(
-            game,
-            root_player,
-            graph,
-            root_action_indices,
-            fresh_graph,
-            rng,
-        );
-        let selected_edge = match selected {
-            Ok(index) => index,
-            Err(error) => {
-                self.graph = None;
-                reuse_stats.resets += 1;
+            };
+            let action = graph.nodes[0].edges[selected_edge].action.clone();
+            if self.basic.tree_reuse_enabled() {
                 self.last_reuse_stats = Some(reuse_stats);
-                return Err(error);
+            } else {
+                self.graph = None;
+                self.last_reuse_stats = None;
             }
-        };
-        let action = graph.nodes[0].edges[selected_edge].action.clone();
-        if self.basic.tree_reuse_enabled() {
-            self.last_reuse_stats = Some(reuse_stats);
-        } else {
-            self.graph = None;
-            self.last_reuse_stats = None;
-        }
-        Ok(action)
+            Ok(action)
+        })();
+        self.basic.inner.decision_budget.finish();
+        result
     }
 
     fn last_decision_stats(&self) -> AgentDecisionStats {
@@ -1899,48 +1994,57 @@ where
             self.basic.on_action_applied(game, state, player, action);
             return;
         }
-        if !self.basic.tree_reuse_enabled() || self.graph.is_none() {
-            return;
-        }
-        self.pending_reuse_stats.transition_attempts += 1;
+        let timed = matches!(self.basic.inner.config.budget, SearchBudget::Time(_));
+        let started = timed.then(Instant::now);
+        (|| {
+            if !self.basic.tree_reuse_enabled() || self.graph.is_none() {
+                return;
+            }
+            self.pending_reuse_stats.transition_attempts += 1;
 
-        let transition = self.graph.as_mut().and_then(|graph| {
-            if graph.game != *game {
-                return None;
-            }
-            let mut expected_state = graph.nodes[0].state.clone();
-            if game.apply_action(&mut expected_state, action).is_err() || expected_state != *state {
-                return None;
-            }
-            let child_index = graph.nodes[0]
-                .edges
-                .iter()
-                .find(|edge| &edge.action == action)
-                .map(|edge| edge.child)?;
-            let (retained, pruned) = compact_graph(&mut graph.nodes, child_index);
-            graph.nodes[0].state = state.clone();
-            graph.state_indices.clear();
-            graph.state_indices.extend(
-                graph
-                    .nodes
+            let transition = self.graph.as_mut().and_then(|graph| {
+                if graph.game != *game {
+                    return None;
+                }
+                let mut expected_state = graph.nodes[0].state.clone();
+                if game.apply_action(&mut expected_state, action).is_err()
+                    || expected_state != *state
+                {
+                    return None;
+                }
+                let child_index = graph.nodes[0]
+                    .edges
                     .iter()
-                    .enumerate()
-                    .map(|(index, node)| (node.state.clone(), index)),
-            );
-            Some((retained, pruned))
-        });
+                    .find(|edge| &edge.action == action)
+                    .map(|edge| edge.child)?;
+                let (retained, pruned) = compact_graph(&mut graph.nodes, child_index);
+                graph.nodes[0].state = state.clone();
+                graph.state_indices.clear();
+                graph.state_indices.extend(
+                    graph
+                        .nodes
+                        .iter()
+                        .enumerate()
+                        .map(|(index, node)| (node.state.clone(), index)),
+                );
+                Some((retained, pruned))
+            });
 
-        if let Some((retained, pruned)) = transition {
-            self.pending_reuse_stats.transition_hits += 1;
-            self.pending_reuse_stats.reused_nodes = retained as u64;
-            self.pending_reuse_stats.pruned_nodes += pruned as u64;
-            if self.owner == Some(player) {
-                self.pending_reuse_stats.own_action_hits += 1;
+            if let Some((retained, pruned)) = transition {
+                self.pending_reuse_stats.transition_hits += 1;
+                self.pending_reuse_stats.reused_nodes = retained as u64;
+                self.pending_reuse_stats.pruned_nodes += pruned as u64;
+                if self.owner == Some(player) {
+                    self.pending_reuse_stats.own_action_hits += 1;
+                } else {
+                    self.pending_reuse_stats.opponent_action_hits += 1;
+                }
             } else {
-                self.pending_reuse_stats.opponent_action_hits += 1;
+                self.record_transition_miss();
             }
-        } else {
-            self.record_transition_miss();
+        })();
+        if let Some(start) = started {
+            self.basic.inner.decision_budget.pending_maintenance += start.elapsed();
         }
     }
 
@@ -2142,12 +2246,19 @@ where
     P: RolloutPolicy<G>,
     B: SelectionBias<G>,
 {
+    fn on_match_start(&mut self, _game: &G, _state: &G::State, _player: PlayerId) {
+        self.decision_budget = DecisionBudget::new();
+    }
+
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
         decision: DecisionContext<'_, G>,
         rng: &mut R,
     ) -> Result<G::Action, AgentError> {
-        self.choose_action(decision, rng)
+        self.decision_budget.begin(self.config.budget);
+        let result = self.choose_action(decision, rng);
+        self.decision_budget.finish();
+        result
     }
 
     fn last_decision_stats(&self) -> AgentDecisionStats {
@@ -2419,6 +2530,77 @@ mod tests {
     use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
     use super::*;
+
+    #[test]
+    fn total_budget_deducts_maintenance_and_reserves_finalization() {
+        let mut clock = DecisionBudget::new();
+        clock.pending_maintenance = Duration::from_millis(30);
+        clock.tail_reserve = Duration::from_millis(10);
+        clock.begin(SearchBudget::Time(Duration::from_millis(100)));
+        assert_eq!(clock.allowance, Duration::from_millis(60));
+        assert_eq!(clock.pending_maintenance, Duration::ZERO);
+        // Preparation before the simulation loop counts against the allowance.
+        clock.started = Some(Instant::now() - Duration::from_millis(100));
+        assert!(clock.exhausted());
+        clock.finish_search();
+        clock.search_finished = Some(Instant::now() - Duration::from_millis(5));
+        clock.finish();
+        assert!(clock.tail_reserve >= Duration::from_millis(5));
+        assert_eq!(clock.clone().tail_reserve, Duration::ZERO);
+    }
+
+    #[test]
+    fn maintenance_debt_limits_all_backends_but_not_iteration_budgets() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        for transpositions in [false, true] {
+            for reuse in [false, true] {
+                for timed in [false, true] {
+                    let mut agent = TranspositionMctsAgent::new(
+                        MctsAgent::new(MctsConfig {
+                            budget: if timed {
+                                SearchBudget::Time(Duration::from_secs(1))
+                            } else {
+                                SearchBudget::Iterations(NonZeroU32::new(8).unwrap())
+                            },
+                            ..MctsConfig::default()
+                        }),
+                        reuse,
+                        transpositions,
+                    );
+                    agent.basic.inner.decision_budget.pending_maintenance = Duration::from_secs(2);
+                    let chosen = agent
+                        .select_action(
+                            DecisionContext::new(&game, &state, PlayerId::FIRST),
+                            &mut SplitMix64::new(42),
+                        )
+                        .unwrap();
+                    assert!(game.legal_actions(&state).any(|a| a == chosen));
+                    assert_eq!(
+                        agent.last_search_stats().unwrap().iterations,
+                        if timed { 1 } else { 8 }
+                    );
+                    let mut next = state.clone();
+                    game.apply_action(&mut next, &chosen).unwrap();
+                    agent.on_action_applied(&game, &next, PlayerId::FIRST, &chosen);
+                    if timed && reuse {
+                        assert!(
+                            agent.basic.inner.decision_budget.pending_maintenance > Duration::ZERO
+                        );
+                    }
+                    agent.on_match_start(&game, &state, PlayerId::FIRST);
+                    assert!(
+                        agent.basic.inner.decision_budget.pending_maintenance
+                            < Duration::from_secs(2)
+                    );
+                    assert_eq!(
+                        agent.basic.inner.decision_budget.tail_reserve,
+                        Duration::ZERO
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn mast_averages_credit_each_occurrence_from_the_acting_players_perspective() {

@@ -224,9 +224,13 @@ Game-rule transitions, observers, GUI animation delays, serialization and constr
 the match runner are excluded. Human selection time includes waiting for human input.
 
 Live move observers receive the cost known at publication time; terminal adjustments appear in
-the final `MatchResult` and the GUI's completed history. `time_budget` remains the approximate
-MCTS search-loop budget, not a hard cap on total agent cost. For equal-cost comparisons use the
-measured totals; equal configured search budgets alone do not guarantee equal total costs.
+the final `MatchResult` and the GUI's completed history. `time_budget` targets approximate total
+MCTS agent cost: measured pending maintenance and a finalization estimate reduce the search
+allowance, including preparation. Iteration budgets are unchanged. A complete iteration is always
+allowed; indivisible operations and final match cleanup can still exceed the target. For equal-cost
+comparisons check measured totals. See [budget accounting](../agents/README.md#reusable-profiles).
+Older runs used the entire time allowance for the search loop; do not interpret them as results
+of this revised budgeting behavior.
 
 `moves.csv` retains all three timing fields. Existing game-specific tables and reports use the
 new total through `decision_seconds`. Extracted manifests and reports identify the timing scope.
