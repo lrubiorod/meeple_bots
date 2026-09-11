@@ -1,4 +1,4 @@
-//! Registration of public-chance Splendor with neutral, uniform stochastic MCTS.
+//! Registration of public-chance Splendor with configurable cutoff evaluation and uniform stochastic MCTS.
 use crate::{
     AgentConfig, ConfiguredAgent, ConfiguredRolloutPolicy, ConfiguredSelectionBias, EvaluatorConfig,
 };
@@ -7,8 +7,8 @@ use meeple_bots_core::{
     Agent, AgentDecisionStats, AgentError, DecisionContext, Game, PlayerId, PositionStatus,
 };
 use meeple_bots_mcts_agent::{
-    MctsConfig, NeutralEvaluator, ReusableStochasticMctsAgent, RolloutPolicyConfig,
-    StochasticMctsAgent, UniformRandom,
+    MctsConfig, ReusableStochasticMctsAgent, RolloutPolicyConfig, StochasticMctsAgent,
+    UniformRandom,
 };
 use meeple_bots_simulation::{
     MatchConfig, MatchError, SplitMix64, TracedMatchResult, play_match_with_trace,
@@ -16,7 +16,7 @@ use meeple_bots_simulation::{
 use meeple_bots_splendor::SplendorState;
 use meeple_bots_splendor::{Splendor, SplendorAction};
 use std::time::{Duration, Instant};
-pub type SplendorAgent = ConfiguredAgent<ReusableStochasticMctsAgent<Splendor>>;
+pub type SplendorAgent = ConfiguredAgent<ReusableStochasticMctsAgent<Splendor, EvaluatorConfig>>;
 pub fn game(seed: u64) -> Splendor {
     Splendor::new(&mut SplitMix64::new(seed ^ 0xD1B5_4A32_D192_ED03))
 }
@@ -26,13 +26,19 @@ pub fn configured_agent(config: AgentConfig) -> Result<SplendorAgent, AgentError
             meeple_bots_random_agent::RandomAgent,
         )),
         AgentConfig::Mcts(c) => {
-            if c.cutoff_evaluator != EvaluatorConfig::Neutral
+            let valid_cutoff = match &c.cutoff_evaluator {
+                EvaluatorConfig::Neutral => true,
+                EvaluatorConfig::GameHeuristic { index, parameters } => {
+                    *index == 0 && parameters.is_empty()
+                }
+            };
+            if !valid_cutoff
                 || c.progressive_bias != ConfiguredSelectionBias::None
                 || c.search.rollout_policy
                     != ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::UniformRandom)
             {
                 return Err(AgentError::message(
-                    "Splendor supports neutral evaluation, uniform rollouts and no progressive bias",
+                    "Splendor supports neutral or prestige heuristic 0 (no parameters), uniform rollouts and no progressive bias",
                 ));
             }
             let config = MctsConfig {
@@ -43,7 +49,7 @@ pub fn configured_agent(config: AgentConfig) -> Result<SplendorAgent, AgentError
                 rollout_policy: UniformRandom,
             };
             config.validate().map_err(AgentError::message)?;
-            let mut inner = StochasticMctsAgent::new(config, NeutralEvaluator);
+            let mut inner = StochasticMctsAgent::new(config, c.cutoff_evaluator);
             inner.root_diagnostics = c.root_diagnostics;
             Ok(ConfiguredAgent::Mcts(ReusableStochasticMctsAgent::new(
                 inner,
@@ -243,7 +249,7 @@ mod tests {
         assert_eq!(batch[0], direct);
         assert_eq!(batch[1].seed, 43);
         let caps = game_search_capabilities(GameId::Splendor);
-        assert!(caps.heuristics.is_empty());
+        assert_eq!(caps.heuristics.len(), 1);
         assert!(!caps.turn_phase_conditions);
     }
 }

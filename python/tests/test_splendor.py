@@ -61,7 +61,7 @@ class SplendorTests(unittest.TestCase):
         for selector in ("uct", "ucb1_tuned"):
             with self.subTest(selector=selector):
                 agent = MctsAgent(
-                    iterations=8, rollout_depth=20, selection_policy=selector,
+                    iterations=8, rollout_depth=20, selection_policy=selector, heuristic=0,
                     tree_reuse=True, transpositions=True, root_diagnostics=True,
                 )
                 match = Match(Splendor(), agent, RandomAgent(), seed=42)

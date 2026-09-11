@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from meeple_bots import MctsAgent, GameHeuristic, ConditionalRollout, TurnPhaseIs, EpsilonGreedy, Mast, ProgressiveBias
+from meeple_bots import MctsAgent, NeutralEvaluator, GameHeuristic, ConditionalRollout, TurnPhaseIs, EpsilonGreedy, Mast, ProgressiveBias
 from meeple_bots._mcts_profiles import _load_mcts_profile
 from meeple_bots.cli import build_parser
 from meeple_bots.extraction import extract_tournament
@@ -19,8 +19,8 @@ from meeple_bots.study_analysis import mechanism_effects, summarize_contrast
 class StudyTests(unittest.TestCase):
     def test_splendor_calibration_chance_traces_candidates_and_resume(self):
         from meeple_bots import NeutralEvaluator, Splendor, benchmark_mcts_agent
-        base = MctsAgent(iterations=2, rollout_depth=4)
-        self.assertIsInstance(generic_baseline('splendor').cutoff_evaluator, NeutralEvaluator)
+        base = MctsAgent(iterations=2, rollout_depth=4, heuristic=0)
+        self.assertEqual(generic_baseline('splendor').cutoff_evaluator, GameHeuristic(0))
         args = build_parser().parse_args(['study', '--game', 'splendor', '--budget', '2h'])
         self.assertEqual(args.game, 'splendor')
         benchmark = benchmark_mcts_agent(Splendor(), base, 60, 42)
@@ -59,6 +59,20 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(resumed['status'], 'complete')
             for path, data in traces.items():
                 self.assertEqual(path.read_bytes(), data)
+
+    def test_splendor_crosses_cutoff_with_selector_depth_and_exploration(self):
+        state = {'request': {'game': 'splendor'}, 'calibration': {'decision_seconds': .01, 'center_iterations': 4}}
+        phase = _build_phase('parameters', state, generic_baseline('splendor'), None)
+        families = {}
+        for name, values in phase['agents'].items():
+            if name == 'anchor':
+                continue
+            key = (values['selection_policy'], values['rollout_depth'], values['exploration'])
+            families.setdefault(key, set()).add(values['cutoff_evaluator']['kind'])
+            self.assertEqual(agent_from_values(values).cutoff_evaluator,
+                             GameHeuristic(0) if name.endswith('prestige') else NeutralEvaluator())
+        self.assertEqual(len(families), 15)
+        self.assertTrue(all(kinds == {'neutral', 'game_heuristic'} for kinds in families.values()))
 
     def test_cube_has_twelve_isolated_contrasts(self):
         base = MctsAgent(iterations=20, rollout_depth=16, heuristic=0)

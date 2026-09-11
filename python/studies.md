@@ -507,7 +507,11 @@ meeple-bots study --game splendor --budget 2h --workers auto \
   --seed 42 --output results/studies/splendor-generic
 ```
 
-Splendor uses neutral evaluation and uniform rollouts. Native calibration samples public
+Splendor compares neutral and prestige heuristic 0 cutoffs with uniform rollouts.
+The parameter grid crosses both cutoffs with selector, horizon and exploration;
+candidate names end in `neutral` or `prestige`. The winning evaluator per selector
+is retained by subsequent phases and exported in TOML. H0 uses only prestige difference
+`delta / (15 + abs(delta))`; it does not value engine-building discounts. Native calibration samples public
 positions by resolving chance with an independent seeded environment RNG; chance events do
 not count as player plies and only decision positions are timed. Tournament traces retain
 all refills and are validated on resume. The standard study report and candidate TOMLs are
@@ -552,9 +556,10 @@ The phases run in order:
    trade-offs are also confirmed. A reference participates only here, at equal time and at
    its original budget. Unequal computational cost is labeled explicitly.
 
-This phase order uses study protocol version 3. Older studies remain readable, but cannot
+This phase order uses study protocol version 4. Older studies remain readable, but cannot
 be resumed with the new workflow: use a new output directory. Each phase has a separate
-seed namespace. No heuristics, rollout policies or bias weights are tuned.
+seed namespace. Splendor screens neutral versus prestige cutoff; other games retain the supplied evaluator.
+Rollout policies and bias weights are not tuned.
 
 The total budget includes calibration and execution. By default 25/20/20/15/20 percent of the
 post-calibration budget is targeted at parameters/iterations/mechanisms/refinement/confirmation. Estimated costs determine

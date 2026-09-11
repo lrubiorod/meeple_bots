@@ -85,7 +85,8 @@ pub fn game_search_capabilities(game: GameId) -> GameSearchCapabilities {
         heuristics: match game {
             GameId::Boop => heuristics(&Boop),
             GameId::SpiritsOfTheForest => heuristics(&spirits_of_the_forest_game(0)),
-            GameId::ConnectFour | GameId::TicTacToe | GameId::Splendor => Vec::new(),
+            GameId::Splendor => heuristics(&splendor::game(0)),
+            GameId::ConnectFour | GameId::TicTacToe => Vec::new(),
         },
         turn_phase_conditions: supports_turn_phase_conditions(game),
     }

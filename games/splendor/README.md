@@ -14,8 +14,12 @@ recorded as player actions. Player decisions include exact token returns, paymen
 indices in actions are zero-based; printed card tiers in the mechanical dataset are 1–3.
 Gold payments are enumerated: spending gold instead of a colored token can change the
 public bank and the opponent's legal take-two actions, so canonical colored-first payment
-would remove strategically distinct choices. No heuristic, network or hidden-information
-search is implemented.
+would remove strategically distinct choices. No network or hidden-information search is implemented. Cutoff heuristic 0 evaluates
+only prestige: `delta / (15 + abs(delta))`, from the searching player’s perspective.
+It is symmetric and strictly between -1 and 1 for nonterminal states; terminal values
+remain the exact win/draw/loss result. It ignores discounts, tokens and future potential.
+Use `cutoff_evaluator = { kind = "game_heuristic", index = 0 }` in TOML, or
+`{ kind = "neutral" }` for a zero-valued nonterminal cutoff.
 
 ## Mechanical data provenance
 
@@ -96,12 +100,13 @@ meeple-bots study --game splendor --budget 2h --workers auto \
   --seed 42 --output results/studies/splendor-generic
 ```
 
-It starts with a generic neutral/uniform profile unless `--baseline` is supplied, compares
-selection, reuse, transpositions, iteration budgets and parameters, and exports candidate
+It starts with a generic prestige/uniform profile unless `--baseline` is supplied, compares
+neutral and prestige cutoffs jointly with selector, depth and exploration, then iteration
+budgets and reuse/transpositions, and exports candidate
 TOMLs and the standard study report. Calibration resolves chance outside agent timing with
 an independent RNG and samples decision positions only. Resume using the same arguments,
 `--resume`, and a larger **total** budget. See [automatic studies](../../python/studies.md#automatic-mcts-diagnosis).
 
-No live match observer, game-specific report or strategic evaluator is registered. The existing extractor and game reports are not registered for Splendor. Use the public
+No live match observer or game-specific report is registered. The existing extractor and game reports are not registered for Splendor. Use the public
 replay API to inspect/validate stochastic traces. The existing complexity evaluator requires `DeterministicGame`;
 Splendor deliberately does not claim that capability.

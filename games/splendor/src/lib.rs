@@ -905,3 +905,62 @@ mod search_tests {
         );
     }
 }
+
+/// H0: prestige difference only; no engine-building or tactical features.
+impl meeple_bots_core::HeuristicGame for Splendor {
+    fn heuristic_count(&self) -> u32 {
+        1
+    }
+    fn heuristic_utility(&self, index: u32, state: &Self::State, player: PlayerId) -> Option<f32> {
+        if index != 0 {
+            return None;
+        }
+        let opponent = Self::opponent(player)?;
+        if let Some(value) = self.terminal_utility(state, player) {
+            return Some(value);
+        }
+        let difference = f32::from(state.players[player.index()].prestige)
+            - f32::from(state.players[opponent.index()].prestige);
+        Some(difference / (15.0 + difference.abs()))
+    }
+}
+
+#[cfg(test)]
+mod prestige_tests {
+    use super::*;
+    use meeple_bots_core::HeuristicGame;
+    use meeple_bots_simulation::SplitMix64;
+    #[test]
+    fn prestige_is_symmetric_bounded_and_terminal_aware() {
+        let game = Splendor::new(&mut SplitMix64::new(42));
+        let mut state = game.initial_state();
+        assert_eq!(
+            game.heuristic_utility(0, &state, PlayerId::FIRST),
+            Some(0.0)
+        );
+        state.players[0].prestige = 10;
+        state.players[1].prestige = 5;
+        assert_eq!(
+            game.heuristic_utility(0, &state, PlayerId::FIRST),
+            Some(0.25)
+        );
+        assert_eq!(
+            game.heuristic_utility(0, &state, PlayerId::SECOND),
+            Some(-0.25)
+        );
+        state.players[0].prestige = 255;
+        assert!(game.heuristic_utility(0, &state, PlayerId::FIRST).unwrap() < 1.0);
+        assert_eq!(game.heuristic_utility(1, &state, PlayerId::FIRST), None);
+        state.finished = true;
+        state.final_round = true;
+        assert_eq!(
+            game.heuristic_utility(0, &state, PlayerId::FIRST),
+            Some(1.0)
+        );
+        state.players[1].prestige = 255;
+        assert_eq!(
+            game.heuristic_utility(0, &state, PlayerId::FIRST),
+            Some(0.0)
+        );
+    }
+}

@@ -247,8 +247,12 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
         # All families use the same fixed anchor. The calibrated external reference is held out.
     elif name == "parameters":
         # Tune both selectors on a common starting point before judging reuse/transpositions.
-        parents = [replace(base, selection_policy=selector, tree_reuse=False, transpositions=False)
-                   for selector in ("uct", "ucb1_tuned")]
+        evaluators = [base.cutoff_evaluator]
+        if state.get("request", {}).get("game") == "splendor":
+            evaluators = [NeutralEvaluator(), GameHeuristic(0)]
+        parents = [replace(base, selection_policy=selector, heuristic=None, cutoff_evaluator=evaluator,
+                           tree_reuse=False, transpositions=False)
+                   for selector, evaluator in product(("uct", "ucb1_tuned"), evaluators)]
         agents = {"anchor": profile_values(_timed(replace(base, tree_reuse=False, transpositions=False), seconds))}
         contrasts = []
         for parent in parents:
@@ -257,7 +261,8 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
                                   base.exploration * 2}) if parent.selection_policy == "uct" else [parent.exploration]
             # A small cross-product measures exploration/horizon interactions at equal time.
             for depth, c in product(depths, exploration):
-                candidate = f"{parent.selection_policy}-d{depth}-c{c:g}"
+                suffix = "" if len(evaluators) == 1 else ("-neutral" if isinstance(parent.cutoff_evaluator, NeutralEvaluator) else "-prestige")
+                candidate = f"{parent.selection_policy}-d{depth}-c{c:g}{suffix}"
                 agents[candidate] = profile_values(replace(_timed(parent, seconds), rollout_depth=depth, exploration=c))
                 contrasts.append({"a": "anchor", "b": candidate, "factor": "parameters"})
     else:
@@ -322,7 +327,7 @@ class StudyRunner:
         self.base, self.reference = baseline, reference
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
-        request = {"version": 3, "game": game, "baseline": profile_values(baseline),
+        request = {"version": 4, "game": game, "baseline": profile_values(baseline),
                    "reference": profile_values(reference) if reference else None,
                    "seed": seed, "max_pairs": max_pairs, "decision_seconds": decision_seconds,
                    "max_plies": max_plies, "workers": worker_count, "engine": _fingerprint()}
