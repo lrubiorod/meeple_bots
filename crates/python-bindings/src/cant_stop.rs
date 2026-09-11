@@ -3,7 +3,11 @@ use super::{PyAgentConfig, PythonAgentConfig};
 use meeple_bots_cant_stop::{CantStop, CantStopAction, HEIGHTS, Phase};
 use meeple_bots_catalog::{AgentConfig, cant_stop::CantStopSession};
 use meeple_bots_core::Game;
-use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
+use pyo3::{
+    exceptions::PyValueError,
+    prelude::*,
+    types::{PyDict, PyList},
+};
 
 #[pyclass(name = "CantStopSession")]
 pub struct PyCantStopSession {
@@ -100,6 +104,34 @@ impl PyCantStopSession {
                 e.set_item("action", action_dict(py, &event.action)?)?;
                 e.set_item("decision_seconds", event.seconds.as_secs_f64())?;
                 e.set_item("search_iterations", event.stats.search_iterations)?;
+                e.set_item("search_nodes", event.stats.search_nodes)?;
+                let root_actions = PyList::empty(py);
+                for root_action in &event.stats.root_actions {
+                    let item = PyDict::new(py);
+                    item.set_item("action_index", root_action.action_index)?;
+                    item.set_item("visits", root_action.visits)?;
+                    item.set_item("mean_utility", root_action.mean_utility)?;
+                    item.set_item("heuristic_value", root_action.heuristic_value)?;
+                    item.set_item("progressive_bias", root_action.progressive_bias)?;
+                    item.set_item("selected", root_action.selected)?;
+                    root_actions.append(item)?;
+                }
+                e.set_item("root_actions", root_actions)?;
+                if let Some(tree_reuse) = event.stats.tree_reuse {
+                    let reuse = PyDict::new(py);
+                    reuse.set_item("transition_attempts", tree_reuse.transition_attempts)?;
+                    reuse.set_item("transition_hits", tree_reuse.transition_hits)?;
+                    reuse.set_item("transition_misses", tree_reuse.transition_misses)?;
+                    reuse.set_item("own_action_hits", tree_reuse.own_action_hits)?;
+                    reuse.set_item("opponent_action_hits", tree_reuse.opponent_action_hits)?;
+                    reuse.set_item("reused_root_visits", tree_reuse.reused_root_visits)?;
+                    reuse.set_item("reused_nodes", tree_reuse.reused_nodes)?;
+                    reuse.set_item("pruned_nodes", tree_reuse.pruned_nodes)?;
+                    reuse.set_item("resets", tree_reuse.resets)?;
+                    e.set_item("tree_reuse", reuse)?;
+                } else {
+                    e.set_item("tree_reuse", py.None())?;
+                }
                 e.set_item("bust", event.bust)?;
                 Ok(e.unbind())
             })

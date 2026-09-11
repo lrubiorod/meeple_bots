@@ -13,7 +13,7 @@ class CantStopApplication(GuiApplication):
 
     def start(self, payload):
         players = [parse_gui_player(payload.get(name), name, default_rollout_depth=100,
-                                   available_heuristics=(0,), default_mcts=CANT_STOP_BASELINE)
+                                   available_heuristics=(0,), default_mcts=CANT_STOP_BASELINE, with_policies=True)
                    for name in ("first", "second")]
         return self._start_match(*players, seed=payload.get("seed", 0),
                                  minimum_move_seconds=payload.get("minimum_move_seconds", 0.4),

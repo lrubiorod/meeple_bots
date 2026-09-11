@@ -465,9 +465,20 @@ fn validate_selection_condition(
     condition: RolloutConditionConfig,
 ) -> Result<(), CatalogError> {
     match (game, condition) {
-        (game, RolloutConditionConfig::TurnPhase(_)) if supports_turn_phase_conditions(game) => {
-            Ok(())
-        }
+        (
+            _,
+            RolloutConditionConfig::TurnPhase(
+                CatalogTurnPhase::Choose | CatalogTurnPhase::Continue,
+            ),
+        ) => Err(CatalogError::InvalidMctsConfig(
+            "choose and continue phases are only supported by Can't Stop",
+        )),
+        (
+            game,
+            RolloutConditionConfig::TurnPhase(
+                CatalogTurnPhase::Collect | CatalogTurnPhase::PlaceGemstone,
+            ),
+        ) if supports_turn_phase_conditions(game) => Ok(()),
         (_, RolloutConditionConfig::TurnPhase(_)) => Err(CatalogError::InvalidMctsConfig(
             "turn-phase progressive bias conditions are only supported by spotf",
         )),
@@ -506,9 +517,20 @@ fn validate_rollout_condition(
     condition: RolloutConditionConfig,
 ) -> Result<(), CatalogError> {
     match (game, condition) {
-        (game, RolloutConditionConfig::TurnPhase(_)) if supports_turn_phase_conditions(game) => {
-            Ok(())
-        }
+        (
+            _,
+            RolloutConditionConfig::TurnPhase(
+                CatalogTurnPhase::Choose | CatalogTurnPhase::Continue,
+            ),
+        ) => Err(CatalogError::InvalidMctsConfig(
+            "choose and continue phases are only supported by Can't Stop",
+        )),
+        (
+            game,
+            RolloutConditionConfig::TurnPhase(
+                CatalogTurnPhase::Collect | CatalogTurnPhase::PlaceGemstone,
+            ),
+        ) if supports_turn_phase_conditions(game) => Ok(()),
         (_, RolloutConditionConfig::TurnPhase(_)) => Err(CatalogError::InvalidMctsConfig(
             "turn-phase rollout conditions are only supported by spotf",
         )),

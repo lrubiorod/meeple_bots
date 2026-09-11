@@ -1,7 +1,9 @@
 //! Monte Carlo Tree Search for deterministic, perfect-information games.
 
 mod stochastic;
+mod stochastic_reuse;
 pub use stochastic::StochasticMctsAgent;
+pub use stochastic_reuse::ReusableStochasticMctsAgent;
 
 use std::{
     cmp::Ordering,
@@ -184,9 +186,12 @@ where
     }
 }
 
+/// Selects player actions; the search resolves public chance before calling the policy.
+/// Implementations that evaluate successors must explicitly support chance states or
+/// retain a `DeterministicGame` bound.
 pub trait RolloutPolicy<G>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
     G::State: Clone,
 {
     /// Validates configuration before a search starts.
@@ -231,9 +236,10 @@ where
     ) -> Result<G::Action, AgentError>;
 }
 
+/// Matches the player decision state before an action is applied.
 pub trait PolicyCondition<G>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
 {
     fn matches(
         &self,
@@ -249,7 +255,7 @@ pub use PolicyCondition as RolloutCondition;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Always;
 
-impl<G: DeterministicGame> PolicyCondition<G> for Always {
+impl<G: meeple_bots_core::Game> PolicyCondition<G> for Always {
     fn matches(
         &self,
         _game: &G,
@@ -261,9 +267,11 @@ impl<G: DeterministicGame> PolicyCondition<G> for Always {
     }
 }
 
+/// A prior on player actions, never a policy for choosing chance outcomes.
+/// Implementations define which successor states their evaluator supports.
 pub trait SelectionBias<G>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
 {
     fn weight(&self) -> f64;
 
@@ -286,7 +294,7 @@ where
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoSelectionBias;
 
-impl<G: DeterministicGame> SelectionBias<G> for NoSelectionBias {
+impl<G: meeple_bots_core::Game> SelectionBias<G> for NoSelectionBias {
     fn weight(&self) -> f64 {
         0.0
     }
@@ -330,7 +338,7 @@ impl<C, E> ProgressiveBias<C, E> {
 
 impl<G, C, E> SelectionBias<G> for ProgressiveBias<C, E>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
     C: PolicyCondition<G>,
     E: StateEvaluator<G>,
 {
@@ -378,7 +386,7 @@ impl<C, P, F> ConditionalRollout<C, P, F> {
 
 impl<G, C, P, F> RolloutPolicy<G> for ConditionalRollout<C, P, F>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
     G::State: Clone,
     C: PolicyCondition<G>,
     P: RolloutPolicy<G>,
@@ -465,7 +473,7 @@ pub struct UniformRandom;
 
 impl<G> RolloutPolicy<G> for UniformRandom
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
     G::State: Clone,
 {
     fn select_action<R: RandomSource + ?Sized>(
@@ -495,7 +503,7 @@ impl<E> Greedy<E> {
 
 impl<G, E> RolloutPolicy<G> for Greedy<E>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
     G::State: Clone,
     E: StateEvaluator<G>,
 {
@@ -532,7 +540,7 @@ impl<E> EpsilonGreedy<E> {
 
 impl<G, E> RolloutPolicy<G> for EpsilonGreedy<E>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
     G::State: Clone,
     E: StateEvaluator<G>,
 {
@@ -562,7 +570,7 @@ where
 
 impl<G, E> RolloutPolicy<G> for RolloutPolicyConfig<E>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
     G::State: Clone,
     G::Action: Clone + Eq + Hash,
     E: StateEvaluator<G>,
@@ -666,7 +674,7 @@ fn select_epsilon_greedy_action<G, E, R>(
     rng: &mut R,
 ) -> Result<G::Action, AgentError>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
     G::State: Clone,
     E: StateEvaluator<G>,
     R: RandomSource + ?Sized,
@@ -696,7 +704,7 @@ fn select_greedy_action<G, E, R>(
     rng: &mut R,
 ) -> Result<G::Action, AgentError>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
     G::State: Clone,
     E: StateEvaluator<G>,
     R: RandomSource + ?Sized,
@@ -708,6 +716,9 @@ where
         let mut successor = state.clone();
         game.apply_action(&mut successor, &action)
             .map_err(|error| AgentError::message(error.to_string()))?;
+        // Candidate probes are discarded. The selected action is applied and chance
+        // sampled independently by the rollout, avoiding selection-conditioned outcomes.
+        stochastic::resolve_chance(game, &mut successor, rng)?;
         let score = evaluate_state(game, &successor, root_player, evaluator)?;
         let ordering = best_score.map(|best: f64| score.total_cmp(&best));
         let is_better = matches!(
@@ -2571,7 +2582,7 @@ where
 
 fn terminal_utility<G>(game: &G, state: &G::State, root_player: PlayerId) -> Result<f64, AgentError>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
 {
     let utility = game
         .terminal_utility(state, root_player)
@@ -2587,7 +2598,7 @@ fn evaluate_state<G, E>(
     evaluator: &E,
 ) -> Result<f64, AgentError>
 where
-    G: DeterministicGame,
+    G: meeple_bots_core::Game,
     E: StateEvaluator<G>,
 {
     if game.status(state) == PositionStatus::Terminal {

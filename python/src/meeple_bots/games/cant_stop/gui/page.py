@@ -15,23 +15,52 @@ PAGE = r'''<!doctype html>
 const baseline = __BASELINE__;
 let state=null,pending=false,renderedDecision=null;
 const $=s=>document.querySelector(s);
+function policyControls(i,prefix){return `<label>Política<select id="${prefix}-policy-${i}"><option value="uniform_random">Uniforme</option><option value="greedy">Greedy</option><option value="epsilon_greedy">Epsilon-greedy</option><option value="mast">MAST</option></select></label><label>Evaluación<select id="${prefix}-evaluator-${i}"><option value="0">H0 · Progreso</option><option value="none">Neutral</option></select></label><label>Epsilon<input id="${prefix}-epsilon-${i}" type="number" min="0" max="1" step="0.05"></label>`;}
+function setPolicy(i,prefix,policy){
+ $(`#${prefix}-policy-${i}`).value=policy.kind;
+ $(`#${prefix}-evaluator-${i}`).value=policy.evaluator?.kind==='neutral'?'none':'0';
+ $(`#${prefix}-epsilon-${i}`).value=policy.epsilon??0.1;
+}
+function evaluator(value){return value==='none'?{kind:'neutral'}:{kind:'game_heuristic',index:Number(value)};}
+function readPolicy(i,prefix){
+ const kind=$(`#${prefix}-policy-${i}`).value,policy={kind};
+ if(kind==='greedy'||kind==='epsilon_greedy')policy.evaluator=evaluator($(`#${prefix}-evaluator-${i}`).value);
+ if(kind==='mast'||kind==='epsilon_greedy')policy.epsilon=Number($(`#${prefix}-epsilon-${i}`).value);
+ return policy;
+}
 for(let i=0;i<2;i++){
  const box=document.createElement('fieldset');
- box.innerHTML=`<legend>Jugador ${i+1}</legend><label>Agente<select id="kind-${i}"><option value="human">Humano</option><option value="random">Aleatorio</option><option value="mcts">MCTS</option></select></label><div id="mcts-${i}" class="settings"><label>Presupuesto<select id="mode-${i}"><option value="iterations">Iteraciones</option><option value="time">Tiempo</option></select></label><label id="budget-label-${i}">Cantidad<input id="budget-${i}" type="number" min="0.001" step="any"></label><label>Profundidad<input id="depth-${i}" type="number" min="1"></label><label>Exploración<input id="exploration-${i}" type="number" min="0" step="any"></label><label>Selección<select id="selection-${i}"><option value="uct">UCT</option><option value="ucb1_tuned">UCB1-Tuned</option></select></label><label>Cutoff<select id="heuristic-${i}"><option value="0">H0 · Progreso</option><option value="none">Neutral</option></select></label></div>`;
+ box.innerHTML=`<legend>Jugador ${i+1}</legend><label>Agente<select id="kind-${i}"><option value="human">Humano</option><option value="random">Aleatorio</option><option value="mcts">MCTS</option></select></label><div id="mcts-${i}" class="settings"><label>Presupuesto<select id="mode-${i}"><option value="iterations">Iteraciones</option><option value="time">Tiempo</option></select></label><label id="budget-label-${i}">Cantidad<input id="budget-${i}" type="number" min="0.001" step="any"></label><label>Profundidad<input id="depth-${i}" type="number" min="1"></label><label>Exploración<input id="exploration-${i}" type="number" min="0" step="any"></label><label>Selección<select id="selection-${i}"><option value="uct">UCT</option><option value="ucb1_tuned">UCB1-Tuned</option></select></label><label>Cutoff<select id="heuristic-${i}"><option value="0">H0 · Progreso</option><option value="none">Neutral</option></select></label><details style="grid-column:1/-1"><summary>Políticas y memoria</summary><label>Aplicar rollout<select id="rollout-phase-${i}"><option value="always">Siempre</option><option value="choose">Al elegir avances</option><option value="continue">Al decidir seguir o parar</option></select></label>${policyControls(i,'primary')}<div id="fallback-${i}"><b>En las demás fases</b>${policyControls(i,'fallback')}</div><label><input id="bias-${i}" type="checkbox"> Sesgo progresivo</label><div id="bias-settings-${i}"><label>Peso<input id="bias-weight-${i}" type="number" min="0" step="0.05"></label><label>Evaluación del sesgo<select id="bias-evaluator-${i}"><option value="0">H0 · Progreso</option><option value="none">Neutral</option></select></label><label>Aplicar sesgo<select id="bias-phase-${i}"><option value="always">Siempre</option><option value="choose">Al elegir avances</option><option value="continue">Al decidir seguir o parar</option></select></label></div><label><input id="reuse-${i}" type="checkbox"> Reutilizar árbol</label><label><input id="transpositions-${i}" type="checkbox"> Compartir estados iguales</label><label><input id="diagnostics-${i}" type="checkbox"> Guardar diagnóstico de raíz</label></details></div>`;
  $('#players').append(box);
  $(`#kind-${i}`).value=i===0?'human':'mcts';
  $(`#mode-${i}`).value=baseline.time_budget===null?'iterations':'time';
  $(`#budget-${i}`).value=baseline.time_budget??baseline.iterations;
  $(`#depth-${i}`).value=baseline.rollout_depth;$(`#exploration-${i}`).value=baseline.exploration;
  $(`#selection-${i}`).value=baseline.selection_policy;$(`#heuristic-${i}`).value=baseline.heuristic===null?'none':String(baseline.heuristic);
- const update=()=>{$(`#mcts-${i}`).classList.toggle('hidden',$(`#kind-${i}`).value!=='mcts');$(`#exploration-${i}`).disabled=$(`#selection-${i}`).value!=='uct';};
- $(`#kind-${i}`).onchange=update;$(`#selection-${i}`).onchange=update;
+ const policy=baseline.rollout_policy??{kind:'uniform_random'},conditional=policy.kind==='conditional';
+ $(`#rollout-phase-${i}`).value=conditional?policy.condition.phase:'always';
+ setPolicy(i,'primary',conditional?policy.primary:policy);setPolicy(i,'fallback',conditional?policy.fallback:{kind:'uniform_random'});
+ const bias=baseline.progressive_bias;
+ $(`#bias-${i}`).checked=bias!==null&&bias!==undefined;$(`#bias-weight-${i}`).value=bias?.weight??0.25;
+ $(`#bias-evaluator-${i}`).value=bias?.evaluator.kind==='neutral'?'none':'0';$(`#bias-phase-${i}`).value=bias?.condition?.phase??'always';
+ $(`#reuse-${i}`).checked=baseline.tree_reuse;$(`#transpositions-${i}`).checked=baseline.transpositions;$(`#diagnostics-${i}`).checked=baseline.root_diagnostics??false;
+ const update=()=>{
+  $(`#mcts-${i}`).classList.toggle('hidden',$(`#kind-${i}`).value!=='mcts');$(`#exploration-${i}`).disabled=$(`#selection-${i}`).value!=='uct';
+  $(`#fallback-${i}`).classList.toggle('hidden',$(`#rollout-phase-${i}`).value==='always');
+  $(`#bias-settings-${i}`).classList.toggle('hidden',!$(`#bias-${i}`).checked);
+  for(const prefix of ['primary','fallback']){const kind=$(`#${prefix}-policy-${i}`).value;$(`#${prefix}-evaluator-${i}`).disabled=!['greedy','epsilon_greedy'].includes(kind);$(`#${prefix}-epsilon-${i}`).disabled=!['mast','epsilon_greedy'].includes(kind);}
+ };
+ for(const id of ['kind','selection','rollout-phase','bias','primary-policy','fallback-policy'])$(`#${id}-${i}`).onchange=update;
  $(`#mode-${i}`).onchange=()=>{$(`#budget-${i}`).value=$(`#mode-${i}`).value==='time'?1:baseline.iterations??2000;};update();
 }
 function config(i){
  const kind=$(`#kind-${i}`).value;if(kind!=='mcts')return{kind};
  const timed=$(`#mode-${i}`).value==='time',h=$(`#heuristic-${i}`).value;
- return{kind,iterations:timed?null:Number($(`#budget-${i}`).value),time_budget:timed?Number($(`#budget-${i}`).value):null,rollout_depth:Number($(`#depth-${i}`).value),exploration:Number($(`#exploration-${i}`).value),selection_policy:$(`#selection-${i}`).value,heuristic:h==='none'?null:Number(h),tree_reuse:false,transpositions:false};
+ const phase=$(`#rollout-phase-${i}`).value,primary=readPolicy(i,'primary');
+ const rollout_policy=phase==='always'?primary:{kind:'conditional',condition:{kind:'turn_phase',phase},primary,fallback:readPolicy(i,'fallback')};
+ const biasPhase=$(`#bias-phase-${i}`).value;
+ const progressive_bias=$(`#bias-${i}`).checked?{weight:Number($(`#bias-weight-${i}`).value),evaluator:evaluator($(`#bias-evaluator-${i}`).value),condition:biasPhase==='always'?null:{kind:'turn_phase',phase:biasPhase}}:null;
+ return{kind,iterations:timed?null:Number($(`#budget-${i}`).value),time_budget:timed?Number($(`#budget-${i}`).value):null,rollout_depth:Number($(`#depth-${i}`).value),exploration:Number($(`#exploration-${i}`).value),selection_policy:$(`#selection-${i}`).value,heuristic:h==='none'?null:Number(h),tree_reuse:$(`#reuse-${i}`).checked,transpositions:$(`#transpositions-${i}`).checked,rollout_policy,progressive_bias,root_diagnostics:$(`#diagnostics-${i}`).checked};
 }
 async function api(path,payload){const r=await fetch(path,payload===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const value=await r.json();if(!r.ok)throw Error(value.error??r.statusText);return value;}
 function actionLabel(a){return a.kind==='advance'?'Avanzar '+a.columns.join(' + '):a.kind==='roll'?'Volver a tirar':a.kind==='stop'?'Plantarse':'Dados: '+a.dice.join(' · ');}
@@ -58,7 +87,7 @@ function render(){
  for(const button of $('#actions').children)button.disabled=pending;
  $('#history').replaceChildren();for(const e of state.events.slice(-30).reverse()){const row=document.createElement('div');row.textContent=(e.player===null?'Azar':`J${e.player+1}`)+' · '+actionLabel(e.action)+(e.action.kind==='dice'&&e.bust?' · Fallo':'');$('#history').append(row);}
  const last=state.events.slice().reverse().find(e=>e.search_iterations!==null);
- $('#timing').textContent=last?`${last.search_iterations} iteraciones · ${(last.decision_seconds*1000).toFixed(1)} ms`:'';
+ $('#timing').textContent=last?`${last.search_iterations} iteraciones · ${last.search_nodes??'–'} nodos · ${(last.decision_seconds*1000).toFixed(1)} ms${last.tree_reuse?' · '+last.tree_reuse.reused_nodes+' nodos conservados':''}`:'';
  $('#trace').textContent=state.trace_path?`Guardado: ${state.trace_path}`:'';
 }
 async function move(action,turn){if(pending)return;pending=true;render();try{state=await api('/api/move',{action,turn});$('#error').textContent='';}catch(e){$('#error').textContent=e.message;}finally{pending=false;render();}}

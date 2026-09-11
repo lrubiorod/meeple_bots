@@ -72,12 +72,95 @@ replay validation before accepting `cant-stop`; they do not silently omit its di
 - `StochasticMctsAgent` is game-independent and samples successors during selection and rollout.
   Decision edges aggregate rewards across outcomes. Distinct sampled successor states have
   distinct continuation nodes. UCB never selects a chance result.
-- UCT and UCB1-Tuned, uniform rollout, neutral/H0 cutoff and iteration/time budgets are supported.
-  Time includes setup/search/finalization, with the previous finalization cost reserved. There is
-  no retained tree or lifecycle maintenance. Depth counts player actions along a simulation;
+- Its Rust type accepts a generic `RolloutPolicy`, defaulting to `UniformRandom`. The search
+  validates the policy, resolves chance before requesting a player action, and supplies the
+  active and root players. Learning callbacks receive player actions only, with fresh memory
+  for each decision. Shared policy, condition and selection-bias contracts support public
+  chance games. Informed rollouts evaluate one independently sampled successor per candidate;
+  the selected action samples chance afresh during simulation. This is a noisy heuristic
+  estimate, not exact expectation.
+- UCT and UCB1-Tuned, configurable rollouts, neutral/H0 cutoff and iteration/time budgets are supported.
+  Time includes setup/search/finalization, with the previous finalization cost reserved and
+  retained-tree lifecycle maintenance charged to the next decision. Depth counts player actions along a simulation;
   chance chains have a separate defensive bound.
-- Tree reuse, transpositions, MAST, informed rollouts and progressive bias are rejected by the
-  configured integration. The deterministic implementations are unchanged.
+- The deterministic implementations retain their existing search semantics.
 
 Tests cover pairings, runner limits, doubles, summits, banking, busts, victory, rejection without
 mutation, exact dice replay, RNG independence, expected-value search and GUI restart behavior.
+
+Configured rollouts also accept `greedy`, `epsilon_greedy`, and `conditional`, with neutral/H0
+evaluators. Conditions use `choose` (advance runners) or `continue` (roll again or stop),
+checked on the player decision before acting. Other games reject these phase names.
+
+`mast` learns averages keyed by player and action within each search. It credits tree and
+rollout decisions, never dice events, and starts with fresh memory on the next decision.
+It can also be used in either branch of a conditional rollout.
+
+Progressive bias averages heuristic evaluations of sampled successors on each decision edge,
+with the existing weight/(visits+1) decay and acting-player sign. Terminal successors use
+terminal utility. Weight zero or a false phase condition skips evaluation. Root diagnostics
+report the running heuristic mean and final bias term; no extra chance draws are needed.
+
+With `tree_reuse=true`, the typed wrapper follows accepted player actions and each public
+chance event, verifies the resulting states, and retains the observed continuation once
+chance resolves. Unexplored outcomes reset the tree. Clone, match start and match end clear
+retained search data. Maintenance is charged to the next time-budget decision.
+
+`transpositions=true` merges exactly equal public states, independently of tree reuse.
+Each incoming decision edge keeps its own visits, reward moments, and heuristic samples.
+Revisiting a node ends tree traversal and uses the remaining rollout horizon, preventing
+repeated tree credit within one simulation. No dice or state canonicalization is applied.
+
+
+## Configure the mechanisms
+
+The reference TOML stays uniform, with reuse and transpositions disabled. Copy it for an
+experiment and replace only the setting being tested. These are independent examples:
+
+```toml
+rollout_policy = { kind = "epsilon_greedy", epsilon = 0.1, evaluator = { kind = "game_heuristic", index = 0 } }
+```
+
+```toml
+rollout_policy = { kind = "conditional", condition = { kind = "turn_phase", phase = "continue" }, primary = { kind = "greedy", evaluator = { kind = "game_heuristic", index = 0 } }, fallback = { kind = "uniform_random" } }
+```
+
+```toml
+rollout_policy = { kind = "mast", epsilon = 0.1 }
+```
+
+```toml
+progressive_bias = { weight = 0.25, evaluator = { kind = "game_heuristic", index = 0 }, condition = { kind = "turn_phase", phase = "continue" } }
+root_diagnostics = true
+```
+
+Set `tree_reuse = true` and/or `transpositions = true` to test retained search and state sharing.
+All these mechanisms can be combined. H0 currently has no configurable parameters.
+The example epsilon and bias weights are illustrative, not strength-calibrated values.
+
+In the browser, **Políticas y memoria** exposes the rollout and fallback policy, phase,
+progressive bias, tree reuse, transpositions and root diagnostics for each MCTS player.
+Controls inherit the reference profile and apply to the next match. Session events and saved
+GUI JSON include `search_nodes`, `root_actions` and `tree_reuse`; dice events have no search
+statistics. Root visits include inherited visits when reuse succeeds, while `search_iterations`
+counts only the work of the current decision. These added fields preserve the existing
+`cant_stop_session_v1` event order and public dice history.
+
+The Python API exposes the same options directly:
+
+```python
+from meeple_bots import CantStopSession, MctsAgent, Mast, ProgressiveBias, GameHeuristic, RandomAgent
+
+session = CantStopSession(
+    seed=42,
+    first=MctsAgent(iterations=2000, rollout_depth=100, heuristic=0,
+                    rollout_policy=Mast(0.1),
+                    progressive_bias=ProgressiveBias(0.25, GameHeuristic(0)),
+                    tree_reuse=True, transpositions=True, root_diagnostics=True),
+    second=RandomAgent(),
+)
+```
+
+This completes mechanism support for public-chance sessions, not tournament/analysis transport
+or strength calibration. Generic `Match`/`Batch` and historical extractors remain restricted as
+explained above.

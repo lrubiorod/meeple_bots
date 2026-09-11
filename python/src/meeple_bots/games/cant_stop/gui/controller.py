@@ -10,7 +10,7 @@ from uuid import uuid4
 from .. import CantStopSession
 from ....api import MctsAgent, RandomAgent
 from ....gui.baselines import CANT_STOP_BASELINE
-from ....gui.player import GuiPlayer
+from ....gui.player import GuiPlayer, ConfiguredGuiPlayer
 
 
 class CantStopGui:
@@ -41,6 +41,8 @@ class CantStopGui:
             return None
         if player.kind == "random":
             return RandomAgent()
+        if isinstance(player, ConfiguredGuiPlayer):
+            return player.to_agent()
         return MctsAgent(**{k: v for k, v in player.as_dict().items() if k != "kind"})
 
     def start(self, first, second, *, seed=0, minimum_move_seconds=0.4, save_trace=False):

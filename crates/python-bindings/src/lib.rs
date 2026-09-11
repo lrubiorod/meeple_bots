@@ -789,10 +789,12 @@ fn parse_selection_bias(
 
 fn parse_turn_phase(phase: &str) -> PyResult<CatalogTurnPhase> {
     match phase {
+        "choose" => Ok(CatalogTurnPhase::Choose),
+        "continue" => Ok(CatalogTurnPhase::Continue),
         "collect" => Ok(CatalogTurnPhase::Collect),
         "place_gemstone" | "gemstones" => Ok(CatalogTurnPhase::PlaceGemstone),
         _ => Err(PyValueError::new_err(format!(
-            "unknown turn phase {phase}; expected collect or place_gemstone"
+            "unknown turn phase {phase}; expected choose, continue, collect or place_gemstone"
         ))),
     }
 }

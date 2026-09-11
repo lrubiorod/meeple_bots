@@ -191,6 +191,8 @@ pub struct CatalogGemstonePool {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CatalogTurnPhase {
+    Choose,
+    Continue,
     Collect,
     PlaceGemstone,
 }

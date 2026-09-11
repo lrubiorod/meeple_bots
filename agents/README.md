@@ -353,7 +353,15 @@ selector callback it can obtain actions from another interface. See
 `StochasticMctsAgent` accepts two-player, perfect-information games with public chance events.
 It samples those events with the search RNG, independently of actual match outcomes. Its decision
 edges accumulate results across chance outcomes, with distinct successor states as continuations.
-UCT and UCB1-Tuned therefore optimize player actions, never chance outcomes. The initial
-implementation uses uniform rollouts, a bounded action horizon, configurable cutoff evaluation,
-and a fresh tree per decision. Deterministic MCTS and its optional techniques remain unchanged.
+UCT and UCB1-Tuned therefore optimize player actions, never chance outcomes. The search supports
+uniform, informed, conditional and MAST rollouts, configurable cutoff evaluation and progressive
+bias. Informed rollouts evaluate independently sampled candidate successors; actual rollout
+transitions sample again. Progressive bias averages sampled successor evaluations per action.
+
+`ReusableStochasticMctsAgent<G, C, P, B>` optionally retains the observed subtree after player and
+chance events, and independently supports exact-state transpositions. Statistics remain on
+incoming decision edges, including UCB1-Tuned moments. Cycles end tree traversal and continue
+with the remaining rollout horizon; depth counts player actions rather than chance events.
+MAST memory is fresh each decision even with a retained tree. Deterministic search retains its
+existing behavior.
 See [Can't Stop integration](../games/cant-stop/README.md#engine-integration) for supported options.

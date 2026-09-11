@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .._mcts_profiles import _load_mcts_profile
 from .._agent_config import MctsAgent
-from .player import GuiPlayer
+from .player import GuiPlayer, ConfiguredGuiPlayer
 
 
 def _baseline_path(filename: str) -> Path:
@@ -19,15 +19,20 @@ def _baseline_path(filename: str) -> Path:
 def _load_gui_baseline(filename: str) -> GuiPlayer:
     path = _baseline_path(filename)
     agent = _load_mcts_profile(path).agent
-    player = GuiPlayer(
-        "mcts", iterations=agent.iterations, time_budget=agent.time_budget,
+    player_type = ConfiguredGuiPlayer if filename == "cant-stop-baseline.toml" else GuiPlayer
+    extra = {} if player_type is GuiPlayer else {
+        "rollout_policy": agent.rollout_policy, "progressive_bias": agent.progressive_bias,
+        "root_diagnostics": agent.root_diagnostics,
+    }
+    player = player_type(
+        "mcts", **extra, iterations=agent.iterations, time_budget=agent.time_budget,
         exploration=agent.exploration, rollout_depth=agent.rollout_depth,
         heuristic=agent.heuristic, tree_reuse=agent.tree_reuse,
         transpositions=agent.transpositions,
         selection_policy=agent.selection_policy,
     )
     # Do not silently discard policies or evaluator parameters absent from the GUI.
-    represented = MctsAgent(**{k: v for k, v in player.as_dict().items() if k != "kind"})
+    represented = player.to_agent() if isinstance(player, ConfiguredGuiPlayer) else MctsAgent(**{k: v for k, v in player.as_dict().items() if k != "kind"})
     if represented != agent:
         raise ValueError(f"GUI baseline {path} uses settings not supported by the GUI")
     return player

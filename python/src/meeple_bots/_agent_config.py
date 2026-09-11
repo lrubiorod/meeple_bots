@@ -115,9 +115,9 @@ class TurnPhaseIs:
         normalized = self.phase.strip().lower().replace("-", "_")
         if normalized == "gemstones":
             normalized = "place_gemstone"
-        if normalized not in {"collect", "place_gemstone"}:
+        if normalized not in {"collect", "place_gemstone", "choose", "continue"}:
             raise ValueError(
-                "turn phase must be collect or place_gemstone"
+                "turn phase must be choose, continue, collect or place_gemstone"
             )
         object.__setattr__(self, "phase", normalized)
 
