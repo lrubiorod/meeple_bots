@@ -495,7 +495,7 @@ where
                 let event = game
                     .sample_chance(&state, &mut chance_rng)
                     .map_err(MatchError::Chance)?;
-                game.apply_action(&mut state, &event)
+                game.apply_chance_outcome(&mut state, &event)
                     .map_err(MatchError::Chance)?;
                 chance_events += 1;
                 pending_maintenance[0] +=

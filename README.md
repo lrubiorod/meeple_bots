@@ -9,7 +9,7 @@ workflow.
 
 | Area | Available features |
 | --- | --- |
-| Games | Tic-tac-toe, Connect Four, boop., and two-player Spirits of the Forest. |
+| Games | Tic-tac-toe, Connect Four, boop., two-player Spirits of the Forest, and [public stochastic Splendor](games/splendor/README.md). |
 | Agents | Interactive human input, uniform random play, and configurable MCTS. |
 | Interfaces | Typed Python API, command-line commands, and local browser playrooms. |
 | Experiments | Reproducible batches, round-robin tournaments, trace extraction, and generic, Boop and SPOTF reports. |
@@ -38,6 +38,7 @@ python -m meeple_bots gui --game connect-four
 python -m meeple_bots gui --game boop
 python -m meeple_bots gui --game spotf
 python -m meeple_bots gui --game cant-stop
+python -m meeple_bots gui --game splendor
 ```
 
 Run one terminal match:

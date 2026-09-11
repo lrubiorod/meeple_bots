@@ -170,7 +170,12 @@ where
             }
             expected.clone()
         };
-        if game.apply_action(&mut expected, action).is_err() || expected != *state {
+        let applied = if player.is_some() {
+            game.apply_action(&mut expected, action)
+        } else {
+            game.apply_chance_outcome(&mut expected, action)
+        };
+        if applied.is_err() || expected != *state {
             self.miss();
             return;
         }

@@ -172,7 +172,14 @@ meeple-bots gui --game connect-four
 meeple-bots gui --game boop
 meeple-bots gui --game spotf
 meeple-bots gui --game cant-stop
+meeple-bots gui --game splendor
 ```
+
+Splendor supports human, Random and MCTS seats, with 256 iterations and rollout depth 64
+as the initial GUI settings. The board shows public reservations and every refill in the
+history. Click a card to buy or reserve, or click supply tokens to select gems.
+Complete payment, required token returns and noble selection in the contextual panel.
+See [the Splendor guide](../games/splendor/README.md) for the variant and session trace format.
 
 Can't Stop uses a separate public-chance session and GUI. See [its guide](../games/cant-stop/README.md)
 for dice events, supported MCTS options and the current tournament integration boundary.

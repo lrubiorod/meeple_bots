@@ -32,6 +32,7 @@ from ._agent_config import (
 )
 
 from . import _native
+from .splendor import Splendor, SplendorAction, SplendorState, SplendorChanceOutcome, ChanceEvent
 from ._capabilities import game_search_capabilities
 from ._concurrency import WorkerSetting, ordered_parallel_map, resolve_workers
 
@@ -423,8 +424,9 @@ class SpiritGemstonePool:
             raise ValueError("each player must account for exactly three gemstones")
 
 
-Game: TypeAlias = TicTacToe | ConnectFour | Boop | SpiritsOfTheForest
+Game: TypeAlias = TicTacToe | ConnectFour | Boop | SpiritsOfTheForest | Splendor
 GameAction: TypeAlias = (
+    SplendorAction |
     TicTacToeAction | ConnectFourAction | BoopAction | SpiritsOfTheForestAction
 )
 BoardCell: TypeAlias = int | BoopPiece | SpiritTile | None
@@ -576,6 +578,9 @@ class MatchResult:
     gemstone_pools: tuple[SpiritGemstonePool, SpiritGemstonePool] | None = None
     scores: tuple[int, int] | None = None
 
+    chance_events: tuple[ChanceEvent, ...] = ()
+    splendor_state: SplendorState | None = None
+
 
 class BatchProgressStatus(str, Enum):
     """Stage reported by a batch progress event."""
@@ -656,9 +661,9 @@ class Match:
     observe_move: MatchMoveObserver | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest)):
+        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor)):
             raise TypeError(
-                "game must be TicTacToe, ConnectFour, Boop, or SpiritsOfTheForest"
+                "game must be TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, or Splendor"
             )
         if not isinstance(self.first, (RandomAgent, MctsAgent, HumanAgent)):
             raise TypeError("first must be RandomAgent, MctsAgent, or HumanAgent")
@@ -735,6 +740,12 @@ class Match:
             ),
             gemstone_pools=_gemstone_pools_from_native(raw["gemstone_pools"]),
             scores=None if raw["scores"] is None else tuple(raw["scores"]),
+            chance_events=tuple(
+                ChanceEvent(event["after_ply"], SplendorChanceOutcome(event["outcome"]["card"]))
+                for event in raw.get("chance_events", ())
+            ),
+            splendor_state=(SplendorState.from_dict(raw["splendor_state"])
+                            if "splendor_state" in raw else None),
         )
 
 
@@ -752,9 +763,9 @@ class Batch:
     workers: WorkerSetting = "auto"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest)):
+        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor)):
             raise TypeError(
-                "game must be TicTacToe, ConnectFour, Boop, or SpiritsOfTheForest"
+                "game must be TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, or Splendor"
             )
         for name, agent in (("agent_a", self.agent_a), ("agent_b", self.agent_b)):
             if not isinstance(agent, (RandomAgent, MctsAgent)):
@@ -897,7 +908,7 @@ def evaluate_game(
 ) -> GameEvaluationReport:
     """Measure game structure and produce practical local MCTS starting points."""
 
-    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest)):
+    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor)):
         raise TypeError(
             "game must be TicTacToe, ConnectFour, Boop, or SpiritsOfTheForest"
         )
@@ -1058,6 +1069,8 @@ def benchmark_mcts_agent(
 
 
 def _native_game(game: Game) -> str:
+    if isinstance(game, Splendor):
+        return "splendor"
     if isinstance(game, TicTacToe):
         return "tic_tac_toe"
     if isinstance(game, ConnectFour):
@@ -1068,6 +1081,8 @@ def _native_game(game: Game) -> str:
 
 
 def _action_from_native(raw: dict[str, object]) -> GameAction:
+    if raw["type"] == "splendor":
+        return SplendorAction.from_dict(raw)
     if raw["type"] == "tic_tac_toe":
         return TicTacToeAction(row=raw["row"], column=raw["column"])
     if raw["type"] == "connect_four":
@@ -1365,6 +1380,8 @@ def _validate_game_heuristic(game: Game, heuristic: int | None) -> None:
 
 
 def _game_display_name(game: Game) -> str:
+    if isinstance(game, Splendor):
+        return "splendor"
     if isinstance(game, TicTacToe):
         return "tic-tac-toe"
     if isinstance(game, ConnectFour):
@@ -1883,6 +1900,8 @@ def _initial_spirits_state(seed: int):
 
 
 def _final_board_from_native(flat_board, game: Game) -> GameBoard:
+    if isinstance(game, Splendor):
+        return ()
     if isinstance(game, SpiritsOfTheForest):
         return _board_rows(
             [

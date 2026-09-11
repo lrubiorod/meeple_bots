@@ -1,6 +1,7 @@
 //! Private PyO3 boundary for the public Python package.
 
 mod cant_stop;
+mod splendor;
 
 use std::{collections::BTreeMap, num::NonZeroU32, time::Duration};
 
@@ -1272,6 +1273,23 @@ fn py_run_match(
         }
     }
     result.set_item("scores", report.scores)?;
+    if let Some(state) = &report.splendor_state {
+        result.set_item(
+            "splendor_state",
+            splendor::snapshot(py, &meeple_bots_catalog::splendor::game(report.seed), state)?,
+        )?;
+        let events = PyList::empty(py);
+        for event in &report.chance_events {
+            let CatalogAction::Splendor(outcome) = event.event else {
+                return Err(PyRuntimeError::new_err("unexpected chance event game"));
+            };
+            let item = PyDict::new(py);
+            item.set_item("after_ply", event.after_ply)?;
+            item.set_item("outcome", splendor::action_dict(py, outcome)?)?;
+            events.append(item)?;
+        }
+        result.set_item("chance_events", events)?;
+    }
     result.set_item(
         "unassigned_maintenance_seconds",
         report.unassigned_maintenance_seconds,
@@ -1279,8 +1297,13 @@ fn py_run_match(
 
     let moves = PyList::empty(py);
     for recorded in report.moves {
-        let action = PyDict::new(py);
+        let action = if let CatalogAction::Splendor(a) = recorded.action {
+            splendor::action_dict(py, a)?.into_bound(py)
+        } else {
+            PyDict::new(py)
+        };
         match recorded.action {
+            CatalogAction::Splendor(_) => {}
             CatalogAction::Boop {
                 piece,
                 row,
@@ -1381,8 +1404,30 @@ fn run_python_match(
     observer: Option<&Py<PyAny>>,
     config: MatchConfig,
 ) -> PyResult<CatalogMatchReport> {
+    if game == GameId::Splendor {
+        if observer.is_some() {
+            return Err(PyValueError::new_err(
+                "Splendor live observers are not supported yet",
+            ));
+        }
+        let (PythonAgentConfig::Automated(first), PythonAgentConfig::Automated(second)) =
+            (first, second)
+        else {
+            return Err(PyValueError::new_err(
+                "Splendor matches currently support automated agents only",
+            ));
+        };
+        return meeple_bots_catalog::run_match_with_trace(
+            game,
+            first.clone(),
+            second.clone(),
+            config,
+        )
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()));
+    }
     if let Some(observer) = observer {
         return match game {
+            GameId::Splendor => unreachable!("handled above"),
             GameId::Boop => run_observed_boop_match(first, second, observer, config),
             GameId::ConnectFour => run_observed_connect_four_match(first, second, observer, config),
             GameId::SpiritsOfTheForest => {
@@ -1393,6 +1438,7 @@ fn run_python_match(
     }
 
     match game {
+        GameId::Splendor => unreachable!("handled above"),
         GameId::Boop => run_boop_match_with_trace(
             &mut python_participant(first, configured_boop_mcts)?,
             &mut python_participant(second, configured_boop_mcts)?,
@@ -1426,6 +1472,11 @@ fn py_analyze_trace(
 ) -> PyResult<Py<PyDict>> {
     let game = parse_game(game)?;
     let recorded = match game {
+        GameId::Splendor => {
+            return Err(PyValueError::new_err(
+                "Splendor replay requires chance events; use replay_splendor",
+            ));
+        }
         GameId::Boop => moves
             .extract::<Vec<(u8, NativeBoopAction)>>()?
             .into_iter()
@@ -2211,6 +2262,7 @@ fn catalog_boop_piece_name(piece: CatalogBoopPieceKind) -> &'static str {
 fn parse_game(game: &str) -> PyResult<GameId> {
     match game {
         "boop" => Ok(GameId::Boop),
+        "splendor" => Ok(GameId::Splendor),
         "connect_four" => Ok(GameId::ConnectFour),
         "spotf" | "spirits_of_the_forest" => Ok(GameId::SpiritsOfTheForest),
         "tic_tac_toe" => Ok(GameId::TicTacToe),
@@ -2250,6 +2302,8 @@ fn py_game_search_capabilities(py: Python<'_>, game: &str) -> PyResult<Py<PyDict
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAgentConfig>()?;
     module.add_class::<cant_stop::PyCantStopSession>()?;
+    module.add_class::<splendor::PySplendorPosition>()?;
+    module.add_class::<splendor::PySplendorSession>()?;
     module.add_function(wrap_pyfunction!(py_game_search_capabilities, module)?)?;
     module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;
     module.add_function(wrap_pyfunction!(py_benchmark_mcts_agent, module)?)?;

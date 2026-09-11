@@ -78,7 +78,7 @@ pub(super) fn resolve_chance<G: Game, R: RandomSource + ?Sized>(
         let event = game
             .sample_chance(state, rng)
             .map_err(|e| AgentError::message(e.to_string()))?;
-        game.apply_action(state, &event)
+        game.apply_chance_outcome(state, &event)
             .map_err(|e| AgentError::message(e.to_string()))?;
     }
     Err(AgentError::message("too many consecutive chance events"))

@@ -1,6 +1,7 @@
 //! Runtime configuration and independent participants for the typed engine.
 
 pub mod cant_stop;
+pub mod splendor;
 
 mod configuration;
 pub use configuration::{
@@ -48,6 +49,7 @@ use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GameId {
+    Splendor,
     Boop,
     ConnectFour,
     SpiritsOfTheForest,
@@ -83,7 +85,7 @@ pub fn game_search_capabilities(game: GameId) -> GameSearchCapabilities {
         heuristics: match game {
             GameId::Boop => heuristics(&Boop),
             GameId::SpiritsOfTheForest => heuristics(&spirits_of_the_forest_game(0)),
-            GameId::ConnectFour | GameId::TicTacToe => Vec::new(),
+            GameId::ConnectFour | GameId::TicTacToe | GameId::Splendor => Vec::new(),
         },
         turn_phase_conditions: supports_turn_phase_conditions(game),
     }
@@ -91,6 +93,7 @@ pub fn game_search_capabilities(game: GameId) -> GameSearchCapabilities {
 
 const fn game_name(game: GameId) -> &'static str {
     match game {
+        GameId::Splendor => "splendor",
         GameId::Boop => "boop",
         GameId::ConnectFour => "connect-four",
         GameId::SpiritsOfTheForest => "spotf",
@@ -104,6 +107,7 @@ fn supports_turn_phase_conditions(game: GameId) -> bool {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogAction {
+    Splendor(meeple_bots_splendor::SplendorAction),
     Boop {
         piece: CatalogBoopPieceKind,
         row: u8,
@@ -244,6 +248,8 @@ pub struct RecordedMove {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CatalogMatchReport {
+    pub chance_events: Vec<meeple_bots_simulation::TracedChance<CatalogAction>>,
+    pub splendor_state: Option<meeple_bots_splendor::SplendorState>,
     pub seed: u64,
     pub plies: u32,
     pub utilities: Vec<f32>,
@@ -360,6 +366,7 @@ pub fn evaluate_game(
     config: EvaluationConfig,
 ) -> Result<GameEvaluationReport, CatalogError> {
     let report = match game {
+        GameId::Splendor => return Err(CatalogError::AnalysisUnavailable(game)),
         GameId::Boop => evaluate_typed_game(&Boop, config),
         GameId::ConnectFour => evaluate_typed_game(&ConnectFour, config),
         GameId::SpiritsOfTheForest => {
@@ -378,6 +385,7 @@ pub fn benchmark_mcts_agent(
     seed: u64,
 ) -> Result<MctsAgentBenchmark, CatalogError> {
     let benchmark = match game {
+        GameId::Splendor => return Err(CatalogError::AnalysisUnavailable(game)),
         GameId::Boop => {
             let mut agent = configured_boop_mcts(config)?;
             benchmark_typed_mcts_agent(&Boop, &mut agent, median_depth, seed)
@@ -412,6 +420,10 @@ pub fn analyze_seeded_trace(
     seed: u64,
 ) -> Result<CatalogTraceAnalysis, CatalogError> {
     match game {
+        GameId::Splendor => Err(CatalogError::InvalidTrace {
+            game,
+            message: "Splendor replay requires recorded chance events; use splendor::replay".into(),
+        }),
         GameId::Boop => {
             let actions = moves
                 .iter()
@@ -607,6 +619,7 @@ pub fn run_match(
     config: MatchConfig,
 ) -> Result<MatchResult, CatalogError> {
     match game {
+        GameId::Splendor => Ok(splendor::run(first, second, config)?.result),
         GameId::Boop => run_boop(first, second, config),
         GameId::ConnectFour => run_connect_four(first, second, config),
         GameId::SpiritsOfTheForest => run_spirits_of_the_forest(first, second, config),
@@ -621,6 +634,7 @@ pub fn run_match_with_trace(
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
     match game {
+        GameId::Splendor => splendor::report(splendor::run(first, second, config)?),
         GameId::Boop => run_boop_with_trace(first, second, config),
         GameId::ConnectFour => run_connect_four_with_trace(first, second, config),
         GameId::SpiritsOfTheForest => run_spirits_of_the_forest_with_trace(first, second, config),
@@ -859,6 +873,8 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
         .collect();
 
     CatalogMatchReport {
+        chance_events: Vec::new(),
+        splendor_state: None,
         unassigned_maintenance_seconds: traced
             .unassigned_maintenance_time
             .map(|time| time.as_secs_f64()),
@@ -913,6 +929,8 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
         .collect();
 
     CatalogMatchReport {
+        chance_events: Vec::new(),
+        splendor_state: None,
         unassigned_maintenance_seconds: traced
             .unassigned_maintenance_time
             .map(|time| time.as_secs_f64()),
@@ -984,6 +1002,8 @@ fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
     });
 
     CatalogMatchReport {
+        chance_events: Vec::new(),
+        splendor_state: None,
         unassigned_maintenance_seconds: traced
             .unassigned_maintenance_time
             .map(|time| time.as_secs_f64()),
@@ -1070,6 +1090,8 @@ fn spirits_of_the_forest_report(
     });
 
     CatalogMatchReport {
+        chance_events: Vec::new(),
+        splendor_state: None,
         unassigned_maintenance_seconds: traced
             .unassigned_maintenance_time
             .map(|time| time.as_secs_f64()),
@@ -1171,6 +1193,16 @@ pub fn run_batch(
         max_plies,
     };
     match game {
+        GameId::Splendor => (0..matches.get())
+            .map(|i| {
+                run_match(
+                    game,
+                    first.clone(),
+                    second.clone(),
+                    MatchConfig::new(seed.wrapping_add(u64::from(i)), max_plies),
+                )
+            })
+            .collect(),
         GameId::Boop => run_boop_batch(first, second, config),
         GameId::ConnectFour => run_connect_four_batch(first, second, config),
         GameId::SpiritsOfTheForest => run_spirits_of_the_forest_batch(first, second, config),
@@ -1731,6 +1763,7 @@ mod tests {
                 }
                 CatalogAction::ConnectFour { .. } => panic!("unexpected Connect Four action"),
                 CatalogAction::Boop { .. } => panic!("unexpected boop action"),
+                CatalogAction::Splendor(_) => panic!("unexpected Splendor action"),
                 CatalogAction::SpiritsOfTheForest(_) => {
                     panic!("unexpected Spirits of the Forest action")
                 }
@@ -1755,6 +1788,7 @@ mod tests {
                 CatalogAction::ConnectFour { column } => assert!(column < 7),
                 CatalogAction::TicTacToe { .. } => panic!("unexpected tic-tac-toe action"),
                 CatalogAction::Boop { .. } => panic!("unexpected boop action"),
+                CatalogAction::Splendor(_) => panic!("unexpected Splendor action"),
                 CatalogAction::SpiritsOfTheForest(_) => {
                     panic!("unexpected Spirits of the Forest action")
                 }

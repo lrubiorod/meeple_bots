@@ -99,7 +99,7 @@ from .tournaments import (
 )
 
 
-_PLAYABLE_GAMES = ["boop", "connect-four", "spotf", "tic-tac-toe"]
+_PLAYABLE_GAMES = ["splendor", "boop", "connect-four", "spotf", "tic-tac-toe"]
 _TOURNAMENT_GRID_FIELDS = (
     (("iterations",), "i"),
     (("time_budget",), "t"),
@@ -336,7 +336,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     analyze = commands.add_parser("analyze", help="measure game complexity and calibrate MCTS")
     analyze.add_argument(
-        "--game", type=_game_tag, choices=_PLAYABLE_GAMES, required=True
+        "--game", type=_game_tag, choices=[g for g in _PLAYABLE_GAMES if g != "splendor"], required=True
     )
     analyze.add_argument("--samples", type=int, default=128)
     analyze.add_argument("--max-depth", type=int, default=256)
@@ -596,7 +596,7 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
     game_name = values.get("game")
     if game_name not in _PLAYABLE_GAMES:
         raise ValueError(
-            "tournament game must be boop, connect-four, spotf, or tic-tac-toe"
+            "tournament game must be boop, connect-four, spotf, tic-tac-toe, or splendor"
         )
     game = _game(game_name)
     raw_output = values.get("output")
@@ -1264,6 +1264,9 @@ def _print_batch_result(
 
 
 def _game(name: str) -> TicTacToe | ConnectFour | Boop | SpiritsOfTheForest:
+    if name == "splendor":
+        from .splendor import Splendor
+        return Splendor()
     if name == "boop":
         return Boop()
     if name == "connect-four":
@@ -1491,11 +1494,14 @@ def _print_result(
     first_agent,
     second_agent,
 ) -> None:
+    from .splendor import SplendorAction
     print(f"Player 0: {_agent_name(first, first_agent)}")
     print(f"Player 1: {_agent_name(second, second_agent)}")
     print()
     for ply, move in enumerate(result.moves, start=1):
-        if isinstance(move.action, TicTacToeAction):
+        if isinstance(move.action, SplendorAction):
+            selected = str(move.action.to_dict())
+        elif isinstance(move.action, TicTacToeAction):
             selected = f"row {move.action.row}, column {move.action.column}"
         elif isinstance(move.action, ConnectFourAction):
             selected = f"column {move.action.column}"

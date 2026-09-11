@@ -321,9 +321,28 @@ def _validate_completed_record(record: dict, header: dict) -> None:
     if utilities[0] != -utilities[1] or utility_winner != winner:
         raise ValueError("Utilities differ from winner")
     number(record.get("duration_seconds"), "duration_seconds")
+    if header["game"] == "splendor":
+        from types import SimpleNamespace
+        from .splendor import SplendorAction, SplendorState, SplendorChanceOutcome, ChanceEvent, replay_splendor
+        if not isinstance(result.get("chance_events"), list) or not isinstance(result.get("splendor_state"), dict):
+            raise ValueError("Splendor trace requires chance events and final state")
+        try:
+            parsed_moves = tuple(SimpleNamespace(player=m['player'], action=SplendorAction.from_dict(m['action'])) for m in moves)
+            events = tuple(ChanceEvent(integer(e['after_ply'], 'chance after_ply', 1), SplendorChanceOutcome(integer(e['outcome']['card'], 'refill card', 0, 89))) for e in result['chance_events'])
+            if any(e['outcome'].get('kind') != 'refill' or e['outcome'].get('type') != 'splendor' for e in result['chance_events']):
+                raise ValueError("invalid Splendor chance outcome")
+            state = replay_splendor(seed, parsed_moves, events)
+            if state != SplendorState.from_dict(result['splendor_state']):
+                raise ValueError("Splendor replay final state differs")
+            if result.get('scores') != [player.prestige for player in state.players]:
+                raise ValueError("Splendor replay scores differ")
+            if tuple(state._native_position().utilities()) != tuple(utilities):
+                raise ValueError("Splendor replay utilities differ")
+        except (KeyError, TypeError, AttributeError) as error:
+            raise ValueError("invalid Splendor trace") from error
     action_type = {
         "tic-tac-toe": "tic_tac_toe", "connect-four": "connect_four",
-        "boop": "boop", "spotf": "spotf",
+        "boop": "boop", "spotf": "spotf", "splendor": "splendor",
     }[header["game"]]
     if action_type == "spotf":
         for field in ("scores", "collections", "gemstone_pools"):

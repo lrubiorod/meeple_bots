@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
+from .splendor import Splendor, SplendorAction
 
 from .api import (
     Boop, ConnectFour, SpiritsOfTheForest, TicTacToe,
@@ -90,12 +92,19 @@ def match_result_dict(result: MatchResult) -> dict[str, object]:
             }
             for pool in result.gemstone_pools or ()
         ]
+    if result.splendor_state is not None:
+        state = asdict(result.splendor_state)
+        state.pop('_position', None)
+        payload['splendor_state'] = state
+        payload['chance_events'] = [{'after_ply': e.after_ply, 'outcome': e.outcome.to_dict()} for e in result.chance_events]
     return payload
 
 
 def action_dict(action: GameAction) -> dict[str, object]:
     """Serialize one supported game action without game-specific callers."""
 
+    if isinstance(action, SplendorAction):
+        return action.to_dict()
     if isinstance(action, TicTacToeAction):
         return {
             "type": "tic_tac_toe",
@@ -301,6 +310,8 @@ def _evaluator_dict(
 
 
 def game_name(game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest) -> str:
+    if isinstance(game, Splendor):
+        return "splendor"
     if isinstance(game, TicTacToe):
         return "tic-tac-toe"
     if isinstance(game, ConnectFour):

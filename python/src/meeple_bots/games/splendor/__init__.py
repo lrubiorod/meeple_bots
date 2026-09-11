@@ -1,0 +1,1 @@
+"""Splendor browser integration."""

@@ -66,6 +66,9 @@ from .api import (
 )
 
 __all__ = [
+    "SplendorSession",
+    "Splendor", "SplendorAction", "SplendorMoveKind", "SplendorState",
+    "SplendorPlayerState", "SplendorChanceOutcome", "ChanceEvent", "replay_splendor",
     "CantStopSession",
     "Boop",
     "BoopAction",
@@ -132,3 +135,5 @@ __all__ = [
 ]
 
 from .games.cant_stop import CantStopSession
+
+from .splendor import Splendor, SplendorAction, SplendorMoveKind, SplendorState, SplendorPlayerState, SplendorChanceOutcome, ChanceEvent, replay_splendor, SplendorSession
