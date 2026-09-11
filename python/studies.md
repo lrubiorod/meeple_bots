@@ -486,3 +486,124 @@ Analysis schema 9 adds `selection_policy` to `agents.csv`. Historical MCTS confi
 without that field mean `uct`; the original configuration remains preserved in `config_json`.
 UCB1-Tuned studies should change only `selection_policy`, keeping budgets, rollouts, evaluators,
 reuse and transpositions equal. The `exploration` setting only affects UCT.
+
+## Automatic MCTS diagnosis
+
+`study` generates and executes a budgeted sequence of paired comparisons from one starting
+profile. It uses the existing Rust agents, tournament executor and version-1 traces. It currently
+supports Boop, SPOTF, Connect Four and Tic-Tac-Toe. Can't Stop still needs public-chance transport
+in the generic tournament/extraction pipeline before this command can accept it.
+
+```bash
+meeple-bots study --game boop --budget 2h \
+  --reference configs/mcts/boop-baseline.toml \
+  --output results/studies/boop-generic-diagnosis
+```
+
+Without `--baseline`, the starting profile is **generic**: 1,000 iterations, depth 32, exploration
+1.0, UCT, uniform rollouts, no tree reuse/transpositions, and the first registered heuristic
+(or neutral evaluation if none exists). It does not read the game's calibrated baseline.
+`--reference` is excluded from calibration parameter selection, screening and rankings; it is
+only an external opponent in held-out confirmation. A one-iteration native validation checks
+that its configuration is supported before screening starts.
+
+Use `--baseline PATH` to start from another profile. The input profiles are copied into the
+output directory and are never edited. The default output is `results/studies/GAME-study`.
+Run a release native build for timing experiments (`maturin develop --release --locked`).
+
+The phases run in order:
+
+1. **Calibration:** a short swapped-seat pair against Random estimates game length; an exact
+   profile benchmark estimates early/middle/late iteration costs. Random is a sanity check,
+   not the quality reference. The game estimates and timing samples are saved.
+2. **Mechanisms:** the eight combinations of UCT/UCB1-Tuned, reuse off/on and transpositions
+   off/on. Twelve contrasts differ in exactly one factor, exposing background-dependent
+   effects without a 28-pairing round robin. They use equal total decision time. Heuristic,
+   rollout, horizon and UCT exploration remain fixed.
+3. **Iterations:** the two screening leaders use a geometric ladder of ¼, ½, 1, 2 and 4 times
+   the calibrated iteration center. All candidates face the same fixed starting-profile
+   anchor; adjacent budgets also face each other. This stage changes the computational
+   budget deliberately and records actual latency. Ranking graph-neighbor results in the
+   mechanism stage is exploratory, not a universal strength ranking.
+4. **Parameters:** retain the best mechanism configuration for each selector and compare
+   depth ½/1/2 times the starting horizon. UCT also tests exploration ¼/½/1/2 times the starting
+   value. This small cross-product measures their interaction at equal decision time, against
+   one fixed anchor. It does not tune heuristics, rollouts, MAST epsilon or bias weights.
+5. **Confirmation:** new reserved seeds compare two parameter finalists, the iteration
+   trade-offs, and combinations of tuned parameters with the balanced iteration count.
+   If a reference is supplied, compare parameter finalists against it both at equal time
+   and at its original budget; iteration candidates also face the original reference.
+   Original-budget comparisons may have unequal computational cost and are labeled as such.
+
+The total budget includes calibration and execution. By default 30/30/20/20 percent of the
+post-calibration budget is targeted at the four comparison phases. Estimated costs determine
+how many seed pairs fit, capped by `--max-pairs` (default 16, minimum 2). `--decision-time SECONDS`
+overrides automatic screening-time calibration. These are runtime estimates, not hard real-time
+guarantees: once a swapped-seat pair starts, both matches finish. An insufficient remaining
+budget stops before launching the next estimated pair; no partial phase is promoted. A pilot
+pair or a slower-than-estimated pair can exceed the deadline. `--max-plies` defaults to 10,000;
+exceeding it stops the study with an error rather than counting an unfinished game as a draw.
+
+`--workers N` or `--workers auto` enables bounded match concurrency (default: 1).
+The study automatically keeps calibration, every contrast containing a time-limited agent,
+and the iteration ladder's fixed-anchor comparisons sequential. The latter supply the isolated
+latencies used to select fast/balanced/strong profiles and draw the quality/cost curve.
+Other fixed-iteration comparisons (ladder neighbors and eligible confirmation matches) run
+in parallel batches. No timed match overlaps those batches. Thus mechanisms and parameter
+screening remain sequential; more workers do not accelerate every phase.
+
+For example: `meeple-bots study --game boop --budget 2h --workers 4`.
+`auto` uses the existing physical-core-based worker resolver. Reports label each contrast's
+worker limit and whether its timings may include CPU contention; parallel timings must not
+be interpreted as isolated performance. Worker count is frozen on resume. Budget estimates
+conservatively sum pair costs rather than assuming linear speedup, and a started batch finishes
+even if it overruns the deadline. Resume accounting does not count overlapping match durations
+as sequential wall time.
+
+Within each phase, contrasts share seed blocks and are interleaved by paired round. Each phase has a disjoint
+seed range. Different seeds do not necessarily mean different starting boards in deterministic
+setup games; they also control search randomness. Selection rules and pairing plans are frozen
+before the phase starts, and confirmation never feeds back into screening.
+
+Artifacts:
+
+- `study.json`: frozen phase plans, exact profiles, runtime budget/accounting, revision and
+  native/Python fingerprints. The original Git revision is informational: a new commit
+  alone does not block resume, but changed native/Python fingerprints do. `baseline.toml` and optional `reference.toml` snapshot the inputs.
+- `traces/`: one normal, resumable JSONL tournament per contrast. These work with existing
+  `extract` and `report` commands; the new coordinator does not introduce another game trace format.
+- `report.html` and `summary.json`: paired outcomes, results by seat (JSON), conservative
+  95% intervals, mechanism effects by background, latency, maintenance, reuse, iteration
+  throughput by game quarter and a quality/cost plot. The automatic HTML report requires
+  only the standard library; richer existing game reports still use the report extras.
+- `candidates/`: `fast`, `balanced`, `strong`, timed parameter finalists and fixed-iteration
+  `tuned*-balanced` profiles. Identical trade-offs can yield identical candidate profiles.
+  These are proposals, not automatic replacements of the game's baseline.
+
+The balanced screening candidate is the least costly one within five **observed** percentage
+points of the strongest observed candidate against the fixed anchor. This is a selection rule,
+not an equivalence test. Statistical intervals treat an entire seed pair as one observation;
+mechanism averages also cluster backgrounds by seed. They use a conservative Hoeffding bound,
+remain wide in small studies, and have no multiple-comparison correction. The report explicitly
+labels inconclusive results and never calls a non-significant improvement “iteration saturation”.
+A held-out advantage supports only the tested opponents, budgets and game settings.
+
+Resume an interrupted or budget-limited study with the same settings and a larger **total** budget:
+
+```bash
+meeple-bots study --game boop --budget 4h --resume \
+  --reference configs/mcts/boop-baseline.toml \
+  --output results/studies/boop-generic-diagnosis
+```
+
+Completed games are reused, including the first seat of an interrupted pair. Conflicting inputs,
+changed executors/native binaries, missing completed traces and truncated records are rejected.
+Raising the budget lets pending phases finish; it does not add seeds to already frozen phases.
+Start a new output directory for a larger independent replication or a changed engine.
+
+A small execution check is available, but is intentionally too weak for strength conclusions:
+
+```bash
+meeple-bots study --game boop --budget 60s --decision-time 0.0005 --max-pairs 2 \
+  --output results/studies/boop-smoke
+```

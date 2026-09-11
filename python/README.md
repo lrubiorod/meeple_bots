@@ -11,6 +11,7 @@ Rust owns rules and search; Python provides orchestration, interfaces and analys
 | Use the Python API | [API usage](usage.md#python-api) |
 | Play or watch in the browser | [GUI](usage.md#play-or-watch) |
 | Run CLI commands | [Command-line workflows](usage.md#command-line-workflows) |
+| Generate an automatic MCTS study | [Automatic diagnosis](studies.md#automatic-mcts-diagnosis) |
 | Configure profiles and tournaments | [Study reference](studies.md#run-a-study) |
 | Extract and validate traces | [Extraction](studies.md#2-extract-analysis-tables) |
 | Generate generic, Boop or SPOTF reports | [Reports](studies.md#3-generate-a-tournament-report) |

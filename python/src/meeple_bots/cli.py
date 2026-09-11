@@ -368,6 +368,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     analyze.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
+    study = commands.add_parser("study", help="automatically diagnose MCTS mechanisms, budgets and parameters")
+    study.add_argument("--game", choices=("boop", "spotf", "connect-four", "tic-tac-toe"), required=True)
+    study.add_argument("--baseline", type=Path, help="starting MCTS profile; default: generic profile with the first available heuristic")
+    study.add_argument("--reference", type=Path, help="held-out calibrated profile, used only in confirmation")
+    study.add_argument("--budget", required=True, help="total study time, e.g. 20m or 2h; includes calibration")
+    study.add_argument("--output", type=Path, help="study directory; default: results/studies/GAME-study")
+    study.add_argument("--seed", type=int, default=42)
+    study.add_argument("--max-pairs", type=int, default=16, help="maximum paired seeds per contrast (minimum 2)")
+    study.add_argument("--decision-time", type=float, help="override calibrated equal-time screening budget in seconds")
+    study.add_argument("--workers", type=_worker_setting, default=1, help="maximum workers for fixed-iteration comparisons: auto or a positive integer; timing-sensitive comparisons stay sequential")
+    study.add_argument("--max-plies", type=int, default=10000)
+    study.add_argument("--resume", action="store_true", help="resume a frozen study; --budget may be increased")
+    study.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -381,6 +395,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 port=args.port,
                 open_browser=not args.no_browser,
             )
+            return 0
+        if args.command == "study":
+            from .studies import duration_seconds, run_study
+            output = args.output or Path("results/studies") / f"{args.game}-study"
+            result = run_study(args.game, output=output, budget=duration_seconds(args.budget),
+                               baseline=args.baseline, reference=args.reference, seed=args.seed,
+                               max_pairs=args.max_pairs, decision_seconds=args.decision_time,
+                               max_plies=args.max_plies, workers=args.workers, resume=args.resume,
+                               progress=lambda message: print(message, file=sys.stderr, flush=True))
+            summary = {"status": result["status"], "spent_seconds": result["spent_seconds"],
+                       "report": str(output.resolve() / "report.html"),
+                       "candidate_profiles": result.get("candidate_profiles", {})}
+            print(json.dumps(summary, indent=2) if args.json else f"Study {summary['status']}: {summary['report']}")
             return 0
         if args.command == "tournament":
             return _run_tournament(args)
