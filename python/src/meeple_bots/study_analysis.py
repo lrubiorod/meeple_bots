@@ -86,6 +86,8 @@ def mechanism_effects(phase):
     effects = []
     for factor in ("selector", "tree_reuse", "transpositions"):
         contrasts = [c for c in phase["contrasts"] if c["factor"] == factor]
+        if not contrasts:
+            continue
         # Each seed is one statistical block across all backgrounds as well as seats.
         shared = None
         for contrast in contrasts:
@@ -96,7 +98,7 @@ def mechanism_effects(phase):
         effects.append({"factor": factor, "backgrounds": len(contrasts), "seed_blocks": len(blocks),
                         "score_enabled_or_tuned": mean(blocks) if blocks else None, "ci95": interval,
                         "verdict": "enabled_or_tuned_ahead" if interval[0] > .5 else "disabled_or_uct_ahead" if interval[1] < .5 else "inconclusive",
-                        "interpretation": "conditional on fixed heuristic, rollout, horizon, UCT exploration and decision time"})
+                        "interpretation": "conditional on each tuned family: fixed heuristic, rollout, horizon, exploration and search budget"})
     return effects
 
 
@@ -138,8 +140,9 @@ def write_study_report(output: Path, state: dict):
     caveats = [
         "All results are preliminary and relative to the tested opponents and budgets; candidates are not automatically promoted to baselines.",
         "Intervals use paired seed blocks and a conservative 95% Hoeffding bound. No multiple-comparison correction; screening rankings are exploratory.",
+        "Mechanisms are screened after parameter and iteration tuning; two variants per selector enter local refinement. Screening rankings remain provisional. No global optimum is guaranteed.",
         "Only confirmation uses held-out seeds. Inconclusive is not evidence of equal strength or iteration saturation.",
-        "Calibration, timed matches and iteration-anchor cost measurements run in isolation. Other fixed-iteration matches may share CPU; their latency is not isolated performance. Timing requires a release native build.",
+        "Calibration, timed matches, refinement and iteration-anchor cost measurements run in isolation. Other fixed-iteration matches may share CPU; their latency is not isolated performance. Timing requires a release native build.",
         "The calibrated external reference is excluded from screening and selection. Equal-time and original-budget reference contrasts answer different questions.",
         "Phases run in order. An insufficient budget leaves partial results without promoting that phase. A running batch of swapped-seat pairs may exceed the deadline.",
         "Seeds vary the search RNG and, where supported, the initial setup. Distinct seeds need not mean distinct starting boards.",

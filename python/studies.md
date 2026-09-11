@@ -531,27 +531,33 @@ The phases run in order:
 1. **Calibration:** a short swapped-seat pair against Random estimates game length; an exact
    profile benchmark estimates early/middle/late iteration costs. Random is a sanity check,
    not the quality reference. The game estimates and timing samples are saved.
-2. **Mechanisms:** the eight combinations of UCT/UCB1-Tuned, reuse off/on and transpositions
-   off/on. Twelve contrasts differ in exactly one factor, exposing background-dependent
-   effects without a 28-pairing round robin. They use equal total decision time. Heuristic,
-   rollout, horizon and UCT exploration remain fixed.
-3. **Iterations:** the two screening leaders use a geometric ladder of ¼, ½, 1, 2 and 4 times
-   the calibrated iteration center. All candidates face the same fixed starting-profile
-   anchor; adjacent budgets also face each other. This stage changes the computational
-   budget deliberately and records actual latency. Ranking graph-neighbor results in the
-   mechanism stage is exploratory, not a universal strength ranking.
-4. **Parameters:** retain the best mechanism configuration for each selector and compare
-   depth ½/1/2 times the starting horizon. UCT also tests exploration ¼/½/1/2 times the starting
-   value. This small cross-product measures their interaction at equal decision time, against
-   one fixed anchor. It does not tune heuristics, rollouts, MAST epsilon or bias weights.
-5. **Confirmation:** new reserved seeds compare two parameter finalists, the iteration
-   trade-offs, and combinations of tuned parameters with the balanced iteration count.
-   If a reference is supplied, compare parameter finalists against it both at equal time
-   and at its original budget; iteration candidates also face the original reference.
-   Original-budget comparisons may have unequal computational cost and are labeled as such.
+2. **Parameters:** compare both UCT and UCB1-Tuned with reuse and transpositions disabled
+   on every screening candidate and anchor. Test depth ½/1/2 times the initial horizon;
+   UCT also tests exploration ¼/½/1/2 times the initial value. Comparisons use equal decision
+   time against a common anchor. Keep the best parameter configuration for each selector.
+3. **Iterations:** evaluate each selector's tuned leader at ¼, ½, 1, 2 and 4 times the
+   calibrated iteration center. Both families face a common fixed starting-profile anchor;
+   adjacent budgets also compete. Select the observed balanced budget separately per selector.
+4. **Mechanisms:** at that selector's selected iteration budget, test all four combinations
+   of reuse and transpositions. Four single-factor contrasts plus a both-off/both-on contrast
+   measure conditional effects. Preserve two combinations per selector for refinement;
+   inconclusive rankings are not proof that alternatives are weaker. Equal iterations do
+   not guarantee equal runtime or equal total retained search work.
+5. **Refinement:** retest retained configurations unchanged, at nearby horizons (¾ and 5/4),
+   and at half/double iterations. UCT also tries half/double exploration. Vary one parameter
+   at a time against a common fixed-iteration anchor; this is a local search, not a full
+   cross-product. Comparisons run in isolation to record usable latency measurements.
+6. **Confirmation:** reserved seeds compare refined finalists at equal time and preserve
+   their exact measured iteration counts in the fixed-budget candidates. Initial iteration
+   trade-offs are also confirmed. A reference participates only here, at equal time and at
+   its original budget. Unequal computational cost is labeled explicitly.
 
-The total budget includes calibration and execution. By default 30/30/20/20 percent of the
-post-calibration budget is targeted at the four comparison phases. Estimated costs determine
+This phase order uses study protocol version 3. Older studies remain readable, but cannot
+be resumed with the new workflow: use a new output directory. Each phase has a separate
+seed namespace. No heuristics, rollout policies or bias weights are tuned.
+
+The total budget includes calibration and execution. By default 25/20/20/15/20 percent of the
+post-calibration budget is targeted at parameters/iterations/mechanisms/refinement/confirmation. Estimated costs determine
 how many seed pairs fit, capped by `--max-pairs` (default 16, minimum 2). `--decision-time SECONDS`
 overrides automatic screening-time calibration. These are runtime estimates, not hard real-time
 guarantees: once a swapped-seat pair starts, both matches finish. An insufficient remaining
@@ -561,11 +567,11 @@ exceeding it stops the study with an error rather than counting an unfinished ga
 
 `--workers N` or `--workers auto` enables bounded match concurrency (default: 1).
 The study automatically keeps calibration, every contrast containing a time-limited agent,
-and the iteration ladder's fixed-anchor comparisons sequential. The latter supply the isolated
+the iteration ladder's fixed-anchor comparisons, and local refinement sequential. The latter supply the isolated
 latencies used to select fast/balanced/strong profiles and draw the quality/cost curve.
-Other fixed-iteration comparisons (ladder neighbors and eligible confirmation matches) run
-in parallel batches. No timed match overlaps those batches. Thus mechanisms and parameter
-screening remain sequential; more workers do not accelerate every phase.
+Other fixed-iteration comparisons (mechanisms, ladder neighbors and eligible confirmation
+matches) run in parallel batches. No timed match overlaps those batches. Parameter screening
+and refinement remain sequential; more workers do not accelerate every phase.
 
 For example: `meeple-bots study --game boop --budget 2h --workers 4`.
 `auto` uses the existing physical-core-based worker resolver. Reports label each contrast's

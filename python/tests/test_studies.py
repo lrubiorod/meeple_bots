@@ -29,7 +29,13 @@ class StudyTests(unittest.TestCase):
         # Exercise every real phase using only two contrasts each, with tiny search budgets.
         def small_plan(*args):
             phase = _build_phase(*args)
-            phase['contrasts'] = phase['contrasts'][:2]
+            if phase['name'] in ('parameters', 'refinement'):
+                phase['contrasts'] = [next(c for c in phase['contrasts'] if phase['agents'][c['b']]['selection_policy'] == selector)
+                                      for selector in ('uct', 'ucb1_tuned')]
+            elif phase['name'] == 'iterations':
+                phase['contrasts'] = [next(c for c in phase['contrasts'] if c['factor'] == 'anchor' and phase['agents'][c['b']]['selection_policy'] == selector) for selector in ('uct', 'ucb1_tuned')]
+            else:
+                phase['contrasts'] = phase['contrasts'][:2] if phase['name'] != 'mechanisms' else [phase['contrasts'][0], phase['contrasts'][5]]
             return phase
         with TemporaryDirectory() as tmp:
             options = dict(output=Path(tmp), budget=60, workers=2,
@@ -260,21 +266,46 @@ class StudyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'configuration or engine changed'):
                 StudyRunner('tic-tac-toe', base, resume=True, **{**kwargs, 'workers': 2})
 
-    def test_external_reference_is_not_used_in_screening(self):
-        base = MctsAgent(iterations=4, rollout_depth=9, exploration=1.0)
-        agents, contrasts = mechanism_plan(base, .01)
-        for c in contrasts:
-            c['result'] = summarize_contrast([self.row(7, 0, 'agent_b'), self.row(7, 1, 'agent_b')])
-        state = {'calibration': {'decision_seconds': .01, 'center_iterations': 4},
-                 'phases': {'mechanisms': {'agents': agents, 'contrasts': contrasts}}}
-        ref = MctsAgent(iterations=15000, rollout_depth=16, exploration=.25)
-        for phase in ('iterations', 'parameters'):
-            plan = _build_phase(phase, state, base, ref)
-            self.assertNotIn('reference-original', plan['agents'])
-            self.assertEqual(plan, _build_phase(phase, state, base, None))
-        plan = _build_phase('parameters', state, base, ref)
-        self.assertIn(.25, {v['exploration'] for v in plan['agents'].values()})
-        self.assertIn(4, {v['rollout_depth'] for v in plan['agents'].values()})
+    def test_late_mechanisms_preserve_tuned_parameters_and_feed_iteration_search(self):
+        base = MctsAgent(iterations=4, rollout_depth=16, exploration=1.0,
+                         tree_reuse=True, transpositions=True)
+        reference = MctsAgent(iterations=15000, rollout_depth=64)
+        state = {'calibration': {'decision_seconds': .01, 'center_iterations': 4}, 'phases': {}}
+        self.assertEqual(PHASES, ('parameters', 'iterations', 'mechanisms', 'refinement', 'confirmation'))
+        for name in PHASES[:-1]:
+            phase = _build_phase(name, state, base, reference)
+            self.assertEqual(phase, _build_phase(name, state, base, None))
+            for c in phase['contrasts']:
+                # Synthetic strong evidence for both mechanisms, to verify propagation.
+                values = phase['agents'][c['b']]
+                winner = 'agent_b' if values['tree_reuse'] and values['transpositions'] else 'agent_a'
+                c['result'] = summarize_contrast([self.row(seed, seat, winner)
+                                                 for seed in range(2) for seat in (0, 1)])
+                c['result']['timing_b']['mean_seconds'] = .01
+            state['phases'][name] = phase
+        params = state['phases']['parameters']
+        self.assertTrue(all(not a['tree_reuse'] and not a['transpositions'] for a in params['agents'].values()))
+        mechanisms = state['phases']['mechanisms']
+        for selector in ('uct', 'ucb1_tuned'):
+            cells = [a for a in mechanisms['agents'].values() if a['selection_policy'] == selector]
+            self.assertEqual({(a['tree_reuse'], a['transpositions']) for a in cells},
+                             {(False, False), (False, True), (True, False), (True, True)})
+            self.assertEqual(len({(a['rollout_depth'], a['exploration']) for a in cells}), 1)
+        iterations = state['phases']['iterations']
+        self.assertTrue(all(not a['tree_reuse'] and not a['transpositions'] for n,a in iterations['agents'].items() if n != 'anchor'))
+        for selector in ('uct', 'ucb1_tuned'):
+            counts = {a['iterations'] for a in mechanisms['agents'].values() if a['selection_policy'] == selector}
+            self.assertEqual(len(counts), 1)
+            self.assertTrue(counts <= {a['iterations'] for n,a in iterations['agents'].items() if n != 'anchor' and a['selection_policy'] == selector})
+        refinement = state['phases']['refinement']
+        self.assertTrue(any(a['tree_reuse'] and a['transpositions'] for a in refinement['agents'].values()))
+        self.assertGreater(len({a['iterations'] for n,a in refinement['agents'].items() if n != 'anchor'}), 1)
+        confirmation = _build_phase('confirmation', state, base, reference)
+        self.assertEqual(confirmation['agents']['reference-original'], profile_values(reference))
+        for name, values in confirmation['agents'].items():
+            if name.startswith('tuned'):
+                self.assertIn(values, refinement['agents'].values())
+                self.assertTrue(values['tree_reuse'] and values['transpositions'])
 
 
 if __name__ == '__main__':

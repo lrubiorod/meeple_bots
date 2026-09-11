@@ -40,7 +40,7 @@ from .study_analysis import summarize_contrast, write_study_report
 
 GAMES = {"boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
          "tic-tac-toe": TicTacToe, "splendor": Splendor}
-PHASES = ("mechanisms", "iterations", "parameters", "confirmation")
+PHASES = ("parameters", "iterations", "mechanisms", "refinement", "confirmation")
 # Disjoint, fixed seed namespaces, including calibration. Never adapt seeds to results.
 SEED_STRIDE = 100_000
 
@@ -195,14 +195,47 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
     seconds = calibration["decision_seconds"]
     n = calibration["center_iterations"]
     if name == "mechanisms":
-        agents, contrasts = mechanism_plan(base, seconds)
-    elif name == "iterations":
+        width = state["phases"]["iterations"]
+        agents, contrasts = {}, []
+        for selector in ("uct", "ucb1_tuned"):
+            family = {**width, "contrasts": [c for c in width["contrasts"]
+                       if c["factor"] == "anchor" and width["agents"][c["b"]]["selection_policy"] == selector]}
+            parent = agent_from_values(_width_candidates(family)["balanced"])
+            cube, edges = mechanism_plan(parent, seconds)
+            agents.update({name: profile_values(_iterations(agent_from_values(values), parent.iterations))
+                           for name, values in cube.items() if values["selection_policy"] == selector})
+            contrasts.extend(c for c in edges if c["factor"] != "selector" and cube[c["a"]]["selection_policy"] == selector)
+            # Explicitly test the combined switch, as well as each isolated factor.
+            contrasts.append({"a": f"{selector}-r0-t0", "b": f"{selector}-r1-t1", "factor": "combined_mechanisms"})
+    elif name == "refinement":
         mechanisms = state["phases"]["mechanisms"]
-        finalists = _rank(mechanisms)[:2]
+        ranking = _rank(mechanisms)
+        agents = {"anchor": profile_values(_iterations(base, n))}
+        contrasts = []
+        for selector in ("uct", "ucb1_tuned"):
+            # Preserve an alternative per selector: inconclusive screening is not elimination evidence.
+            winners = [n for n in ranking if mechanisms["agents"][n]["selection_policy"] == selector][:2]
+            for index, winner in enumerate(winners):
+                parent = agent_from_values(mechanisms["agents"][winner])
+                variants = [(parent.rollout_depth, parent.exploration, parent.iterations)]
+                variants += [(max(1, min(2**32-1, round(parent.rollout_depth*f))), parent.exploration, parent.iterations) for f in (.75, 1.25)]
+                if selector == "uct":
+                    variants += [(parent.rollout_depth, parent.exploration*f, parent.iterations) for f in (.5, 2)]
+                variants += [(parent.rollout_depth, parent.exploration,
+                              max(1, min(2**32-1, round(parent.iterations*f)))) for f in (.5, 2)]
+                for depth, exploration, count in sorted(set(variants)):
+                    candidate = f"{winner}-local{index}-d{depth}-c{exploration:g}-i{count}"
+                    agents[candidate] = profile_values(replace(_iterations(parent, count), rollout_depth=depth, exploration=exploration))
+                    contrasts.append({"a": "anchor", "b": candidate, "factor": "refinement"})
+    elif name == "iterations":
+        refined = state["phases"]["parameters"]
+        ranking = [name for name in _rank(refined) if name != "anchor"]
+        finalists = [next(name for name in ranking if refined["agents"][name]["selection_policy"] == selector)
+                     for selector in ("uct", "ucb1_tuned")]
         agents = {"anchor": profile_values(_iterations(base, n))}
         contrasts = []
         for index, winner in enumerate(finalists):
-            parent = agent_from_values(mechanisms["agents"][winner])
+            parent = agent_from_values(refined["agents"][winner])
             previous = None
             for count in sorted({max(1, min(2**32-1, round(n * factor))) for factor in (.25, .5, 1, 2, 4)}):
                 candidate = f"family{index}-i{count}"
@@ -213,15 +246,12 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
                 previous = candidate
         # All families use the same fixed anchor. The calibrated external reference is held out.
     elif name == "parameters":
-        mechanisms = state["phases"]["mechanisms"]
-        # Carry both selectors, avoiding exclusion of UCT before its exploration is tuned.
-        ranking = _rank(mechanisms)
-        winners = [next(x for x in ranking if mechanisms["agents"][x]["selection_policy"] == selector)
+        # Tune both selectors on a common starting point before judging reuse/transpositions.
+        parents = [replace(base, selection_policy=selector, tree_reuse=False, transpositions=False)
                    for selector in ("uct", "ucb1_tuned")]
-        agents = {"anchor": profile_values(_timed(base, seconds))}
+        agents = {"anchor": profile_values(_timed(replace(base, tree_reuse=False, transpositions=False), seconds))}
         contrasts = []
-        for winner in winners:
-            parent = agent_from_values(mechanisms["agents"][winner])
+        for parent in parents:
             depths = sorted({max(1, min(2**32-1, round(base.rollout_depth * f))) for f in (.5, 1, 2)})
             exploration = sorted({base.exploration, base.exploration / 4, base.exploration / 2,
                                   base.exploration * 2}) if parent.selection_policy == "uct" else [parent.exploration]
@@ -231,13 +261,13 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
                 agents[candidate] = profile_values(replace(_timed(parent, seconds), rollout_depth=depth, exploration=c))
                 contrasts.append({"a": "anchor", "b": candidate, "factor": "parameters"})
     else:
-        parameters = state["phases"]["parameters"]
+        parameters = state["phases"]["refinement"]
         ranked = [name for name in _rank(parameters) if name != "anchor"][:2]
         agents = {"anchor": profile_values(_timed(base, seconds))}
         contrasts = []
         for index, winner in enumerate(ranked):
             candidate = f"finalist{index}"
-            agents[candidate] = parameters["agents"][winner]
+            agents[candidate] = profile_values(_timed(agent_from_values(parameters["agents"][winner]), seconds))
             contrasts.append({"a": "anchor", "b": candidate, "factor": "confirmation"})
         if len(ranked) == 2:
             contrasts.append({"a": "finalist0", "b": "finalist1", "factor": "confirmation"})
@@ -252,13 +282,10 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
             unique_width[key] = candidate
             agents[candidate] = values
             contrasts.append({"a": "anchor-iterations", "b": candidate, "factor": "quality_confirmation"})
-        # Iteration recommendations were measured before parameter tuning. Explicitly
-        # test their combination with each tuned finalist instead of silently exporting
-        # an unmeasured depth/exploration/iteration combination as a new baseline.
-        balanced_count = _width_candidates(state["phases"]["iterations"])["balanced"]["iterations"]
-        for index in range(len(ranked)):
+        # Preserve the exact fixed-iteration configuration selected by refinement.
+        for index, winner in enumerate(ranked):
             candidate = f"tuned{index}-balanced"
-            agents[candidate] = profile_values(_iterations(agent_from_values(agents[f"finalist{index}"]), balanced_count))
+            agents[candidate] = parameters["agents"][winner]
             contrasts.append({"a": "anchor-iterations", "b": candidate, "factor": "combined_confirmation"})
         if reference:
             # Same-time matches test parameter choices; the original reference is also
@@ -284,7 +311,7 @@ class StudyRunner:
             raise ValueError("study budget must be finite and positive")
         if type(max_pairs) is not int or not 2 <= max_pairs < SEED_STRIDE:
             raise ValueError("max_pairs must be between 2 and 99999")
-        if type(seed) is not int or not 0 <= seed < 2**64 - 5 * SEED_STRIDE:
+        if type(seed) is not int or not 0 <= seed < 2**64 - (len(PHASES) + 1) * SEED_STRIDE:
             raise ValueError("seed leaves insufficient room for disjoint study phases")
         if type(max_plies) is not int or not 1 <= max_plies < 2**32:
             raise ValueError("max_plies must be a positive u32")
@@ -295,7 +322,7 @@ class StudyRunner:
         self.base, self.reference = baseline, reference
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
-        request = {"version": 1, "game": game, "baseline": profile_values(baseline),
+        request = {"version": 3, "game": game, "baseline": profile_values(baseline),
                    "reference": profile_values(reference) if reference else None,
                    "seed": seed, "max_pairs": max_pairs, "decision_seconds": decision_seconds,
                    "max_plies": max_plies, "workers": worker_count, "engine": _fingerprint()}
@@ -350,7 +377,7 @@ class StudyRunner:
     def _contrast_workers(self, phase: dict, index: int) -> int:
         contrast = phase["contrasts"][index]
         # Anchor timings choose fast/balanced candidates, so must remain isolated.
-        if phase["name"] == "calibration" or contrast["factor"] == "anchor":
+        if phase["name"] == "calibration" or contrast["factor"] in ("anchor", "refinement"):
             return 1
         if any(phase["agents"][contrast[role]].get("time_budget") is not None for role in ("a", "b")):
             return 1
@@ -471,7 +498,7 @@ class StudyRunner:
                 return self.state
             self.calibrate()
             self.state.pop("last_error", None)
-            fractions = (.30, .30, .20, .20)
+            fractions = (.25, .20, .20, .15, .20)
             for index, name in enumerate(PHASES):
                 phase = self.state["phases"].get(name)
                 if phase and phase["status"] == "complete":
@@ -537,7 +564,7 @@ class StudyRunner:
         width = self.state["phases"].get("iterations")
         if width and width["status"] == "complete":
             profiles.update(_width_candidates(width))
-        params = self.state["phases"].get("parameters")
+        params = self.state["phases"].get("refinement")
         if params and params["status"] == "complete":
             winner = next(n for n in _rank(params) if n != "anchor")
             profiles["parameter-finalist"] = params["agents"][winner]
