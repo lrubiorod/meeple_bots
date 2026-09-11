@@ -30,6 +30,7 @@ from ._mcts_profiles import (
     _load_mcts_profile,
 )
 from .api import Boop, ConnectFour, SpiritsOfTheForest, TicTacToe, benchmark_mcts_agent
+from .splendor import Splendor
 from .serialization import _evaluator_dict
 from .tournaments import (
     TournamentAgent, TournamentConfig, TournamentTrace, match_jobs, run_matches,
@@ -38,7 +39,7 @@ from .tournaments import (
 from .study_analysis import summarize_contrast, write_study_report
 
 GAMES = {"boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
-         "tic-tac-toe": TicTacToe}
+         "tic-tac-toe": TicTacToe, "splendor": Splendor}
 PHASES = ("mechanisms", "iterations", "parameters", "confirmation")
 # Disjoint, fixed seed namespaces, including calibration. Never adapt seeds to results.
 SEED_STRIDE = 100_000

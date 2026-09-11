@@ -385,7 +385,11 @@ pub fn benchmark_mcts_agent(
     seed: u64,
 ) -> Result<MctsAgentBenchmark, CatalogError> {
     let benchmark = match game {
-        GameId::Splendor => return Err(CatalogError::AnalysisUnavailable(game)),
+        GameId::Splendor => {
+            let mut agent = splendor::configured_agent(AgentConfig::Mcts(config))
+                .map_err(EvaluationError::Agent)?;
+            benchmark_typed_mcts_agent(&splendor::game(seed), &mut agent, median_depth, seed)
+        }
         GameId::Boop => {
             let mut agent = configured_boop_mcts(config)?;
             benchmark_typed_mcts_agent(&Boop, &mut agent, median_depth, seed)

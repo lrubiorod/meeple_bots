@@ -17,6 +17,43 @@ from meeple_bots.study_analysis import mechanism_effects, summarize_contrast
 
 
 class StudyTests(unittest.TestCase):
+    def test_splendor_calibration_chance_traces_candidates_and_resume(self):
+        from meeple_bots import NeutralEvaluator, Splendor, benchmark_mcts_agent
+        base = MctsAgent(iterations=2, rollout_depth=4)
+        self.assertIsInstance(generic_baseline('splendor').cutoff_evaluator, NeutralEvaluator)
+        args = build_parser().parse_args(['study', '--game', 'splendor', '--budget', '2h'])
+        self.assertEqual(args.game, 'splendor')
+        benchmark = benchmark_mcts_agent(Splendor(), base, 60, 42)
+        self.assertGreaterEqual(benchmark.sampled_positions, 2)
+        self.assertGreater(benchmark.milliseconds_per_iteration, 0)
+        # Exercise every real phase using only two contrasts each, with tiny search budgets.
+        def small_plan(*args):
+            phase = _build_phase(*args)
+            phase['contrasts'] = phase['contrasts'][:2]
+            return phase
+        with TemporaryDirectory() as tmp:
+            options = dict(output=Path(tmp), budget=60, workers=2,
+                           decision_seconds=.00001, max_pairs=2, max_plies=3000,
+                           progress=lambda _: None)
+            with patch('meeple_bots.studies._build_phase', side_effect=small_plan):
+                result = StudyRunner('splendor', base, **options).run()
+            self.assertEqual(result['status'], 'complete')
+            self.assertTrue(result['candidate_profiles'])
+            for path in result['candidate_profiles'].values():
+                self.assertIsInstance(_load_mcts_profile(Path(tmp)/path).agent.cutoff_evaluator, NeutralEvaluator)
+            traces = {p: p.read_bytes() for p in (Path(tmp)/'traces').glob('*.jsonl')}
+            self.assertTrue(traces)
+            for data in traces.values():
+                rows = [json.loads(line) for line in data.splitlines()][1:]
+                self.assertTrue(all(row['result']['chance_events'] for row in rows))
+                self.assertTrue(all(row['result']['splendor_state']['finished'] for row in rows))
+            self.assertTrue((Path(tmp)/'report.html').exists())
+            with patch('meeple_bots.studies.run_matches', side_effect=AssertionError('replayed matches')):
+                resumed = StudyRunner('splendor', base, resume=True, **options).run()
+            self.assertEqual(resumed['status'], 'complete')
+            for path, data in traces.items():
+                self.assertEqual(path.read_bytes(), data)
+
     def test_cube_has_twelve_isolated_contrasts(self):
         base = MctsAgent(iterations=20, rollout_depth=16, heuristic=0)
         agents, contrasts = mechanism_plan(base, .01)

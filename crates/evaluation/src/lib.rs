@@ -8,8 +8,8 @@ use std::{
 };
 
 use meeple_bots_core::{
-    Agent, AgentError, DecisionContext, DeterministicGame, IllegalAction, PerfectInformationGame,
-    PositionStatus, RandomSource, TwoPlayerZeroSumGame,
+    Agent, AgentError, DecisionContext, DeterministicGame, Game, IllegalAction,
+    PerfectInformationGame, PositionStatus, RandomSource, TwoPlayerZeroSumGame,
 };
 use meeple_bots_mcts_agent::{MctsAgent, MctsConfig, SearchBudget, UniformRandom};
 use meeple_bots_simulation::SplitMix64;
@@ -253,7 +253,7 @@ pub fn benchmark_mcts_agent<G, A>(
     seed: u64,
 ) -> Result<MctsAgentBenchmark, EvaluationError>
 where
-    G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
+    G: PerfectInformationGame + TwoPlayerZeroSumGame,
     G::State: Clone,
     G::Action: Clone,
     A: Agent<G>,
@@ -491,11 +491,17 @@ fn sample_calibration_states<G>(
     seed: u64,
 ) -> Result<Vec<(u32, G::State)>, EvaluationError>
 where
-    G: DeterministicGame,
+    G: Game,
     G::State: Clone,
     G::Action: Clone,
 {
-    let mut states = vec![(0, game.initial_state())];
+    let mut initial = game.initial_state();
+    resolve_calibration_chance(
+        game,
+        &mut initial,
+        &mut SplitMix64::new(seed ^ 0x8EBC_6AF0_9C88_C6E3),
+    )?;
+    let mut states = vec![(0, initial)];
     let mut target_depths = [median_depth / 3, median_depth.saturating_mul(2) / 3];
     target_depths.sort_unstable();
 
@@ -505,6 +511,9 @@ where
         }
         let mut state = game.initial_state();
         let mut rng = SplitMix64::new(seed ^ u64::from(target_depth));
+        let mut chance_rng =
+            SplitMix64::new(seed ^ u64::from(target_depth) ^ 0x8EBC_6AF0_9C88_C6E3);
+        resolve_calibration_chance(game, &mut state, &mut chance_rng)?;
         let mut reached = true;
         for _ in 0..target_depth {
             match game.status(&state) {
@@ -515,6 +524,7 @@ where
                         .ok_or(EvaluationError::NoLegalActions)?;
                     game.apply_action(&mut state, &actions[index])
                         .map_err(EvaluationError::IllegalAction)?;
+                    resolve_calibration_chance(game, &mut state, &mut chance_rng)?;
                 }
                 PositionStatus::Terminal => {
                     reached = false;
@@ -530,6 +540,22 @@ where
     }
 
     Ok(states)
+}
+
+/// Environment events do not consume sampled player plies or the decision RNG.
+fn resolve_calibration_chance<G: Game>(
+    game: &G,
+    state: &mut G::State,
+    rng: &mut SplitMix64,
+) -> Result<(), EvaluationError> {
+    while game.status(state) == PositionStatus::Chance {
+        let outcome = game
+            .sample_chance(state, rng)
+            .map_err(EvaluationError::IllegalAction)?;
+        game.apply_chance_outcome(state, &outcome)
+            .map_err(EvaluationError::IllegalAction)?;
+    }
+    Ok(())
 }
 
 fn candidate_rollout_depths(p95_depth: u32) -> Vec<u32> {

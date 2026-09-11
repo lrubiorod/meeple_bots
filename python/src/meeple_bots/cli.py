@@ -369,7 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
     study = commands.add_parser("study", help="automatically diagnose MCTS mechanisms, budgets and parameters")
-    study.add_argument("--game", choices=("boop", "spotf", "connect-four", "tic-tac-toe"), required=True)
+    study.add_argument("--game", choices=("boop", "spotf", "connect-four", "tic-tac-toe", "splendor"), required=True)
     study.add_argument("--baseline", type=Path, help="starting MCTS profile; default: generic profile with the first available heuristic")
     study.add_argument("--reference", type=Path, help="held-out calibrated profile, used only in confirmation")
     study.add_argument("--budget", required=True, help="total study time, e.g. 20m or 2h; includes calibration")

@@ -491,7 +491,7 @@ reuse and transpositions equal. The `exploration` setting only affects UCT.
 
 `study` generates and executes a budgeted sequence of paired comparisons from one starting
 profile. It uses the existing Rust agents, tournament executor and version-1 traces. It currently
-supports Boop, SPOTF, Connect Four and Tic-Tac-Toe. Can't Stop still needs public-chance transport
+supports Boop, SPOTF, Connect Four, Tic-Tac-Toe and Splendor. Can't Stop still needs public-chance transport
 in the generic tournament/extraction pipeline before this command can accept it.
 
 ```bash
@@ -499,6 +499,21 @@ meeple-bots study --game boop --budget 2h \
   --reference configs/mcts/boop-baseline.toml \
   --output results/studies/boop-generic-diagnosis
 ```
+
+For Splendor, start a generic diagnosis without an external reference:
+
+```bash
+meeple-bots study --game splendor --budget 2h --workers auto \
+  --seed 42 --output results/studies/splendor-generic
+```
+
+Splendor uses neutral evaluation and uniform rollouts. Native calibration samples public
+positions by resolving chance with an independent seeded environment RNG; chance events do
+not count as player plies and only decision positions are timed. Tournament traces retain
+all refills and are validated on resume. The standard study report and candidate TOMLs are
+available; the separate extraction/game-specific reporting pipeline is not registered for
+Splendor. Fixed-iteration comparisons may use workers; timing-sensitive comparisons remain
+isolated. Equal-time results depend on runtime scheduling even with a fixed seed.
 
 Without `--baseline`, the starting profile is **generic**: 1,000 iterations, depth 32, exploration
 1.0, UCT, uniform rollouts, no tree reuse/transpositions, and the first registered heuristic

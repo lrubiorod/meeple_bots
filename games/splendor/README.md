@@ -89,7 +89,19 @@ format with seed, player configuration and ordered player/chance events. This is
 session trace, not a tournament trace; replay the recorded actions through native
 positions without resampling. The GUI exposes the full event history.
 
-No live match observer, game-specific report, strategic evaluator or automatic calibration
-study is registered. The existing extractor and game reports are not registered for Splendor. Use the public
+Automatic MCTS diagnosis is available:
+
+```bash
+meeple-bots study --game splendor --budget 2h --workers auto \
+  --seed 42 --output results/studies/splendor-generic
+```
+
+It starts with a generic neutral/uniform profile unless `--baseline` is supplied, compares
+selection, reuse, transpositions, iteration budgets and parameters, and exports candidate
+TOMLs and the standard study report. Calibration resolves chance outside agent timing with
+an independent RNG and samples decision positions only. Resume using the same arguments,
+`--resume`, and a larger **total** budget. See [automatic studies](../../python/studies.md#automatic-mcts-diagnosis).
+
+No live match observer, game-specific report or strategic evaluator is registered. The existing extractor and game reports are not registered for Splendor. Use the public
 replay API to inspect/validate stochastic traces. The existing complexity evaluator requires `DeterministicGame`;
 Splendor deliberately does not claim that capability.

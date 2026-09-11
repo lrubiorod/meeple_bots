@@ -995,9 +995,9 @@ def benchmark_mcts_agent(
 ) -> MctsAgentBenchmark:
     """Measure one exact MCTS configuration on shared early, middle, and late states."""
 
-    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest)):
+    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor)):
         raise TypeError(
-            "game must be TicTacToe, ConnectFour, Boop, or SpiritsOfTheForest"
+            "game must be TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, or Splendor"
         )
     if not isinstance(agent, MctsAgent):
         raise TypeError("agent must be an MctsAgent")
