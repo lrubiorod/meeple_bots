@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from ....splendor import SplendorSession
 from ....api import MctsAgent, RandomAgent
+from ....gui.baselines import SPLENDOR_BASELINE
 from ....gui.player import GuiPlayer, ConfiguredGuiPlayer
 
 
@@ -18,7 +19,7 @@ class SplendorGui:
         self._condition = threading.Condition()
         self._cancelled = threading.Event()
         self._trace_dir = trace_dir
-        self._players = (GuiPlayer("human"), GuiPlayer("mcts", iterations=256, rollout_depth=64))
+        self._players = (GuiPlayer("human"), SPLENDOR_BASELINE)
         self._state = self._decorate(SplendorSession().snapshot(), "idle")
         self._pending = None
 

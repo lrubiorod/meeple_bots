@@ -1,0 +1,12 @@
+# Provisional Splendor baseline from results/studies/splendor/candidates/tuned1-balanced.toml.
+# Candidate only; revise after the held-out equal-time tournament.
+name = "splendor-baseline"
+iterations = 5000
+exploration = 1.0
+rollout_depth = 128
+selection_policy = "ucb1_tuned"
+cutoff_evaluator = { "kind" = "game_heuristic", "index" = 0 }
+rollout_policy = { "kind" = "uniform_random" }
+tree_reuse = true
+transpositions = false
+root_diagnostics = false

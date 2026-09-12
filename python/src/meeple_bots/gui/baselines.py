@@ -19,7 +19,7 @@ def _baseline_path(filename: str) -> Path:
 def _load_gui_baseline(filename: str) -> GuiPlayer:
     path = _baseline_path(filename)
     agent = _load_mcts_profile(path).agent
-    player_type = ConfiguredGuiPlayer if filename == "cant-stop-baseline.toml" else GuiPlayer
+    player_type = ConfiguredGuiPlayer if filename in ("cant-stop-baseline.toml", "splendor-baseline.toml") else GuiPlayer
     extra = {} if player_type is GuiPlayer else {
         "rollout_policy": agent.rollout_policy, "progressive_bias": agent.progressive_bias,
         "root_diagnostics": agent.root_diagnostics,
@@ -44,3 +44,5 @@ BOOP_BASELINE = _load_gui_baseline("boop-baseline.toml")
 SPOTF_BASELINE = _load_gui_baseline("spotf-baseline.toml")
 
 CANT_STOP_BASELINE = _load_gui_baseline("cant-stop-baseline.toml")
+
+SPLENDOR_BASELINE = _load_gui_baseline("splendor-baseline.toml")

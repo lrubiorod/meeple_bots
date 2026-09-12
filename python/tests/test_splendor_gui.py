@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import time
 import unittest
+from unittest.mock import patch
 
 from meeple_bots import Match, MctsAgent, RandomAgent, Splendor, SplendorSession
 from meeple_bots.games.splendor.gui import SplendorApplication
@@ -26,6 +27,32 @@ def wait_for(app, predicate):
 
 
 class SplendorGuiTests(unittest.TestCase):
+    def test_baseline_drives_native_controller_browser_and_manual_overrides(self):
+        from meeple_bots.gui.baselines import SPLENDOR_BASELINE
+        from meeple_bots._mcts_profiles import _load_mcts_profile
+        from meeple_bots.games.splendor.gui.page import PAGE
+        root = Path(__file__).resolve().parents[2]
+        profile = _load_mcts_profile(root/'configs/mcts/splendor-baseline.toml').agent
+        self.assertEqual(SPLENDOR_BASELINE.to_agent(), profile)
+        self.assertIn('const baseline = ' + json.dumps(SPLENDOR_BASELINE.as_dict()), PAGE)
+        app = SplendorApplication()
+        self.assertEqual(app.snapshot()['players'][1], SPLENDOR_BASELINE.as_dict())
+        try:
+            with patch('meeple_bots.games.splendor.gui.controller.threading.Thread.start'):
+                state = app.start({'first': {'kind': 'mcts'}, 'second': {'kind': 'mcts'}})
+                self.assertEqual(state['players'], [SPLENDOR_BASELINE.as_dict()]*2)
+                state = app.start({'first': {'kind': 'mcts', 'time_budget': .01,
+                                            'exploration': .25, 'heuristic': None},
+                                   'second': {'kind': 'human'}})
+                first = state['players'][0]
+                self.assertIsNone(first['iterations'])
+                self.assertEqual(first['time_budget'], .01)
+                self.assertEqual(first['exploration'], .25)
+                self.assertIsNone(first['heuristic'])
+                self.assertEqual(first['rollout_depth'], profile.rollout_depth)
+        finally:
+            app.cancel()
+
     @unittest.skipUnless(shutil.which("node"), "Node is required for browser interaction tests")
     def test_board_selection_and_required_returns(self):
         from meeple_bots.games.splendor.gui.page import PAGE
@@ -45,6 +72,21 @@ const document={getElementById(id){if(!elements.has(id))elements.set(id,new Elem
 const matchMedia=()=>({matches:false});
 """
         assertions = r"""
+assert.equal($('mcts0').hidden,true);
+assert.equal($('mcts1').hidden,false);
+assert.deepEqual(playerConfig(0),{kind:'human'});
+assert.equal(playerConfig(1).iterations,baseline.iterations);
+assert.equal(playerConfig(1).exploration,baseline.exploration);
+assert.equal(playerConfig(1).heuristic,baseline.heuristic);
+$('kind1').value='random';$('kind1').onchange();
+assert.equal($('mcts1').hidden,true);assert.deepEqual(playerConfig(1),{kind:'random'});
+$('kind1').value='mcts';$('kind1').onchange();
+assert.equal($('mcts1').hidden,false);
+$('budget1').value='time';$('budget1').onchange();$('time1').value='.25';
+$('exploration1').value='.4';$('heuristic1').value='none';
+assert.equal($('iteration-field1').hidden,true);assert.equal($('time-field1').hidden,false);
+assert.equal(playerConfig(1).iterations,null);assert.equal(playerConfig(1).time_budget,.25);
+assert.equal(playerConfig(1).exploration,.4);assert.equal(playerConfig(1).heuristic,null);
 state={status:'waiting_human',active_player:0,legal_actions:[],cards:[{bonus:0,points:1,cost:[1,0,0,0,0]}],market:[[0]],holdings:[{reserved:[0]}],noble_data:[{requirements:[4,4,0,0,0]}]};
 const play=(kind,extra={})=>({kind,payment:zeros(),returned:zeros(),noble:null,...extra});
 state.legal_actions=[play('take_same',{color:0}),play('take_different',{colors:7})];

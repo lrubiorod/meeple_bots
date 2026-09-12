@@ -31,4 +31,5 @@ include = [
     "configs/mcts/boop-baseline.toml",
     "configs/mcts/cant-stop-baseline.toml",
     "configs/mcts/spotf-baseline.toml",
+    "configs/mcts/splendor-baseline.toml",
 ]

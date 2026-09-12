@@ -175,8 +175,11 @@ meeple-bots gui --game cant-stop
 meeple-bots gui --game splendor
 ```
 
-Splendor supports human, Random and MCTS seats, with 256 iterations and rollout depth 64
-as the initial GUI settings. The board shows public reservations and every refill in the
+Splendor supports human, Random and MCTS seats. MCTS defaults load from
+[`splendor-baseline.toml`](../configs/mcts/splendor-baseline.toml), provisionally based on
+`tuned1-balanced`: 4,456 iterations, depth 48, UCB1-Tuned, exploration 1.0, prestige H0,
+tree reuse enabled and transpositions disabled. MCTS controls are hidden for human/Random
+seats; they expose iteration/time budgets, exploration, cutoff and root diagnostics. The board shows public reservations and every refill in the
 history. Click a card to buy or reserve, or click supply tokens to select gems.
 Complete payment, required token returns and noble selection in the contextual panel.
 See [the Splendor guide](../games/splendor/README.md) for the variant and session trace format.

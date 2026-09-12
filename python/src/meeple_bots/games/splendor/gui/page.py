@@ -1,5 +1,9 @@
 """Direct board interaction backed exclusively by native legal-action combinations."""
 
+import json
+
+from ....gui.baselines import SPLENDOR_BASELINE
+
 PAGE = r'''<!doctype html>
 <html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Splendor · Meeple Bots</title>
@@ -29,9 +33,49 @@ const human=()=>state?.status==='waiting_human'&&!busy;
 const legal=()=>state.legal_actions.map((a,index)=>({a,index}));
 const counters=values=>values.map((n,i)=>n?`<span class="counter" style="${paint(i)}" title="${n} ${names[i]}" aria-label="${n} ${names[i]}">${n}</span>`:'').join('');
 function textGems(values){return values.map((n,i)=>n?`${n} ${names[i]}`:'').filter(Boolean).join(', ')||'Nada'}
+const baseline = __MCTS_BASELINE__;
+function updatePlayerControls(i){
+ $('mcts'+i).hidden=$('kind'+i).value!=='mcts';
+ const timed=$('budget'+i).value==='time';
+ $('iteration-field'+i).hidden=timed;$('time-field'+i).hidden=!timed;
+}
+function playerConfig(i){
+ const kind=$('kind'+i).value;if(kind!=='mcts')return {kind};
+ const timed=$('budget'+i).value==='time';
+ return {kind,iterations:timed?null:Number($('iterations'+i).value),
+  time_budget:timed?Number($('time'+i).value):null,
+  rollout_depth:Number($('depth'+i).value),exploration:Number($('exploration'+i).value),
+  heuristic:$('heuristic'+i).value==='none'?null:Number($('heuristic'+i).value),
+  selection_policy:$('policy'+i).value,tree_reuse:$('reuse'+i).checked,
+  transpositions:$('trans'+i).checked,root_diagnostics:$('diagnostics'+i).checked};
+}
 for(let i=0;i<2;i++){
- const box=document.createElement('section');box.innerHTML=`<h2>Jugador ${i+1}</h2><label>Control<select id="kind${i}"><option value="human">Humano</option><option value="random">Random</option><option value="mcts">MCTS</option></select></label><label>Iteraciones<input id="iterations${i}" type="number" min="1" value="256"></label><label>Profundidad<input id="depth${i}" type="number" min="1" value="64"></label><label>Selección<select id="policy${i}"><option value="uct">UCT</option><option value="ucb1_tuned">UCB1-Tuned</option></select></label><label>Reutilizar árbol<input id="reuse${i}" type="checkbox"></label><label>Transposiciones<input id="trans${i}" type="checkbox"></label>`;$('configs').append(box);
-}$('kind1').value='mcts';
+ const box=document.createElement('section');
+ box.innerHTML=`<h2>Jugador ${i+1}</h2>
+ <label>Control<select id="kind${i}"><option value="human">Humano</option><option value="random">Random</option><option value="mcts">MCTS</option></select></label>
+ <div id="mcts${i}" hidden>
+ <label>Presupuesto<select id="budget${i}"><option value="iterations">Iteraciones</option><option value="time">Tiempo</option></select></label>
+ <label id="iteration-field${i}">Iteraciones<input id="iterations${i}" type="number" min="1" step="1"></label>
+ <label id="time-field${i}" hidden>Segundos / decisión<input id="time${i}" type="number" min="0.001" step="0.05"></label>
+ <label>Profundidad<input id="depth${i}" type="number" min="1" step="1"></label>
+ <label>Exploración<input id="exploration${i}" type="number" min="0" step="0.05"></label>
+ <label>Selección<select id="policy${i}"><option value="uct">UCT</option><option value="ucb1_tuned">UCB1-Tuned</option></select></label>
+ <label>Evaluación al corte<select id="heuristic${i}"><option value="none">Neutral</option><option value="0">H0 · Prestigio</option></select></label>
+ <label>Reutilizar árbol<input id="reuse${i}" type="checkbox"></label>
+ <label>Transposiciones<input id="trans${i}" type="checkbox"></label>
+ <label>Diagnóstico de raíz<input id="diagnostics${i}" type="checkbox"></label>
+ </div>`;
+ $('configs').append(box);
+ $('kind'+i).value=i===0?'human':'mcts';
+ $('budget'+i).value=baseline.time_budget===null?'iterations':'time';
+ $('iterations'+i).value=baseline.iterations??1000;$('time'+i).value=baseline.time_budget??1;
+ $('depth'+i).value=baseline.rollout_depth;$('exploration'+i).value=baseline.exploration;
+ $('policy'+i).value=baseline.selection_policy;$('heuristic'+i).value=baseline.heuristic===null?'none':String(baseline.heuristic);
+ $('reuse'+i).checked=baseline.tree_reuse;$('trans'+i).checked=baseline.transpositions;
+ $('diagnostics'+i).checked=baseline.root_diagnostics??false;
+ $('kind'+i).onchange=()=>updatePlayerControls(i);$('budget'+i).onchange=()=>updatePlayerControls(i);
+ updatePlayerControls(i);
+}
 function actionName(a){switch(a.kind){case 'take_different':return 'Tomar '+names.filter((_,i)=>a.colors&(1<<i)).join(' + ');case 'take_same':return 'Tomar 2 '+names[a.color];case 'reserve_visible':return `Reservar nivel ${a.tier+1}, posición ${a.slot+1}`;case 'buy_visible':return `Comprar nivel ${a.tier+1}, posición ${a.slot+1}`;case 'buy_reserved':return `Comprar reserva ${a.index+1}`;case 'pass':return 'Pasar (sin acciones disponibles)';case 'refill':return `Refill: carta #${a.card}`;}}
 
 function taken(a){const values=zeros();if(a.kind==='take_same')values[a.color]=2;if(a.kind==='take_different')for(let i=0;i<5;i++)values[i]=a.colors&(1<<i)?1:0;return values;}
@@ -89,7 +133,10 @@ function render(s){const v=`${s.session_id}:${s.events.length}:${s.status}:${s.t
  if(s.status==='idle')$('settings').open=true;draw();$('history').replaceChildren();for(const [i,e] of s.events.entries()){const line=document.createElement('div');line.textContent=`${i+1}. ${e.player===null?'Azar':'J'+(e.player+1)}: ${actionName(e.action)}${e.player===null?'':` · Pago: ${textGems(e.action.payment)} · Devuelve: ${textGems(e.action.returned)} · Noble: ${e.action.noble??'—'}`}`;$('history').append(line);}if(s.trace_path){const p=document.createElement('p');p.textContent='Traza guardada: '+s.trace_path;$('history').append(p);}
 }
 async function request(path,payload){const r=await fetch(path,payload===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const s=await r.json();if(!r.ok)throw Error(s.error);return s;}
-$('start').onclick=async()=>{try{$('error').textContent='';const player=i=>({kind:$('kind'+i).value,iterations:Number($('iterations'+i).value),rollout_depth:Number($('depth'+i).value),selection_policy:$('policy'+i).value,tree_reuse:$('reuse'+i).checked,transpositions:$('trans'+i).checked});const seed=Number($('seed').value);if(!Number.isSafeInteger(seed)||seed<0)throw Error('El seed debe ser un entero entre 0 y 9007199254740991.');render(await request('/api/start',{first:player(0),second:player(1),seed,minimum_move_seconds:Number($('delay').value),save_trace:$('save').checked}));$('settings').open=false;}catch(e){$('error').textContent=e.message;}};
+$('start').onclick=async()=>{try{$('error').textContent='';const seed=Number($('seed').value);if(!Number.isSafeInteger(seed)||seed<0)throw Error('El seed debe ser un entero entre 0 y 9007199254740991.');render(await request('/api/start',{first:playerConfig(0),second:playerConfig(1),seed,minimum_move_seconds:Number($('delay').value),save_trace:$('save').checked}));$('settings').open=false;}catch(e){$('error').textContent=e.message;}};
 $('confirm').onclick=async()=>{try{if(choice===null||busy)return;busy=true;$('confirm').disabled=true;const next=await request('/api/move',{action:choice,turn:state.events.length,session_id:state.session_id});busy=false;version='';render(next);}catch(e){$('error').textContent=e.message;version='';}finally{busy=false;}};
 async function poll(){try{render(await request('/api/state'));}catch(e){$('error').textContent=e.message;}setTimeout(poll,350);}poll();
 </script></html>'''
+
+
+PAGE = PAGE.replace("__MCTS_BASELINE__", json.dumps(SPLENDOR_BASELINE.as_dict()))

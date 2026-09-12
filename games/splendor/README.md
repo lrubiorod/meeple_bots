@@ -79,7 +79,12 @@ meeple-bots match --game splendor --first mcts --second random --seed 42
 
 Match, batch and tournament traces include `chance_events` and `splendor_state`.
 The browser GUI supports human, Random and MCTS seats, including UCT/UCB1-Tuned,
-iterations, rollout depth, tree reuse and transpositions. It displays the bank, market,
+iteration/time budgets, rollout depth, exploration, neutral/H0 cutoff, root diagnostics,
+tree reuse and transpositions. Default MCTS values come from
+[`configs/mcts/splendor-baseline.toml`](../../configs/mcts/splendor-baseline.toml) at process
+startup, including installed wheels. This is a provisional `tuned1-balanced` candidate,
+not a verified strongest agent. Restart the GUI after editing the TOML; manual overrides
+do not change the file. MCTS controls are hidden for human and Random seats. It displays the bank, market,
 public reserves, bonuses and nobles. Click a colored development card to buy or reserve it, or click supply tokens to
 select gems (click a color twice to take two). Cards display victory points and printed
 costs; nobles use distinct crown medallions. Complete any payment, token returns and
