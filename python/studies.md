@@ -380,6 +380,11 @@ SPOTF additionally produces:
 - `categories.csv`: final counts, count gaps, scoring contribution, absence penalties, and lost
   majorities for all 12 categories and both players.
 
+Splendor extraction emits the common tables plus `chance_events.csv`: `match_number`,
+source provenance, `event_index`, `after_ply`, and `outcome_json`. Refills remain separate
+from player moves and timing statistics. The extractor shares native replay validation
+with tournament resume and rejects inconsistent outcomes, scores and final states.
+
 The SPOTF extractor rebuilds the shuffled forest from each match seed. A trace is rejected if any
 action is illegal or if its replayed winner or scores differ from the recorded result.
 
@@ -515,8 +520,8 @@ is retained by subsequent phases and exported in TOML. H0 uses only prestige dif
 positions by resolving chance with an independent seeded environment RNG; chance events do
 not count as player plies and only decision positions are timed. Tournament traces retain
 all refills and are validated on resume. The standard study report and candidate TOMLs are
-available; the separate extraction/game-specific reporting pipeline is not registered for
-Splendor. Fixed-iteration comparisons may use workers; timing-sensitive comparisons remain
+available. Splendor extraction supports common tables plus `chance_events.csv`,
+with authoritative replay validation; a Splendor report generator is not registered. Fixed-iteration comparisons may use workers; timing-sensitive comparisons remain
 isolated. Equal-time results depend on runtime scheduling even with a fixed seed.
 
 Without `--baseline`, the starting profile is **generic**: 1,000 iterations, depth 32, exploration

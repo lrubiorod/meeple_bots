@@ -35,6 +35,8 @@ from .api import (
     _analyze_trace,
 )
 
+from .splendor import Splendor
+
 _COMMON_OUTPUT_FILES = {
     "agents": "agents.csv",
     "studies": "studies.csv",
@@ -718,6 +720,16 @@ def extract_tournament(
                 "both_players_have_cats": "both players have acquired at least one cat",
             },
         }
+    elif isinstance(game, Splendor):
+        extract_match = _extract_chance_events
+        game_output_files = {"chance_events": "chance_events.csv"}
+        game_writer_fields = {
+            "chance_events": ("match_number", "event_index", "after_ply", "outcome_json"),
+        }
+        game_metadata = {
+            "analysis": "generic move-level extraction with explicit chance events",
+            "chance_semantics": "after_ply counts player actions; ordered outcomes are replayed in Rust",
+        }
     elif isinstance(game, SpiritsOfTheForest):
         extract_match = _extract_spotf_match
         game_output_files = _SPOTF_OUTPUT_FILES
@@ -1090,6 +1102,20 @@ def _extract_generic_match(
             }
         )
         row_counts["moves"] += 1
+
+
+def _extract_chance_events(context, writers, row_counts, game):
+    """Preserve explicit environment outcomes separately from player move metrics."""
+    from .tournaments import _validate_splendor_result
+    _validate_splendor_result(context.raw_result)
+    for index, event in enumerate(context.raw_result["chance_events"], 1):
+        writers["chance_events"].writerow({
+            "match_number": context.match_number,
+            "event_index": index,
+            "after_ply": event["after_ply"],
+            "outcome_json": json.dumps(event["outcome"], sort_keys=True, separators=(",", ":")),
+        })
+        row_counts["chance_events"] += 1
 
 
 def _validate_generic_result(context: _MatchContext, game: ConnectFour | TicTacToe) -> None:
@@ -2109,13 +2135,15 @@ def _validate_header(header: object) -> str:
     if header.get("schema_version") != 1:
         raise ValueError("extract supports tournament schema_version 1")
     game = header.get("game")
-    if game not in {"boop", "connect-four", "spotf", "tic-tac-toe"}:
+    if game not in {"boop", "connect-four", "spotf", "tic-tac-toe", "splendor"}:
         raise ValueError(f"unknown tournament game: {game}")
     return game
 
 
-def _trace_game(name: str) -> Boop | ConnectFour | SpiritsOfTheForest | TicTacToe:
+def _trace_game(name: str) -> Boop | ConnectFour | SpiritsOfTheForest | TicTacToe | Splendor:
     match name:
+        case "splendor":
+            return Splendor()
         case "boop":
             return Boop()
         case "connect-four":

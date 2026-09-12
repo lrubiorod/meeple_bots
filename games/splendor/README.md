@@ -112,6 +112,17 @@ TOMLs and the standard study report. Calibration resolves chance outside agent t
 an independent RNG and samples decision positions only. Resume using the same arguments,
 `--resume`, and a larger **total** budget. See [automatic studies](../../python/studies.md#automatic-mcts-diagnosis).
 
-No live match observer or game-specific report is registered. The existing extractor and game reports are not registered for Splendor. Use the public
-replay API to inspect/validate stochastic traces. The existing complexity evaluator requires `DeterministicGame`;
+Tournament extraction is supported:
+
+```bash
+meeple-bots extract --input results/tournaments/splendor-candidates-1s.jsonl
+```
+
+It produces the common agents/studies/matches/moves tables, a manifest, and
+`chance_events.csv` with match provenance, event index, `after_ply` and outcome JSON.
+Player metrics exclude environment events. Every completed game is replayed through Rust;
+missing or invalid refills, inconsistent final states, scores and outcomes are rejected.
+Partial tournament files can be extracted and are marked incomplete.
+No live match observer or Splendor report generator is registered. Use the extracted
+CSV tables or the public replay API to inspect stochastic traces. The existing complexity evaluator requires `DeterministicGame`;
 Splendor deliberately does not claim that capability.

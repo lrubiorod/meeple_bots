@@ -256,6 +256,41 @@ def run_matches(
     yield from ordered_parallel_map(execute, jobs, resolve_workers(workers))
 
 
+def _validate_splendor_result(result: dict) -> None:
+    """Validate a public-chance result through Rust, independent of job scheduling."""
+    def integer(value, label, minimum=0, maximum=2**64-1):
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(f"Invalid {label}")
+        return value
+    seed = integer(result.get("seed"), "result seed")
+    moves = result.get("moves")
+    utilities = result.get("utilities")
+    from types import SimpleNamespace
+    from .splendor import SplendorAction, SplendorState, SplendorChanceOutcome, ChanceEvent, replay_splendor
+    if not isinstance(result.get("chance_events"), list) or not isinstance(result.get("splendor_state"), dict):
+        raise ValueError("Splendor trace requires chance events and final state")
+    try:
+        parsed_moves = tuple(SimpleNamespace(player=m['player'], action=SplendorAction.from_dict(m['action'])) for m in moves)
+        events = tuple(ChanceEvent(integer(e['after_ply'], 'chance after_ply', 1), SplendorChanceOutcome(integer(e['outcome']['card'], 'refill card', 0, 89))) for e in result['chance_events'])
+        if any(e['outcome'].get('kind') != 'refill' or e['outcome'].get('type') != 'splendor' for e in result['chance_events']):
+            raise ValueError("invalid Splendor chance outcome")
+        state = replay_splendor(seed, parsed_moves, events)
+        if state != SplendorState.from_dict(result['splendor_state']):
+            raise ValueError("Splendor replay final state differs")
+        if result.get('scores') != [player.prestige for player in state.players]:
+            raise ValueError("Splendor replay scores differ")
+        actual_utilities = state._native_position().utilities()
+        winner = next((i for i, value in enumerate(actual_utilities) if value > 0), None)
+        if result.get('winner') != winner:
+            raise ValueError("Splendor replay winner differs")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in utilities):
+            raise ValueError("Splendor utilities must be numeric")
+        if tuple(actual_utilities) != tuple(utilities):
+            raise ValueError("Splendor replay utilities differ")
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError("invalid Splendor trace") from error
+
+
 def _validate_completed_record(record: dict, header: dict) -> None:
     """Validate persisted job identity and required result data without running games."""
     def integer(value, label, minimum=0, maximum=2**64 - 1):
@@ -322,24 +357,7 @@ def _validate_completed_record(record: dict, header: dict) -> None:
         raise ValueError("Utilities differ from winner")
     number(record.get("duration_seconds"), "duration_seconds")
     if header["game"] == "splendor":
-        from types import SimpleNamespace
-        from .splendor import SplendorAction, SplendorState, SplendorChanceOutcome, ChanceEvent, replay_splendor
-        if not isinstance(result.get("chance_events"), list) or not isinstance(result.get("splendor_state"), dict):
-            raise ValueError("Splendor trace requires chance events and final state")
-        try:
-            parsed_moves = tuple(SimpleNamespace(player=m['player'], action=SplendorAction.from_dict(m['action'])) for m in moves)
-            events = tuple(ChanceEvent(integer(e['after_ply'], 'chance after_ply', 1), SplendorChanceOutcome(integer(e['outcome']['card'], 'refill card', 0, 89))) for e in result['chance_events'])
-            if any(e['outcome'].get('kind') != 'refill' or e['outcome'].get('type') != 'splendor' for e in result['chance_events']):
-                raise ValueError("invalid Splendor chance outcome")
-            state = replay_splendor(seed, parsed_moves, events)
-            if state != SplendorState.from_dict(result['splendor_state']):
-                raise ValueError("Splendor replay final state differs")
-            if result.get('scores') != [player.prestige for player in state.players]:
-                raise ValueError("Splendor replay scores differ")
-            if tuple(state._native_position().utilities()) != tuple(utilities):
-                raise ValueError("Splendor replay utilities differ")
-        except (KeyError, TypeError, AttributeError) as error:
-            raise ValueError("invalid Splendor trace") from error
+        _validate_splendor_result(result)
     action_type = {
         "tic-tac-toe": "tic_tac_toe", "connect-four": "connect_four",
         "boop": "boop", "spotf": "spotf", "splendor": "splendor",

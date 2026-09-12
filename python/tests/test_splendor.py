@@ -1,5 +1,6 @@
 """Native Splendor integration, public chance replay and tournament persistence."""
 import json
+import csv
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -102,6 +103,20 @@ kind = "random"
             run_tournament(parsed)
             trace = Path(tmp) / "trace.jsonl"
             original = trace.read_bytes()
+            from meeple_bots.extraction import extract_tournament
+            extracted = extract_tournament(trace)
+            self.assertTrue(extracted['complete'])
+            self.assertEqual(extracted['processed_matches'], 2)
+            directory = Path(extracted['output_dir'])
+            with (directory/'chance_events.csv').open() as file:
+                chance_rows = list(csv.DictReader(file))
+            expected_events = [event for line in original.splitlines()[1:]
+                               for event in json.loads(line)['result']['chance_events']]
+            self.assertEqual(len(chance_rows), len(expected_events))
+            self.assertEqual([json.loads(row['outcome_json']) for row in chance_rows],
+                             [event['outcome'] for event in expected_events])
+            self.assertTrue(all(row['study_id'] and row['source_match_number'] for row in chance_rows))
+            manifest_before = (directory/'manifest.json').read_bytes()
             header = json.loads(original.splitlines()[0])
             with TournamentTrace(trace, header, resume=True):
                 pass
@@ -115,6 +130,9 @@ kind = "random"
                     pass
             rows[1]["result"]["chance_events"] = []
             trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            with self.assertRaises(ValueError):
+                extract_tournament(trace, overwrite=True)
+            self.assertEqual((directory/'manifest.json').read_bytes(), manifest_before)
             with self.assertRaises(ValueError):
                 with TournamentTrace(trace, header, resume=True):
                     pass
