@@ -57,6 +57,52 @@ class SpotfGuiInteractionTests(unittest.TestCase):
         self.assertIn("heuristic==='none'?null:Number(heuristic)", PAGE)
 
     @unittest.skipUnless(shutil.which("node"), "Node is required for embedded GUI tests")
+    def test_poll_preserves_buttons_and_ignores_responses_before_a_move(self):
+        script = PAGE.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+        harness = r"""
+const assert=require('node:assert/strict');
+class Element {
+ constructor(){this.children=[];this.value='human';this.checked=false;this._html='';this.writes=0;this.style={setProperty(){}};this.classList={add(){},toggle(){}};}
+ set innerHTML(value){this._html=value;this.children=[];this.writes++;}
+ get innerHTML(){return this._html;}
+ appendChild(child){this.children.push(child);}
+ addEventListener(name,fn){this['on'+name]=fn;}
+}
+const elements=new Map();
+const document={querySelector(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement(){return new Element();}};
+const window={};let poll;
+const setInterval=fn=>{poll=fn;};
+const original={status:'waiting_human',message:'Your turn',phase:'collect',active_player:0,moves:[],forest:[{spirit:0,spirit_symbols:1,power_source:0,gemstone:null},...Array(47).fill(null)],legal_actions:[{index:0,kind:'end_collection'}]};
+const next={...original,phase:'gemstones',legal_actions:[{index:0,kind:'skip_gemstone'}]};
+let response=original,delayed=false,release,posts=0;
+const fetch=async(path)=>{
+ if(path==='/api/state'&&delayed)return await new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>original});});
+ if(path==='/api/move'){posts++;response=next;}
+ return {ok:true,json:async()=>response};
+};
+"""
+        assertions = r"""
+(async()=>{
+ await document.querySelector('#start').onclick();
+ const actions=document.querySelector('#actions'),button=actions.children[0];
+ const tile=document.querySelector('#forest').children[0],writes=tile.writes;
+ for(let i=0;i<4;i++)await poll();
+ assert.equal(actions.children[0],button,'poll replaced the button between pointer down and up');
+ assert.equal(tile.writes,writes,'poll replaced tile contents');
+ delayed=true;const oldPoll=poll();await Promise.resolve();
+ await button.onclick();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(posts,1,'one click must submit exactly one move');
+ const updated=actions.children[0];assert.equal(updated.textContent,'No usar gema');
+ release();await oldPoll;
+ assert.equal(actions.children[0],updated,'late poll restored an obsolete decision');
+ delayed=false;await poll();assert.equal(actions.children[0],updated);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+        completed = subprocess.run(["node"], input=harness + script + assertions,
+                                   text=True, capture_output=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required for embedded GUI tests")
     def test_embedded_javascript_guides_every_board_selection(self) -> None:
         script = PAGE.split("<script>", 1)[1].rsplit("</script>", 1)[0]
         assertions = r"""

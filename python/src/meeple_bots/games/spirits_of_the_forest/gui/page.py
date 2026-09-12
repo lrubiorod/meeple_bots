@@ -149,7 +149,7 @@ const spiritsGuiLogic={cellIndex,reduceBoardClick,reconcileSelection,interaction
 if(typeof module!=='undefined'&&module.exports)module.exports=spiritsGuiLogic;
 
 function initializeGui(){
-  let state=null,review=null,pending=false,selection=null;
+  let state=null,review=null,pending=false,selection=null,renderedDecision=null,polling=false,revision=0;
   const forest=document.querySelector('#forest');
   for(let i=0;i<48;i++){
     const button=document.createElement('button');button.className='tile empty';button.addEventListener('click',()=>chooseTile(i));forest.appendChild(button);
@@ -176,8 +176,13 @@ function initializeGui(){
     document.querySelector(`#transpositions-${player}`).checked = baseline.transpositions;
   }
   for(const index of [0,1]){document.querySelector(`#player-${index}`).onchange=()=>updateMctsConfig(index);document.querySelector(`#budget-mode-${index}`).onchange=()=>updateBudget(index);updateMctsConfig(index);updateBudget(index)}
-  document.querySelector('#start').onclick=async()=>{try{review=null;selection=null;document.querySelector('#error').textContent='';state=await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({first:playerConfig(0),second:playerConfig(1),seed:Number(document.querySelector('#seed').value),minimum_move_seconds:Number(document.querySelector('#pace').value),save_trace:document.querySelector('#save-trace').checked})});render()}catch(error){document.querySelector('#error').textContent=error.message}};
-  setInterval(async()=>{if(!state||!['playing','waiting_human'].includes(state.status))return;try{state=await api('/api/state');render()}catch(error){}},250);
+  document.querySelector('#start').onclick=async()=>{if(pending)return;pending=true;revision++;try{review=null;selection=null;document.querySelector('#error').textContent='';state=await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({first:playerConfig(0),second:playerConfig(1),seed:Number(document.querySelector('#seed').value),minimum_move_seconds:Number(document.querySelector('#pace').value),save_trace:document.querySelector('#save-trace').checked})});render()}catch(error){document.querySelector('#error').textContent=error.message}finally{pending=false;}};
+  setInterval(async()=>{
+    if(pending||polling||!state||!['playing','waiting_human'].includes(state.status))return;
+    polling=true;const requestedRevision=revision;
+    try{const next=await api('/api/state');if(requestedRevision===revision&&!pending){state=next;render();}}
+    catch(error){}finally{polling=false;}
+  },250);
   function frame(){if(review===null)return state;if(review===0)return state.initial||state;return state.moves[review-1]}
   function liveActions(){return review===null&&state?.status==='waiting_human'?(state.legal_actions||[]):[]}
   function chooseTile(index){
@@ -186,7 +191,7 @@ function initializeGui(){
     if(result.actionIndex!==null)play(result.actionIndex);else render();
   }
   async function play(index){
-    if(pending)return;pending=true;selection=null;document.querySelector('#error').textContent='';
+    if(pending)return;pending=true;revision++;selection=null;document.querySelector('#error').textContent='';
     try{state=await api('/api/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:index})});render()}catch(error){document.querySelector('#error').textContent=error.message}
     pending=false;
   }
@@ -219,7 +224,8 @@ function initializeGui(){
       else if(view.sourceOptions.has(index))element.title='Seleccionar esta gema para moverla';
       else if(view.destinations.has(index))element.title='Mover la gema seleccionada aquí';
       const gem=tile.gemstone==null?'':`<i class="gem" style="--gem:${tile.gemstone?'var(--second)':'var(--first)'}"></i>`;
-      element.innerHTML=`${gem}<strong>${labels[tile.spirit]}</strong><div class="symbols">${'●'.repeat(tile.spirit_symbols)}</div><span class="source">${sources[tile.power_source]||''}</span>`;
+      const content=`${gem}<strong>${labels[tile.spirit]}</strong><div class="symbols">${'●'.repeat(tile.spirit_symbols)}</div><span class="source">${sources[tile.power_source]||''}</span>`;
+      if(element.innerHTML!==content)element.innerHTML=content;
     }
   }
   function actionLabel(action){
@@ -232,6 +238,10 @@ function initializeGui(){
   function addActionButton(box,label,onClick,secondary=false){const button=document.createElement('button');button.className=`action${secondary?' secondary':''}`;button.textContent=label;button.onclick=onClick;box.appendChild(button)}
   function addInstruction(box,message){const text=document.createElement('span');text.className='instruction';text.textContent=message;box.appendChild(text)}
   function renderActions(actions){
+    // Keep the actual button nodes alive across unchanged polls (pointer and keyboard).
+    const decision=JSON.stringify([review,state.status,state.moves.length,actions,selection]);
+    if(decision===renderedDecision)return;
+    renderedDecision=decision;
     const box=document.querySelector('#actions');box.innerHTML='';
     if(review!==null){addActionButton(box,'Volver al directo',()=>{review=null;selection=null;render()},true);return}
     if(selection?.mode==='sacrifice'){
@@ -249,7 +259,8 @@ function initializeGui(){
   window.reviewSpiritsMove=move=>{review=move;selection=null;render()};
   function renderHistory(){
     const start='<div class="move" onclick="reviewSpiritsMove(0)"><span>0</span><span>Posición inicial</span><small></small></div>';
-    document.querySelector('#history').innerHTML=start+(state.moves.length?state.moves.map(move=>`<div class="move" onclick="reviewSpiritsMove(${move.ply})"><span>${move.ply}</span><span>J${move.player+1} · ${actionLabel(move)}</span><small>${(move.decision_seconds||0).toFixed(3)} s</small></div>`).reverse().join(''):'');
+    const content=start+(state.moves.length?state.moves.map(move=>`<div class="move" onclick="reviewSpiritsMove(${move.ply})"><span>${move.ply}</span><span>J${move.player+1} · ${actionLabel(move)}</span><small>${(move.decision_seconds||0).toFixed(3)} s</small></div>`).reverse().join(''):'');
+    const history=document.querySelector('#history');if(history.innerHTML!==content)history.innerHTML=content;
   }
 }
 if(typeof document!=='undefined')initializeGui();
