@@ -21,6 +21,31 @@ remain the exact win/draw/loss result. It ignores discounts, tokens and future p
 Use `cutoff_evaluator = { kind = "game_heuristic", index = 0 }` in TOML, or
 `{ kind = "neutral" }` for a zero-valued nonterminal cutoff.
 
+## H1: prestige, discounts and noble proximity
+
+H1 uses only public state. Each player's score is:
+
+- Current prestige.
+- `0.15 * sum(min(bonus[color], 4))` for permanent discounts (at most 3 points).
+- The largest `3 / (1 + missing)` among the remaining visible nobles, where
+  `missing = sum(max(requirement[color] - bonus[color], 0))`.
+
+The difference between player scores is normalized as `delta / (15 + abs(delta))`.
+Terminal evaluation remains the exact result, including the development-count tiebreak.
+The noble term increasingly rewards the last required bonuses. Only the closest noble
+contributes, avoiding multiple rewards for overlapping requirements. Claimed nobles
+leave the visible pool and contribute through prestige instead. Tokens, gold and
+reserved cards do not count as bonuses or receive an independent reward.
+
+Select `cutoff_evaluator = { kind = "game_heuristic", index = 1 }` in a MCTS TOML,
+`MctsAgent(heuristic=1)` in Python, or H1 in the GUI. H0 and baseline defaults are
+unchanged. The automatic study's default screening still compares H0 and neutral;
+supply an H1 baseline to include H1 as an additional cutoff evaluator.
+
+These fixed weights are an experimental starting point, not a calibrated improvement.
+H1 does not evaluate market affordability, tactical denial, reservation plans or races
+for a noble explicitly. Compare it against H0 with equal time budgets and paired seats.
+
 ## Mechanical data provenance
 
 Color order is white, blue, green, red, black; gold is token index 5. Development IDs are
@@ -79,7 +104,7 @@ meeple-bots match --game splendor --first mcts --second random --seed 42
 
 Match, batch and tournament traces include `chance_events` and `splendor_state`.
 The browser GUI supports human, Random and MCTS seats, including UCT/UCB1-Tuned,
-iteration/time budgets, rollout depth, exploration, neutral/H0 cutoff, root diagnostics,
+iteration/time budgets, rollout depth, exploration, neutral/H0/H1 cutoff, root diagnostics,
 tree reuse and transpositions. Default MCTS values come from
 [`configs/mcts/splendor-baseline.toml`](../../configs/mcts/splendor-baseline.toml) at process
 startup, including installed wheels. This is a provisional `tuned1-balanced` candidate,

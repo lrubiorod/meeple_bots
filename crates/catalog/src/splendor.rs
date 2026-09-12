@@ -29,7 +29,7 @@ pub fn configured_agent(config: AgentConfig) -> Result<SplendorAgent, AgentError
             let valid_cutoff = match &c.cutoff_evaluator {
                 EvaluatorConfig::Neutral => true,
                 EvaluatorConfig::GameHeuristic { index, parameters } => {
-                    *index == 0 && parameters.is_empty()
+                    matches!(*index, 0 | 1) && parameters.is_empty()
                 }
             };
             if !valid_cutoff
@@ -38,7 +38,7 @@ pub fn configured_agent(config: AgentConfig) -> Result<SplendorAgent, AgentError
                     != ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::UniformRandom)
             {
                 return Err(AgentError::message(
-                    "Splendor supports neutral or prestige heuristic 0 (no parameters), uniform rollouts and no progressive bias",
+                    "Splendor supports neutral or heuristics 0/1 (no parameters), uniform rollouts and no progressive bias",
                 ));
             }
             let config = MctsConfig {
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(batch[0], direct);
         assert_eq!(batch[1].seed, 43);
         let caps = game_search_capabilities(GameId::Splendor);
-        assert_eq!(caps.heuristics.len(), 1);
+        assert_eq!(caps.heuristics.len(), 2);
         assert!(!caps.turn_phase_conditions);
     }
 }

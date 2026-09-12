@@ -60,7 +60,7 @@ for(let i=0;i<2;i++){
  <label>Profundidad<input id="depth${i}" type="number" min="1" step="1"></label>
  <label>Exploración<input id="exploration${i}" type="number" min="0" step="0.05"></label>
  <label>Selección<select id="policy${i}"><option value="uct">UCT</option><option value="ucb1_tuned">UCB1-Tuned</option></select></label>
- <label>Evaluación al corte<select id="heuristic${i}"><option value="none">Neutral</option><option value="0">H0 · Prestigio</option></select></label>
+ <label>Evaluación al corte<select id="heuristic${i}"><option value="none">Neutral</option><option value="0">H0 · Prestigio</option><option value="1">H1 · Prestigio, descuentos y nobles</option></select></label>
  <label>Reutilizar árbol<input id="reuse${i}" type="checkbox"></label>
  <label>Transposiciones<input id="trans${i}" type="checkbox"></label>
  <label>Diagnóstico de raíz<input id="diagnostics${i}" type="checkbox"></label>

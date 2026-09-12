@@ -34,6 +34,7 @@ class SplendorGuiTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         profile = _load_mcts_profile(root/'configs/mcts/splendor-baseline.toml').agent
         self.assertEqual(SPLENDOR_BASELINE.to_agent(), profile)
+        self.assertIn('<option value="1">H1 · Prestigio, descuentos y nobles</option>', PAGE)
         self.assertIn('const baseline = ' + json.dumps(SPLENDOR_BASELINE.as_dict()), PAGE)
         app = SplendorApplication()
         self.assertEqual(app.snapshot()['players'][1], SPLENDOR_BASELINE.as_dict())
@@ -87,6 +88,7 @@ $('exploration1').value='.4';$('heuristic1').value='none';
 assert.equal($('iteration-field1').hidden,true);assert.equal($('time-field1').hidden,false);
 assert.equal(playerConfig(1).iterations,null);assert.equal(playerConfig(1).time_budget,.25);
 assert.equal(playerConfig(1).exploration,.4);assert.equal(playerConfig(1).heuristic,null);
+$('heuristic1').value='1';assert.equal(playerConfig(1).heuristic,1);
 state={status:'waiting_human',active_player:0,legal_actions:[],cards:[{bonus:0,points:1,cost:[1,0,0,0,0]}],market:[[0]],holdings:[{reserved:[0]}],noble_data:[{requirements:[4,4,0,0,0]}]};
 const play=(kind,extra={})=>({kind,payment:zeros(),returned:zeros(),noble:null,...extra});
 state.legal_actions=[play('take_same',{color:0}),play('take_different',{colors:7})];
@@ -116,7 +118,7 @@ state.status='playing';drawDecision();assert.equal(choice,null);assert.equal($('
 
     def test_session_matches_catalog_including_chance_and_mcts_reuse(self):
         for agent in (RandomAgent(), MctsAgent(iterations=8, rollout_depth=20,
-                                               tree_reuse=True, transpositions=True)):
+                                               tree_reuse=True, transpositions=True, heuristic=1)):
             with self.subTest(agent=type(agent).__name__):
                 session = SplendorSession(seed=42, first=agent, second=RandomAgent())
                 for _ in range(3000):

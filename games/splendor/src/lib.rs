@@ -906,21 +906,46 @@ mod search_tests {
     }
 }
 
-/// H0: prestige difference only; no engine-building or tactical features.
+/// H0: prestige only. H1: prestige, bounded discounts and visible noble proximity.
 impl meeple_bots_core::HeuristicGame for Splendor {
     fn heuristic_count(&self) -> u32 {
-        1
+        2
     }
     fn heuristic_utility(&self, index: u32, state: &Self::State, player: PlayerId) -> Option<f32> {
-        if index != 0 {
+        if index >= self.heuristic_count() {
             return None;
         }
         let opponent = Self::opponent(player)?;
         if let Some(value) = self.terminal_utility(state, player) {
             return Some(value);
         }
-        let difference = f32::from(state.players[player.index()].prestige)
-            - f32::from(state.players[opponent.index()].prestige);
+        let score = |player: &Player| {
+            let prestige = f32::from(player.prestige);
+            if index == 0 {
+                return prestige;
+            }
+            // Saturation limits engine value and discourages collecting one color forever.
+            let discounts: f32 = player.bonuses.iter().map(|&n| f32::from(n.min(4))).sum();
+            // Only the closest remaining noble contributes: overlapping requirements
+            // should not multiply the reward for the same development cards.
+            let noble_potential = state
+                .nobles
+                .iter()
+                .map(|&id| {
+                    let noble = &NOBLES[id as usize];
+                    let missing: u16 = noble
+                        .requirements
+                        .iter()
+                        .zip(player.bonuses)
+                        .map(|(&required, bonus)| u16::from(required.saturating_sub(bonus)))
+                        .sum();
+                    f32::from(noble.points) / (1.0 + f32::from(missing))
+                })
+                .fold(0.0_f32, f32::max);
+            prestige + 0.15 * discounts + noble_potential
+        };
+        let difference =
+            score(&state.players[player.index()]) - score(&state.players[opponent.index()]);
         Some(difference / (15.0 + difference.abs()))
     }
 }
@@ -950,7 +975,7 @@ mod prestige_tests {
         );
         state.players[0].prestige = 255;
         assert!(game.heuristic_utility(0, &state, PlayerId::FIRST).unwrap() < 1.0);
-        assert_eq!(game.heuristic_utility(1, &state, PlayerId::FIRST), None);
+        assert_eq!(game.heuristic_utility(2, &state, PlayerId::FIRST), None);
         state.finished = true;
         state.final_round = true;
         assert_eq!(
@@ -961,6 +986,90 @@ mod prestige_tests {
         assert_eq!(
             game.heuristic_utility(0, &state, PlayerId::FIRST),
             Some(0.0)
+        );
+    }
+
+    #[test]
+    fn h1_prefers_progress_toward_visible_nobles() {
+        let game = Splendor::new(&mut SplitMix64::new(42));
+        let mut state = game.initial_state();
+        state.nobles = vec![0];
+        let requirements = NOBLES[0].requirements;
+        let relevant = requirements.iter().position(|&n| n > 0).unwrap();
+        let irrelevant = requirements.iter().position(|&n| n == 0).unwrap();
+        state.players[0].bonuses[relevant] = 1;
+        state.players[1].bonuses[irrelevant] = 1;
+        let value = game.heuristic_utility(1, &state, PlayerId::FIRST).unwrap();
+        assert!(value > 0.0);
+        assert_eq!(
+            game.heuristic_utility(1, &state, PlayerId::SECOND),
+            Some(-value)
+        );
+        assert_eq!(
+            game.heuristic_utility(0, &state, PlayerId::FIRST),
+            Some(0.0)
+        );
+        // An unavailable noble must no longer influence color preferences.
+        state.nobles.clear();
+        assert_eq!(
+            game.heuristic_utility(1, &state, PlayerId::FIRST),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn h1_rewards_getting_close_without_counting_tokens_or_reserves() {
+        let game = Splendor::new(&mut SplitMix64::new(42));
+        let mut state = game.initial_state();
+        state.nobles = vec![0];
+        let baseline = game.heuristic_utility(1, &state, PlayerId::FIRST);
+        state.players[0].tokens = [1, 1, 1, 1, 1, 5];
+        state.players[0]
+            .reserved
+            .push(state.market[0][0].take().unwrap());
+        assert_eq!(game.heuristic_utility(1, &state, PlayerId::FIRST), baseline);
+        state.players[0].bonuses = NOBLES[0].requirements;
+        let color = NOBLES[0].requirements.iter().position(|&n| n >= 3).unwrap();
+        let mut values = Vec::new();
+        for missing in (1..=3).rev() {
+            state.players[0].bonuses[color] = NOBLES[0].requirements[color] - missing;
+            values.push(game.heuristic_utility(1, &state, PlayerId::FIRST).unwrap());
+        }
+        assert!(values[1] > values[0]);
+        assert!(values[2] - values[1] > values[1] - values[0]);
+    }
+
+    #[test]
+    fn h1_is_bounded_and_respects_terminal_tiebreaks() {
+        let game = Splendor::new(&mut SplitMix64::new(42));
+        let mut state = game.initial_state();
+        assert_eq!(
+            game.heuristic_utility(1, &state, PlayerId::FIRST),
+            Some(0.0)
+        );
+        state.players[0].bonuses = [255; 5];
+        state.players[0].prestige = 255;
+        let value = game.heuristic_utility(1, &state, PlayerId::FIRST).unwrap();
+        assert!(value > 0.0 && value < 1.0);
+        assert_eq!(
+            game.heuristic_utility(1, &state, PlayerId::SECOND),
+            Some(-value)
+        );
+        state.finished = true;
+        state.final_round = true;
+        assert_eq!(
+            game.heuristic_utility(1, &state, PlayerId::FIRST),
+            Some(1.0)
+        );
+        state.players[1].prestige = 255;
+        assert_eq!(
+            game.heuristic_utility(1, &state, PlayerId::FIRST),
+            Some(0.0)
+        );
+        state.players[0].purchased.push(0);
+        assert_eq!(
+            game.heuristic_utility(1, &state, PlayerId::FIRST),
+            Some(-1.0)
         );
     }
 }

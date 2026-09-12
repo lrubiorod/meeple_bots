@@ -1,6 +1,7 @@
 """Native Splendor integration, public chance replay and tournament persistence."""
 import json
 import csv
+from itertools import product
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -59,10 +60,10 @@ class SplendorTests(unittest.TestCase):
         self.assertEqual(batch.matches, 2)
 
     def test_mcts_selectors_finish_reproducibly_with_chance_and_diagnostics(self):
-        for selector in ("uct", "ucb1_tuned"):
-            with self.subTest(selector=selector):
+        for selector, heuristic in product(("uct", "ucb1_tuned"), (0, 1)):
+            with self.subTest(selector=selector, heuristic=heuristic):
                 agent = MctsAgent(
-                    iterations=8, rollout_depth=20, selection_policy=selector, heuristic=0,
+                    iterations=8, rollout_depth=20, selection_policy=selector, heuristic=heuristic,
                     tree_reuse=True, transpositions=True, root_diagnostics=True,
                 )
                 match = Match(Splendor(), agent, RandomAgent(), seed=42)
