@@ -238,8 +238,9 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
         agents = {"full": profile_values(_terminal_reference(parent, seconds))}
         evaluators = [NeutralEvaluator()]
         game = state.get("request", {}).get("game")
-        if game is not None and 0 in heuristic_indices(game):
-            evaluators.append(GameHeuristic(0))
+        if game is not None:
+            registered = heuristic_indices(game)
+            evaluators.extend(GameHeuristic(index) for index in (0, 1) if index in registered)
         if base.cutoff_evaluator not in evaluators:
             evaluators.append(base.cutoff_evaluator)
         for depth, evaluator in product((16, 32, 64), evaluators):

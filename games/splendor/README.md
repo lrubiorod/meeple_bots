@@ -39,8 +39,8 @@ reserved cards do not count as bonuses or receive an independent reward.
 
 Select `cutoff_evaluator = { kind = "game_heuristic", index = 1 }` in a MCTS TOML,
 `MctsAgent(heuristic=1)` in Python, or H1 in the GUI. H0 and baseline defaults are
-unchanged. The automatic study's default screening still compares H0 and neutral;
-supply an H1 baseline to include H1 as an additional cutoff evaluator.
+unchanged. The automatic study includes neutral, H0 and H1 cutoffs by default;
+no custom baseline is required.
 
 These fixed weights are an experimental starting point, not a calibrated improvement.
 H1 does not evaluate market affordability, tactical denial, reservation plans or races
@@ -131,7 +131,7 @@ meeple-bots study --game splendor --budget 2h --workers auto \
 ```
 
 It starts with a generic prestige/uniform profile unless `--baseline` is supplied, compares
-neutral and prestige cutoffs jointly with selector, depth and exploration, then iteration
+neutral, H0 and H1 cutoffs jointly with selector, depth and exploration, then iteration
 budgets and reuse/transpositions, and exports candidate
 TOMLs and the standard study report. Calibration resolves chance outside agent timing with
 an independent RNG and samples decision positions only. Resume using the same arguments,

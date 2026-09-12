@@ -512,9 +512,10 @@ meeple-bots study --game splendor --budget 2h --workers auto \
   --seed 42 --output results/studies/splendor-generic
 ```
 
-Splendor compares neutral and prestige heuristic 0 cutoffs with uniform rollouts.
-The initial horizon grid tests 16/32/64 with neutral and H0 against full depth at 1024;
-initial cutoff candidate names end in `neutral` or `h0`. If a cutoff qualifies, its evaluator
+Splendor compares neutral, H0 (prestige) and H1 (prestige, discounts and noble proximity)
+cutoffs with uniform rollouts, without requiring a custom baseline.
+The initial horizon grid tests 16/32/64 with neutral, H0 and H1 against full depth at 1024;
+initial cutoff candidate names end in `neutral`, `h0` or `h1`. If a cutoff qualifies, its evaluator
 is retained while the full and cutoff families tune their selectors independently. H0 uses only prestige difference
 `delta / (15 + abs(delta))`; it does not value engine-building discounts. Native calibration samples public
 positions by resolving chance with an independent seeded environment RNG; chance events do
@@ -541,7 +542,7 @@ The phases run in order:
    profile benchmark estimates early/middle/late iteration costs. Random is a sanity check,
    not the quality reference. The game estimates and timing samples are saved.
 2. **Horizons:** keep the baseline selector/exploration fixed and disable reuse/transpositions.
-   Compare depths **16, 32 and 64**, each with neutral and registered H0, against a neutral
+   Compare depths **16, 32 and 64**, each with neutral and whichever of H0/H1 the game registers, against a neutral
    **full-depth reference capped at 1024**, at equal decision time. Preserve a distinct custom
    baseline evaluator too. Always retain full depth; retain at most one cutoff, the highest
    observed score. Plan at least 8 paired seeds (unless `--max-pairs` explicitly caps it lower).
