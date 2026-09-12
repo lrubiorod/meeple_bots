@@ -60,19 +60,38 @@ class StudyTests(unittest.TestCase):
             for path, data in traces.items():
                 self.assertEqual(path.read_bytes(), data)
 
-    def test_splendor_crosses_cutoff_with_selector_depth_and_exploration(self):
-        state = {'request': {'game': 'splendor'}, 'calibration': {'decision_seconds': .01, 'center_iterations': 4}}
-        phase = _build_phase('parameters', state, generic_baseline('splendor'), None)
-        families = {}
-        for name, values in phase['agents'].items():
-            if name == 'anchor':
-                continue
-            key = (values['selection_policy'], values['rollout_depth'], values['exploration'])
-            families.setdefault(key, set()).add(values['cutoff_evaluator']['kind'])
-            self.assertEqual(agent_from_values(values).cutoff_evaluator,
-                             GameHeuristic(0) if name.endswith('prestige') else NeutralEvaluator())
-        self.assertEqual(len(families), 15)
-        self.assertTrue(all(kinds == {'neutral', 'game_heuristic'} for kinds in families.values()))
+    def test_registered_h0_crosses_cutoff_with_selector_depth_and_exploration(self):
+        for game in ('splendor', 'boop', 'spotf', 'tic-tac-toe', 'connect-four'):
+            with self.subTest(game=game):
+                state = {'request': {'game': game}, 'calibration': {'decision_seconds': .01, 'center_iterations': 4}}
+                phase = _build_phase('parameters', state, generic_baseline(game), None)
+                families = {}
+                for name, values in phase['agents'].items():
+                    if name == 'anchor':
+                        continue
+                    key = (values['selection_policy'], values['rollout_depth'], values['exploration'])
+                    families.setdefault(key, set()).add(values['cutoff_evaluator']['kind'])
+                    self.assertEqual(agent_from_values(values).cutoff_evaluator,
+                                     GameHeuristic(0) if name.endswith('-h0') else NeutralEvaluator())
+                expected = {'neutral', 'game_heuristic'} if game in ('splendor', 'boop', 'spotf') else {'neutral'}
+                self.assertEqual(len(families), 15)
+                self.assertTrue(all(kinds == expected for kinds in families.values()))
+
+    def test_cutoff_screening_preserves_custom_baseline_without_duplicate_candidates(self):
+        state = {'request': {'game': 'boop'}, 'calibration': {'decision_seconds': .01, 'center_iterations': 4}}
+        for evaluator, expected in ((NeutralEvaluator(), 2), (GameHeuristic(0), 2),
+                                    (GameHeuristic(1), 3)):
+            phase = _build_phase('parameters', state, MctsAgent(cutoff_evaluator=evaluator), None)
+            self.assertEqual(len(phase['agents']), 1 + 15 * expected)
+            self.assertTrue(any(agent_from_values(v).cutoff_evaluator == evaluator
+                                for n, v in phase['agents'].items() if n != 'anchor'))
+        # Parameterized H0 must coexist with the default H0 without overwriting its names.
+        custom = GameHeuristic(0, {'gemstone_early_bonus': 2.0})
+        state['request']['game'] = 'spotf'
+        phase = _build_phase('parameters', state, MctsAgent(cutoff_evaluator=custom), None)
+        self.assertEqual(len(phase['agents']), 46)
+        self.assertTrue(any(n.endswith('-h0-custom') for n in phase['agents']))
+        self.assertTrue(any(agent_from_values(v).cutoff_evaluator == custom for v in phase['agents'].values()))
 
     def test_cube_has_twelve_isolated_contrasts(self):
         base = MctsAgent(iterations=20, rollout_depth=16, heuristic=0)

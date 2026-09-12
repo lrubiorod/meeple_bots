@@ -248,8 +248,11 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
     elif name == "parameters":
         # Tune both selectors on a common starting point before judging reuse/transpositions.
         evaluators = [base.cutoff_evaluator]
-        if state.get("request", {}).get("game") == "splendor":
+        game = state.get("request", {}).get("game")
+        if game is not None and 0 in heuristic_indices(game):
             evaluators = [NeutralEvaluator(), GameHeuristic(0)]
+            if base.cutoff_evaluator not in evaluators:
+                evaluators.append(base.cutoff_evaluator)
         parents = [replace(base, selection_policy=selector, heuristic=None, cutoff_evaluator=evaluator,
                            tree_reuse=False, transpositions=False)
                    for selector, evaluator in product(("uct", "ucb1_tuned"), evaluators)]
@@ -261,7 +264,11 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
                                   base.exploration * 2}) if parent.selection_policy == "uct" else [parent.exploration]
             # A small cross-product measures exploration/horizon interactions at equal time.
             for depth, c in product(depths, exploration):
-                suffix = "" if len(evaluators) == 1 else ("-neutral" if isinstance(parent.cutoff_evaluator, NeutralEvaluator) else "-prestige")
+                evaluator = parent.cutoff_evaluator
+                label = "neutral" if isinstance(evaluator, NeutralEvaluator) else f"h{evaluator.index}"
+                if isinstance(evaluator, GameHeuristic) and evaluator.params:
+                    label += "-custom"
+                suffix = "" if len(evaluators) == 1 else f"-{label}"
                 candidate = f"{parent.selection_policy}-d{depth}-c{c:g}{suffix}"
                 agents[candidate] = profile_values(replace(_timed(parent, seconds), rollout_depth=depth, exploration=c))
                 contrasts.append({"a": "anchor", "b": candidate, "factor": "parameters"})
@@ -327,7 +334,7 @@ class StudyRunner:
         self.base, self.reference = baseline, reference
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
-        request = {"version": 4, "game": game, "baseline": profile_values(baseline),
+        request = {"version": 5, "game": game, "baseline": profile_values(baseline),
                    "reference": profile_values(reference) if reference else None,
                    "seed": seed, "max_pairs": max_pairs, "decision_seconds": decision_seconds,
                    "max_plies": max_plies, "workers": worker_count, "engine": _fingerprint()}
