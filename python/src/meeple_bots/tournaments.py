@@ -411,7 +411,7 @@ def _validate_completed_record(record: dict, header: dict) -> None:
                     integer(sacrifice.get("row"), "sacrifice row")
                     integer(sacrifice.get("column"), "sacrifice column")
         number(move.get("decision_seconds"), "decision_seconds")
-        for field in ("search_iterations", "search_nodes"):
+        for field in ("search_iterations", "search_nodes", "terminal_simulations", "cutoff_simulations"):
             if move.get(field) is not None:
                 integer(move[field], field)
         if header.get("decision_timing_scope") == "agent_total_v1":

@@ -44,6 +44,8 @@ def match_result_dict(result: MatchResult) -> dict[str, object]:
                 "maintenance_seconds": move.maintenance_seconds,
                 "search_iterations": move.search_iterations,
                 "search_nodes": move.search_nodes,
+                "terminal_simulations": move.terminal_simulations,
+                "cutoff_simulations": move.cutoff_simulations,
                 "root_actions": [
                     {
                         "action_index": root.action_index,

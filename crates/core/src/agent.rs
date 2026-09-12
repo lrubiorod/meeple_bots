@@ -4,6 +4,8 @@ use crate::{AgentError, Game, PerfectInformationGame, PlayerId, RandomSource};
 pub struct AgentDecisionStats {
     pub search_iterations: Option<u64>,
     pub search_nodes: Option<u64>,
+    pub terminal_simulations: Option<u64>,
+    pub cutoff_simulations: Option<u64>,
     pub root_actions: Vec<RootActionStats>,
     pub tree_reuse: Option<TreeReuseStats>,
 }

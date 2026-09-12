@@ -131,6 +131,8 @@ pub fn report(
             maintenance_seconds: a.maintenance_time.as_secs_f64(),
             search_iterations: a.decision_stats.search_iterations,
             search_nodes: a.decision_stats.search_nodes,
+            terminal_simulations: a.decision_stats.terminal_simulations,
+            cutoff_simulations: a.decision_stats.cutoff_simulations,
             root_actions: a.decision_stats.root_actions,
             tree_reuse: a.decision_stats.tree_reuse,
         })

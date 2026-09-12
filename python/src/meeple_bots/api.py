@@ -557,6 +557,8 @@ class Move:
     tree_reuse: TreeReuseDiagnostic | None = field(default=None, compare=False)
     selection_seconds: float | None = field(default=None, compare=False)
     maintenance_seconds: float | None = field(default=None, compare=False)
+    terminal_simulations: int | None = field(default=None, compare=False)
+    cutoff_simulations: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -700,6 +702,8 @@ class Match:
                 maintenance_seconds=item.get("maintenance_seconds"),
                 search_iterations=item.get("search_iterations"),
                 search_nodes=item.get("search_nodes"),
+                terminal_simulations=item.get("terminal_simulations"),
+                cutoff_simulations=item.get("cutoff_simulations"),
                 root_actions=tuple(
                     RootActionDiagnostic(
                         action_index=root["action_index"],

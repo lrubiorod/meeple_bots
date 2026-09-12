@@ -76,6 +76,8 @@ class SplendorTests(unittest.TestCase):
                 self.assertTrue(all(move.root_actions for move in decisions))
                 self.assertTrue(all(move.tree_reuse is not None for move in decisions))
                 self.assertTrue(all(move.search_iterations == 8 for move in decisions))
+                self.assertTrue(all(move.terminal_simulations + move.cutoff_simulations == 8 for move in decisions))
+                self.assertGreater(sum(move.cutoff_simulations for move in decisions), 0)
                 raw = match_result_dict(result)
                 self.assertEqual(raw["splendor_state"]["consecutive_passes"],
                                  result.splendor_state.consecutive_passes)

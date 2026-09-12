@@ -182,6 +182,7 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
             }
             let mut rollout_memory = RolloutMemory::default();
             let mut iterations = 0;
+            let mut terminal_simulations = 0_u64;
             loop {
                 let exhausted = match self.config.budget {
                     SearchBudget::Iterations(n) => iterations >= n.get(),
@@ -326,6 +327,7 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
                     depth += 1;
                 }
                 resolve_chance(game, &mut state, rng)?;
+                terminal_simulations += u64::from(game.status(&state) == PositionStatus::Terminal);
                 let utility = if game.status(&state) == PositionStatus::Terminal {
                     f64::from(
                         game.terminal_utility(&state, owner)
@@ -365,6 +367,8 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
             self.stats = AgentDecisionStats {
                 search_iterations: Some(u64::from(iterations)),
                 search_nodes: Some(nodes.len() as u64),
+                terminal_simulations: Some(terminal_simulations),
+                cutoff_simulations: Some(u64::from(iterations) - terminal_simulations),
                 root_actions: if self.root_diagnostics {
                     nodes[0]
                         .edges

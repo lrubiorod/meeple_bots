@@ -1353,6 +1353,8 @@ fn py_run_match(
         movement.set_item("maintenance_seconds", recorded.maintenance_seconds)?;
         movement.set_item("search_iterations", recorded.search_iterations)?;
         movement.set_item("search_nodes", recorded.search_nodes)?;
+        movement.set_item("terminal_simulations", recorded.terminal_simulations)?;
+        movement.set_item("cutoff_simulations", recorded.cutoff_simulations)?;
         let root_actions = PyList::empty(py);
         for root_action in &recorded.root_actions {
             let item = PyDict::new(py);
@@ -1538,6 +1540,8 @@ fn replay_record(player: u8, action: CatalogAction) -> RecordedMove {
         maintenance_seconds: 0.0,
         search_iterations: None,
         search_nodes: None,
+        terminal_simulations: None,
+        cutoff_simulations: None,
         root_actions: Vec::new(),
         tree_reuse: None,
     }

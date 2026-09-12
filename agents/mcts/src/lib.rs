@@ -61,6 +61,8 @@ impl Default for SearchBudget {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MctsSearchStats {
     pub iterations: u64,
+    pub terminal_simulations: u64,
+    pub cutoff_simulations: u64,
     pub nodes: u64,
     pub elapsed: Duration,
 }
@@ -878,6 +880,8 @@ impl<C, P, B> MctsAgent<C, P, B> {
             .map_or_else(AgentDecisionStats::default, |stats| AgentDecisionStats {
                 search_iterations: Some(stats.iterations),
                 search_nodes: Some(stats.nodes),
+                terminal_simulations: Some(stats.terminal_simulations),
+                cutoff_simulations: Some(stats.cutoff_simulations),
                 root_actions: self.last_root_actions.clone(),
                 tree_reuse: None,
             })
@@ -980,6 +984,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
         let search_started = Instant::now();
         let mut rollout_memory = RolloutMemory::default();
         let mut completed_iterations = 0_u64;
+        let mut terminal_simulations = 0_u64;
         let mut path = Vec::new();
         loop {
             let budget_exhausted = match self.config.budget {
@@ -1119,6 +1124,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                     nodes[visited].total_squared_utility += utility * utility;
                 }
             }
+            terminal_simulations += u64::from(game.status(&state) == PositionStatus::Terminal);
             completed_iterations += 1;
         }
 
@@ -1166,6 +1172,8 @@ impl<C, P, B> MctsAgent<C, P, B> {
         };
         self.last_search_stats = Some(MctsSearchStats {
             iterations: completed_iterations,
+            terminal_simulations,
+            cutoff_simulations: completed_iterations - terminal_simulations,
             nodes: if count_existing_nodes {
                 nodes.len() as u64
             } else {
@@ -1206,6 +1214,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
         let search_started = Instant::now();
         let mut rollout_memory = RolloutMemory::default();
         let mut completed_iterations = 0_u64;
+        let mut terminal_simulations = 0_u64;
         let mut path_nodes = Vec::new();
         let mut path_edges = Vec::new();
         loop {
@@ -1367,6 +1376,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                     edge.total_squared_utility += utility * utility;
                 }
             }
+            terminal_simulations += u64::from(game.status(&state) == PositionStatus::Terminal);
             completed_iterations += 1;
         }
 
@@ -1409,6 +1419,8 @@ impl<C, P, B> MctsAgent<C, P, B> {
         };
         self.last_search_stats = Some(MctsSearchStats {
             iterations: completed_iterations,
+            terminal_simulations,
+            cutoff_simulations: completed_iterations - terminal_simulations,
             nodes: if count_existing_nodes {
                 graph.nodes.len() as u64
             } else {
@@ -3552,6 +3564,38 @@ mod tests {
 
         assert!(total_utility > 0.0);
     }
+    #[test]
+    fn completion_counters_distinguish_terminal_from_cutoff() {
+        let game = TicTacToe;
+        let state = game.initial_state();
+        for transpositions in [false, true] {
+            for depth in [0, 10_000] {
+                let mut agent = TranspositionMctsAgent::<TicTacToe>::new(
+                    MctsAgent::new(MctsConfig {
+                        budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
+                        rollout_depth: depth,
+                        ..MctsConfig::default()
+                    }),
+                    false,
+                    transpositions,
+                );
+                agent
+                    .select_action(
+                        DecisionContext::new(&game, &state, PlayerId::FIRST),
+                        &mut SplitMix64::new(42),
+                    )
+                    .unwrap();
+                let stats = agent.inner().last_search_stats().unwrap();
+                assert_eq!(stats.terminal_simulations, u64::from(depth > 0));
+                assert_eq!(stats.cutoff_simulations, u64::from(depth == 0));
+                assert_eq!(
+                    stats.terminal_simulations + stats.cutoff_simulations,
+                    stats.iterations
+                );
+            }
+        }
+    }
+
     #[test]
     fn result_is_reproducible() {
         let game = TicTacToe;

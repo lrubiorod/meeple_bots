@@ -243,6 +243,8 @@ pub struct RecordedMove {
     pub maintenance_seconds: f64,
     pub search_iterations: Option<u64>,
     pub search_nodes: Option<u64>,
+    pub terminal_simulations: Option<u64>,
+    pub cutoff_simulations: Option<u64>,
     pub root_actions: Vec<RootActionStats>,
     pub tree_reuse: Option<TreeReuseStats>,
 }
@@ -872,6 +874,8 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
             maintenance_seconds: traced_action.maintenance_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
+            terminal_simulations: traced_action.decision_stats.terminal_simulations,
+            cutoff_simulations: traced_action.decision_stats.cutoff_simulations,
             root_actions: traced_action.decision_stats.root_actions,
             tree_reuse: traced_action.decision_stats.tree_reuse,
         })
@@ -928,6 +932,8 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
             maintenance_seconds: traced_action.maintenance_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
+            terminal_simulations: traced_action.decision_stats.terminal_simulations,
+            cutoff_simulations: traced_action.decision_stats.cutoff_simulations,
             root_actions: traced_action.decision_stats.root_actions,
             tree_reuse: traced_action.decision_stats.tree_reuse,
         })
@@ -997,6 +1003,8 @@ fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
             maintenance_seconds: traced_action.maintenance_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
+            terminal_simulations: traced_action.decision_stats.terminal_simulations,
+            cutoff_simulations: traced_action.decision_stats.cutoff_simulations,
             root_actions: traced_action.decision_stats.root_actions,
             tree_reuse: traced_action.decision_stats.tree_reuse,
         })
@@ -1059,6 +1067,8 @@ fn spirits_of_the_forest_report(
             maintenance_seconds: traced_action.maintenance_time.as_secs_f64(),
             search_iterations: traced_action.decision_stats.search_iterations,
             search_nodes: traced_action.decision_stats.search_nodes,
+            terminal_simulations: traced_action.decision_stats.terminal_simulations,
+            cutoff_simulations: traced_action.decision_stats.cutoff_simulations,
             root_actions: traced_action.decision_stats.root_actions,
             tree_reuse: traced_action.decision_stats.tree_reuse,
         })
