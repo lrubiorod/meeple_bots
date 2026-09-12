@@ -513,9 +513,9 @@ meeple-bots study --game splendor --budget 2h --workers auto \
 ```
 
 Splendor compares neutral and prestige heuristic 0 cutoffs with uniform rollouts.
-The parameter grid crosses both cutoffs with selector, horizon and exploration;
-candidate names end in `neutral` or `h0`. The winning evaluator per selector
-is retained by subsequent phases and exported in TOML. H0 uses only prestige difference
+The initial horizon grid tests 16/32/64 with neutral and H0 against full depth at 1024;
+initial cutoff candidate names end in `neutral` or `h0`. If a cutoff qualifies, its evaluator
+is retained while the full and cutoff families tune their selectors independently. H0 uses only prestige difference
 `delta / (15 + abs(delta))`; it does not value engine-building discounts. Native calibration samples public
 positions by resolving chance with an independent seeded environment RNG; chance events do
 not count as player plies and only decision positions are timed. Tournament traces retain
@@ -540,39 +540,69 @@ The phases run in order:
 1. **Calibration:** a short swapped-seat pair against Random estimates game length; an exact
    profile benchmark estimates early/middle/late iteration costs. Random is a sanity check,
    not the quality reference. The game estimates and timing samples are saved.
-2. **Parameters:** compare both UCT and UCB1-Tuned with reuse and transpositions disabled
-   on every screening candidate and anchor. Test depth ½/1/2 times the initial horizon;
-   UCT also tests exploration ¼/½/1/2 times the initial value. Comparisons use equal decision
-   time against a common anchor. Keep the best parameter configuration for each selector.
-3. **Iterations:** evaluate each selector's tuned leader at ¼, ½, 1, 2 and 4 times the
-   calibrated iteration center. Both families face a common fixed starting-profile anchor;
-   adjacent budgets also compete. Select the observed balanced budget separately per selector.
-4. **Mechanisms:** at that selector's selected iteration budget, test all four combinations
-   of reuse and transpositions. Four single-factor contrasts plus a both-off/both-on contrast
-   measure conditional effects. Preserve two combinations per selector for refinement;
-   inconclusive rankings are not proof that alternatives are weaker. Equal iterations do
-   not guarantee equal runtime or equal total retained search work.
-5. **Refinement:** retest retained configurations unchanged, at nearby horizons (¾ and 5/4),
-   and at half/double iterations. UCT also tries half/double exploration. Vary one parameter
-   at a time against a common fixed-iteration anchor; this is a local search, not a full
-   cross-product. Comparisons run in isolation to record usable latency measurements.
-6. **Confirmation:** reserved seeds compare refined finalists at equal time and preserve
-   their exact measured iteration counts in the fixed-budget candidates. Initial iteration
-   trade-offs are also confirmed. A reference participates only here, at equal time and at
-   its original budget. Unequal computational cost is labeled explicitly.
+2. **Horizons:** keep the baseline selector/exploration fixed and disable reuse/transpositions.
+   Compare depths **16, 32 and 64**, each with neutral and registered H0, against a neutral
+   **full-depth reference capped at 1024**, at equal decision time. Preserve a distinct custom
+   baseline evaluator too. Always retain full depth; retain at most one cutoff, the highest
+   observed score. Plan at least 8 paired seeds (unless `--max-pairs` explicitly caps it lower).
+   Discard the cutoff family only when every candidate's upper 95% bound is below **45%**
+   and every candidate has at least 8 pairs. Otherwise keep the best cutoff, marked provisional
+   if evidence is insufficient or its observed score is below 45%. Draws count as half.
+3. **Parameters:** independently tune each retained family (full and optional cutoff), testing
+   UCT exploration ¼/½/1/2 times the baseline value and UCB1-Tuned at its baseline exploration.
+   The existing Tuned formula has no exploration sweep. Equal-time matches against a common
+   anchor select one leader per family, regardless of which selector wins. Exact score ties
+   prefer fewer changes from the incoming parent; remaining ties preserve plan order rather
+   than candidate names. The horizon grid similarly prefers the starting evaluator/horizon.
+4. **Iterations:** first benchmark each selected family on early/middle/late positions with
+   a small 8-iteration probe. Persist its cost samples and independent iteration center in
+   `calibration.families`; resume reuses those measurements. Test ¼/½/1/2/4 times each family's
+   center against a common fixed anchor and adjacent budgets. Select a balanced budget per
+   family. Estimates are approximate, especially when reuse changes retained search work.
+5. **Mechanisms:** test all four reuse/transposition combinations at each family's selected
+   iteration budget. Run all **six pairs**: single-factor switches, both-off versus both-on,
+   and reuse-only versus transpositions-only. All four configurations face the same number
+   of opponents. Keep two
+   combinations per family for refinement. Equal iterations do not guarantee equal runtime.
+6. **Refinement:** compare retained variants at equal time against a common anchor. Explore
+   nearby cutoff depths (¾ and 5/4) and UCT exploration (½ and 2). Full depth stays at 1024
+   with neutral evaluation. Fixed candidate profiles preserve the earlier iteration budgets.
+7. **Confirmation:** held-out seeds compare the best full-depth candidate against the best
+   surviving cutoff **at equal decision time**, after each has been independently tuned.
+   Finalists also face the common anchor; fixed-budget profiles and iteration trade-offs
+   receive confirmation matches too. An optional external reference participates only here,
+   at equal time and at its original budget. Both family finalists are exported.
+8. **Final ablations:** on another disjoint seed namespace, compare the confirmed winner to
+   versions reverting one change at a time, at equal time. When full/cutoff confirmation is
+   inconclusive, test both finalists. Revert selector, UCT exploration and cutoff depth to the
+   retained family's initial settings; compare heuristic cutoff evaluation to neutral and
+   disable reuse/transpositions individually. If both mechanisms are on, also disable both
+   as an explicitly combined contrast. Empty ablation plans finish without playing matches.
+   These matches diagnose the final configuration and do not select a new winner.
 
-This phase order uses study protocol version 5. Older studies remain readable, but cannot
-be resumed with the new workflow: use a new output directory. Each phase has a separate
-seed namespace. Whenever the native catalog registers H0, parameter screening compares neutral and H0
-jointly with selector, horizon and exploration. A different baseline evaluator is retained
-as an additional candidate (parameterized heuristics use an `hN-custom` suffix). Games
-without H0 retain the supplied evaluator. This is capability-driven for all games; other
-registered heuristics are not automatically enumerated.
-Rollout policies and bias weights are not tuned.
+This workflow uses study protocol version 9. Older studies remain readable, but cannot be
+resumed with this workflow: use a new output directory. Each phase has a separate seed
+namespace. Rollout policies and bias weights are not tuned. The family labels are `full`
+and `cutoff`; the winning selector is recorded in each exported profile.
 
-The total budget includes calibration and execution. By default 25/20/20/15/20 percent of the
-post-calibration budget is targeted at parameters/iterations/mechanisms/refinement/confirmation. Estimated costs determine
-how many seed pairs fit, capped by `--max-pairs` (default 16, minimum 2). `--decision-time SECONDS`
+“Full depth” is the experiment's name for a **1024-step safety cap**, not a proven maximum
+game length. Existing engine depth semantics apply (deterministic rollout steps from the
+selected leaf; stochastic decision steps from the root). Traces record `terminal_simulations`
+and `cutoff_simulations`; their sum equals completed search iterations. The report shows
+actual completions and safety cuts. A safety cut prevents calling the reference untruncated.
+A single simulation may overrun a time budget. Confirmation can be inconclusive; no candidate
+is automatically promoted to a shared baseline.
+
+The total budget includes calibration and execution. By default 15/10/15/10/10/25/15 percent of the
+post-calibration budget is targeted at horizons/parameters/iterations/mechanisms/refinement/confirmation/ablations. Estimated costs determine
+screening pair counts, capped by `--max-pairs` (default 16, minimum 2). Horizons aim for at
+least 8 pairs; confirmation and ablations instead plan **`--confirmation-pairs`** each
+(default 64 per contrast, minimum 2). Their sample size is frozen before play, not reduced
+because the remaining time is short and not stopped early based on interim significance.
+An insufficient budget leaves them pending for `--resume`. Lowering confirmation pairs is
+useful for smoke tests, but weakens statistical evidence. With the current conservative bound,
+a 75% score over 64 pairs excludes 50%; the same score over 16 pairs does not.
+`--decision-time SECONDS`
 overrides automatic screening-time calibration. These are runtime estimates, not hard real-time
 guarantees: once a swapped-seat pair starts, both matches finish. An insufficient remaining
 budget stops before launching the next estimated pair; no partial phase is promoted. A pilot
@@ -581,7 +611,7 @@ exceeding it stops the study with an error rather than counting an unfinished ga
 
 `--workers N` or `--workers auto` enables bounded match concurrency (default: 1).
 The study automatically keeps calibration, every contrast containing a time-limited agent,
-the iteration ladder's fixed-anchor comparisons, and local refinement sequential. The latter supply the isolated
+the iteration ladder's fixed-anchor comparisons, and local refinement sequential. The ladder supplies the isolated
 latencies used to select fast/balanced/strong profiles and draw the quality/cost curve.
 Other fixed-iteration comparisons (mechanisms, ladder neighbors and eligible confirmation
 matches) run in parallel batches. No timed match overlaps those batches. Parameter screening
@@ -642,3 +672,32 @@ A small execution check is available, but is intentionally too weak for strength
 meeple-bots study --game boop --budget 60s --decision-time 0.0005 --max-pairs 2 \
   --output results/studies/boop-smoke
 ```
+
+### Admission and measured improvements
+
+`study.json` and `summary.json` persist `cutoff_selection`: `admitted` is true or false
+only after horizon screening completes, and null while pending. The record includes the
+selected candidate, best observed candidate and score, threshold, and reason for rejection.
+The `provisional` status means the cutoff continues without sufficient evidence to justify
+its admission or rejection on strength. This decision is separate from held-out
+`cutoff_decisions` and `final_selection`: the latter reports a resolved winner, an inconclusive
+comparison, pending confirmation, or that only the full family survived. `phase_evidence`
+separates execution completion, pair counts and decisive comparisons; `complete` alone
+never means statistical certainty.
+
+Parameter and refinement phases also compare changed candidates directly against their
+incoming parent. UCT exploration has a matching UCT control even if the parent used Tuned.
+These attribution matches do not enter selection rankings. They consume part of the study
+budget and are recorded/resumed like all other paired matches. Existing mechanism switches
+and adjacent iteration budgets provide their own direct measurements.
+
+`improvement_comparisons` records before/after parameter values, isolated versus combined
+changes, score, advantage over parity in percentage points, paired 95% interval, sample count,
+phase completion and trace. A 60% score against the predecessor is **+10 percentage points**
+over parity; it is not a claim of 20% stronger play. `improvement_rankings` orders measured
+single-factor comparisons from completed phases, separately by full/cutoff family and equal
+time/equal iterations/unequal budgets, and by screening versus held-out ablation evidence. Combined changes remain visible without attributing
+the result to a single parameter. Rankings are descriptive and conditional on their opponents
+and configurations; neither significance nor a universal factor ordering is implied. Pending
+comparisons have no measured advantage and do not enter rankings. The HTML report includes
+admission, rankings and all changes, including negative and inconclusive outcomes.

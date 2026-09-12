@@ -26,10 +26,18 @@ def _timings(rows, role):
             moves.append((move, (move["ply"] - 1) / row["result"]["plies"]))
     seconds = [m["decision_seconds"] for m, _ in moves]
     iterations = [m.get("search_iterations") or 0 for m, _ in moves]
+    measured = [m for m, _ in moves if m.get("terminal_simulations") is not None
+                and m.get("cutoff_simulations") is not None]
+    terminal = sum(m["terminal_simulations"] for m in measured)
+    cutoffs = sum(m["cutoff_simulations"] for m in measured)
     total = sum(seconds)
     attempts = sum((m.get("tree_reuse") or {}).get("transition_attempts", 0) for m, _ in moves)
     hits = sum((m.get("tree_reuse") or {}).get("transition_hits", 0) for m, _ in moves)
-    return {"decisions": len(moves), "mean_seconds": mean(seconds) if seconds else None,
+    return {"terminal_simulations": terminal if measured else None,
+            "cutoff_simulations": cutoffs if measured else None,
+            "terminal_fraction": terminal / (terminal + cutoffs) if terminal + cutoffs else None,
+            "completion_measured_decisions": len(measured),
+            "decisions": len(moves), "mean_seconds": mean(seconds) if seconds else None,
             "p50_seconds": median(seconds) if seconds else None,
             "p95_seconds": quantile(seconds, .95), "total_seconds": total,
             "mean_iterations": mean(iterations) if iterations else None,
@@ -98,7 +106,7 @@ def mechanism_effects(phase):
         effects.append({"factor": factor, "backgrounds": len(contrasts), "seed_blocks": len(blocks),
                         "score_enabled_or_tuned": mean(blocks) if blocks else None, "ci95": interval,
                         "verdict": "enabled_or_tuned_ahead" if interval[0] > .5 else "disabled_or_uct_ahead" if interval[1] < .5 else "inconclusive",
-                        "interpretation": "conditional on each tuned family: fixed heuristic, rollout, horizon, exploration and search budget"})
+                        "interpretation": "conditional on each tuned family: fixed selector, heuristic, rollout, horizon, exploration and search budget"})
     return effects
 
 
@@ -123,11 +131,102 @@ def _curve(phase):
         x = 55 + 660 * r["timing_b"]["mean_seconds"] / max_time
         y = 230 - 210 * r["score_b"]
         lo, hi = r["ci95_b"]
-        color = "#276baf" if c["b"].startswith("family0") else "#a84d16"
+        color = "#276baf" if c["b"].startswith("full-") else "#a84d16"
         svg.append(f'<line x1="{x}" x2="{x}" y1="{230-210*hi}" y2="{230-210*lo}" stroke="{color}" opacity=".4"/>')
         svg.append(f'<circle cx="{x}" cy="{y}" r="5" fill="{color}"><title>{escape(c["b"])}: score {_fmt(r["score_b"])}; {_fmt(r["timing_b"]["mean_seconds"])}s</title></circle>')
     svg.append(f'<text x="650" y="250">{max_time:.4f}s</text></svg>')
     return "".join(svg)
+
+
+def cutoff_screening(phase):
+    """Keep an uncertain cutoff; rejection requires all candidates below the threshold."""
+    observed = [c for c in phase.get("contrasts", []) if c.get("result", {}).get("score_b") is not None]
+    ordered = sorted(observed, key=lambda c: (-c["result"]["score_b"],
+                     tuple(phase.get("tie_priority", {}).get(c["b"], [1]))))
+    best = ordered[0] if ordered else None
+    complete = phase.get("status") == "complete"
+    enough = bool(observed) and len(observed) == len(phase.get("contrasts", [])) and all(
+        c["result"].get("seed_pairs", 0) >= 8 for c in observed)
+    rejected = enough and all(c["result"].get("ci95_b", [0, 1])[1] < .45 for c in observed)
+    admitted = not rejected if complete and best else None
+    reason = ("screening_incomplete" if admitted is None else "all_cutoffs_below_threshold" if rejected else
+              "insufficient_seed_pairs" if not enough else
+              "score_at_least_threshold" if best["result"]["score_b"] >= .45 else "inconclusive_keep_cutoff")
+    return {"status": "pending" if admitted is None else "rejected" if rejected else
+                      "provisional" if reason in ("insufficient_seed_pairs", "inconclusive_keep_cutoff") else "admitted",
+            "admitted": admitted, "threshold_score": .45, "minimum_seed_pairs": 8,
+            "candidate": best["b"] if admitted else None,
+            "best_observed_candidate": best["b"] if best else None,
+            "best_observed_score": best["result"]["score_b"] if best else None,
+            "evidence": "below_threshold" if rejected else "insufficient" if not enough else "screening_only",
+            "reason": reason}
+
+
+def study_diagnostics(state):
+    """Describe admission and measured effects; never infer universal strength gains."""
+    phases = state.get("phases", {})
+    horizon = phases.get("horizons", {})
+    selection = cutoff_screening(horizon)
+    effects = []
+    for phase_name, phase in phases.items():
+        for contrast in phase.get("contrasts", []):
+            if contrast.get("purpose") not in ("attribution", "ablation") and contrast["factor"] not in (
+                    "tree_reuse", "transpositions", "combined_mechanisms", "iterations", "cutoff_equal_time"):
+                continue
+            a = phase.get("agents", {}).get(contrast["a"])
+            b = phase.get("agents", {}).get(contrast["b"])
+            if not a or not b:
+                continue
+            changes = {key: {"before": a.get(key), "after": b.get(key)}
+                       for key in sorted(a.keys() | b.keys()) if a.get(key) != b.get(key)}
+            if not changes:
+                continue
+            result = contrast.get("result", {})
+            score = result.get("score_b")
+            mode = ("equal_time" if a.get("time_budget") is not None and a.get("time_budget") == b.get("time_budget")
+                    else "equal_iterations" if a.get("iterations") is not None and a.get("iterations") == b.get("iterations")
+                    else "unequal_budget")
+            family = "full" if b["rollout_depth"] == 1024 else "cutoff"
+            effects.append({"phase": phase_name, "family": family,
+                            "evidence_source": "held_out_ablation" if contrast.get("purpose") == "ablation" else "screening", "before": contrast["a"], "after": contrast["b"],
+                            "factor": next(iter(changes)) if len(changes) == 1 else "combined_changes",
+                            "changes": changes, "isolated_factor": len(changes) == 1,
+                            "comparison": mode, "timing_mode": contrast.get("timing_mode", "isolated"),
+                            "phase_complete": phase.get("status") == "complete",
+                            "score_percent": 100 * score if score is not None else None,
+                            "advantage_pp": 100 * (score - .5) if score is not None else None,
+                            "advantage_ci95_pp": [100 * (v - .5) for v in result.get("ci95_b", [0, 1])],
+                            "seed_pairs": result.get("seed_pairs", 0),
+                            "verdict": result.get("verdict", "not_run"), "trace": contrast.get("trace")})
+    rankings = []
+    for family, mode, source in sorted({(e["family"], e["comparison"], e["evidence_source"]) for e in effects}):
+        measured = [e for e in effects if e["family"] == family and e["comparison"] == mode and e["evidence_source"] == source
+                    and e["phase_complete"] and e["advantage_pp"] is not None and e["isolated_factor"]]
+        measured.sort(key=lambda e: (-e["advantage_pp"], e["phase"], e["before"], e["after"]))
+        if measured:
+            rankings.append({"family": family, "comparison": mode, "evidence_source": source, "effects": measured,
+                             "interpretation": "Descriptive ranking of observed head-to-head advantages in different contexts; not a causal ranking across contexts or a percentage increase in playing strength. Screening is not held-out validation."})
+    confirmation = phases.get("confirmation", {})
+    final_match = next((c for c in confirmation.get("contrasts", []) if c["factor"] == "cutoff_confirmation"), None)
+    verdict = final_match.get("result", {}).get("verdict") if final_match else None
+    finished = confirmation.get("status") == "complete"
+    winner = None
+    if not finished:
+        final_status = "pending"
+    elif final_match is None:
+        final_status, winner = "only_full_survived", "finalist-full"
+    elif verdict in ("a_ahead", "b_ahead"):
+        final_status = "resolved"
+        winner = final_match["b"] if verdict == "b_ahead" else final_match["a"]
+    else:
+        final_status = "inconclusive"
+    return {"cutoff_selection": selection, "improvement_comparisons": effects, "improvement_rankings": rankings,
+            "final_selection": {"status": final_status, "candidate": winner,
+                                "interpretation": "Relative to tested finalists at equal time; phase completion does not imply a decisive result."},
+            "phase_evidence": {name: {"execution": p.get("status"),
+                 "minimum_observed_seed_pairs": min((c.get("result", {}).get("seed_pairs", 0) for c in p.get("contrasts", [])), default=0),
+                 "decisive_contrasts": sum(c.get("result", {}).get("verdict") in ("a_ahead", "b_ahead") for c in p.get("contrasts", [])),
+                 "contrasts": len(p.get("contrasts", []))} for name, p in phases.items()}}
 
 
 def write_study_report(output: Path, state: dict):
@@ -135,18 +234,36 @@ def write_study_report(output: Path, state: dict):
                "budget_seconds": state["budget_seconds"], "spent_seconds": state["spent_seconds"],
                "calibration": state["calibration"], "phases": state["phases"],
                "candidate_profiles": state.get("candidate_profiles", {}), "last_error": state.get("last_error")}
+    summary.update(study_diagnostics(state))
     mechanisms = state["phases"].get("mechanisms")
     summary["mechanism_effects"] = mechanism_effects(mechanisms) if mechanisms else []
     caveats = [
+        "Terminal references use neutral evaluation and a 1024-step safety cap, not a known maximum game length. Any cutoff means the reference is truncated; completion counters are reported below. A single simulation can exceed the decision deadline.",
+        "Depths 16/32/64 with neutral/H0 face full depth at equal time. Cutoff rejection requires at least 8 paired seeds per candidate and every upper 95% bound below 45%. Uncertain candidates remain provisional; completion is not evidence of equivalence. Full and optional cutoff families are tuned independently, then compared at equal time on held-out seeds.",
         "All results are preliminary and relative to the tested opponents and budgets; candidates are not automatically promoted to baselines.",
         "Intervals use paired seed blocks and a conservative 95% Hoeffding bound. No multiple-comparison correction; screening rankings are exploratory.",
-        "Mechanisms are screened after parameter and iteration tuning; two variants per selector enter local refinement. Screening rankings remain provisional. No global optimum is guaranteed.",
-        "Only confirmation uses held-out seeds. Inconclusive is not evidence of equal strength or iteration saturation.",
+        "Mechanisms are screened after parameter and iteration tuning; two variants per full/cutoff family enter local refinement. Screening rankings remain provisional. No global optimum is guaranteed.",
+        "Confirmation and final ablations use separate held-out seed namespaces. Inconclusive is not evidence of equal strength or iteration saturation.",
         "Calibration, timed matches, refinement and iteration-anchor cost measurements run in isolation. Other fixed-iteration matches may share CPU; their latency is not isolated performance. Timing requires a release native build.",
         "The calibrated external reference is excluded from screening and selection. Equal-time and original-budget reference contrasts answer different questions.",
         "Phases run in order. An insufficient budget leaves partial results without promoting that phase. A running batch of swapped-seat pairs may exceed the deadline.",
         "Seeds vary the search RNG and, where supported, the initial setup. Distinct seeds need not mean distinct starting boards.",
     ]
+    summary["cutoff_decisions"] = []
+    confirmation = state["phases"].get("confirmation", {})
+    for contrast in confirmation.get("contrasts", []):
+        if contrast["factor"] != "cutoff_confirmation":
+            continue
+        result = contrast.get("result", {})
+        timing = result.get("timing_a", {})
+        verified = (timing.get("cutoff_simulations") == 0
+                    and (timing.get("terminal_simulations") or 0) > 0
+                    and timing.get("completion_measured_decisions") == timing.get("decisions"))
+        decision = ("pending_confirmation" if confirmation.get("status") != "complete" else
+                    "reference_truncated_or_unverified" if not verified else
+                    "cutoff_supported" if result.get("verdict") == "b_ahead" else "retain_terminal")
+        summary["cutoff_decisions"].append({"terminal": contrast["a"], "cutoff": contrast["b"],
+                                            "decision": decision})
     summary["limitations"] = caveats
     (output / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
     parts = ['<!doctype html><meta charset="utf-8"><title>MCTS diagnostic study</title>',
@@ -155,6 +272,30 @@ def write_study_report(output: Path, state: dict):
              f'<p>Status: <b>{escape(state["status"])}</b>. Budget used: {state["spent_seconds"]:.1f}/{state["budget_seconds"]:.1f}s.</p>',
              '<p><a href="study.json">Frozen plans and provenance</a> · <a href="summary.json">Machine-readable results</a> · <a href="baseline.toml">Starting profile</a></p>',
              '<h2>Interpretation</h2><ul>' + ''.join(f'<li>{escape(c)}</li>' for c in caveats) + '</ul>']
+    final = summary["final_selection"]
+    parts.append(f'<p>Final comparison: <b>{escape(final["status"])}</b>; selected candidate: {escape(str(final["candidate"]))}. Execution completion and statistical evidence are separate.</p>')
+    selection = summary["cutoff_selection"]
+    parts.append('<h2>Cutoff admission</h2>')
+    parts.append(_table(['Status', 'Selected cutoff', 'Best observed cutoff', 'Observed score %', 'Threshold %', 'Reason'],
+                        [(selection['status'], selection['candidate'], selection['best_observed_candidate'],
+                          _fmt(100 * selection['best_observed_score'] if selection['best_observed_score'] is not None else None, 1),
+                          45, selection['reason'])]))
+    parts.append('<h2>Observed improvements</h2><p>Score = wins + half draws. A 60% score against the previous candidate is +10 percentage points above parity, not a 20% increase in playing strength. Rankings compare observed advantages in different contexts and are exploratory. Equal-time and equal-iteration results are kept separate; combined changes are not attributed to one factor.</p>')
+    for group in summary['improvement_rankings']:
+        parts.append(f'<h3>{escape(group["family"])} — {escape(group["comparison"])} — {escape(group["evidence_source"])}</h3>')
+        parts.append(_table(['Factor', 'Before', 'After', 'Phase', 'Score %', 'Advantage pp', '95% interval pp', 'Seed pairs', 'Conclusion'],
+                            [(e['factor'], e['before'], e['after'], e['phase'], _fmt(e['score_percent'], 1),
+                              _fmt(e['advantage_pp'], 1), ' – '.join(_fmt(v, 1) for v in e['advantage_ci95_pp']),
+                              e['seed_pairs'], e['verdict']) for e in group['effects']]))
+    parts.append('<details><summary>All change measurements, including combined and pending comparisons</summary>')
+    parts.append(_table(['Phase', 'Before', 'After', 'Changed parameters', 'Budget comparison', 'Advantage pp', 'Phase complete'],
+                        [(e['phase'], e['before'], e['after'], json.dumps(e['changes'], sort_keys=True), e['comparison'],
+                          _fmt(e['advantage_pp'], 1), e['phase_complete']) for e in summary['improvement_comparisons']]))
+    parts.append('</details>')
+    if summary["cutoff_decisions"]:
+        parts.append('<h2>Held-out cutoff decisions</h2>')
+        parts.append(_table(['Terminal control', 'Cutoff candidate', 'Conclusion'],
+                            [(d['terminal'], d['cutoff'], d['decision']) for d in summary['cutoff_decisions']]))
     if summary["mechanism_effects"]:
         parts.append('<h2>Mechanism effects across backgrounds</h2>')
         parts.append(_table(['Factor', 'Seed blocks', 'Score enabled/Tuned', '95% interval', 'Conclusion'],
@@ -179,8 +320,10 @@ def write_study_report(output: Path, state: dict):
                 cost_rows.append((contrast[role], contrast['b' if role == 'a' else 'a'], timing['decisions'],
                                   _fmt(timing['iterations_per_second'], 1), _fmt(timing['mean_nodes'], 1),
                                   _fmt(timing['maintenance_seconds']), _fmt(timing['reuse_hit_rate']),
+                                  timing.get('terminal_simulations'), timing.get('cutoff_simulations'),
+                                  _fmt(timing.get('terminal_fraction')),
                                   ' / '.join(str(q['iterations']) for q in timing['quarters'])))
-        parts.append(_table(['Agent', 'Opponent', 'Decisions', 'Iterations/s', 'Mean nodes', 'Maintenance s', 'Reuse hit rate', 'Iterations Q1/Q2/Q3/Q4'], cost_rows))
+        parts.append(_table(['Agent', 'Opponent', 'Decisions', 'Iterations/s', 'Mean nodes', 'Maintenance s', 'Reuse hit rate', 'Terminal simulations', 'Cutoff simulations', 'Terminal fraction', 'Iterations Q1/Q2/Q3/Q4'], cost_rows))
         parts.append('</details>')
         if name == 'iterations':
             parts.append(_curve(phase))

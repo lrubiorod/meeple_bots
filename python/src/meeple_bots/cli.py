@@ -376,6 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--output", type=Path, help="study directory; default: results/studies/GAME-study")
     study.add_argument("--seed", type=int, default=42)
     study.add_argument("--max-pairs", type=int, default=16, help="maximum paired seeds per contrast (minimum 2)")
+    study.add_argument("--confirmation-pairs", type=int, default=64, help="paired seeds per confirmation and final ablation contrast; saved plan resumes if budget runs out")
     study.add_argument("--decision-time", type=float, help="override calibrated equal-time screening budget in seconds")
     study.add_argument("--workers", type=_worker_setting, default=1, help="maximum workers for fixed-iteration comparisons: auto or a positive integer; timing-sensitive comparisons stay sequential")
     study.add_argument("--max-plies", type=int, default=10000)
@@ -401,7 +402,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = args.output or Path("results/studies") / f"{args.game}-study"
             result = run_study(args.game, output=output, budget=duration_seconds(args.budget),
                                baseline=args.baseline, reference=args.reference, seed=args.seed,
-                               max_pairs=args.max_pairs, decision_seconds=args.decision_time,
+                               max_pairs=args.max_pairs, confirmation_pairs=args.confirmation_pairs, decision_seconds=args.decision_time,
                                max_plies=args.max_plies, workers=args.workers, resume=args.resume,
                                progress=lambda message: print(message, file=sys.stderr, flush=True))
             summary = {"status": result["status"], "spent_seconds": result["spent_seconds"],
