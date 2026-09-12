@@ -382,7 +382,7 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
                 if getattr(final, field) == value or (field == "exploration" and final.selection_policy != "uct"):
                     continue
                 reverted = f"{candidate}-revert-{field}"
-                agents[reverted] = profile_values(replace(_timed(final, seconds), **{field: value}))
+                agents[reverted] = profile_values(replace(_timed(final, seconds), heuristic=None, **{field: value}))
                 contrasts.append({"a": reverted, "b": candidate, "factor": field, "purpose": "ablation"})
             if final.tree_reuse and final.transpositions:
                 reverted = f"{candidate}-revert-both-mechanisms"

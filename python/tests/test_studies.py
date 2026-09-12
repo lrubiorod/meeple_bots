@@ -550,6 +550,26 @@ class StudyTests(unittest.TestCase):
         repeated = _build_phase('ablations', state, base, None)
         self.assertEqual({c['b'] for c in repeated['contrasts']}, {'finalist-full', 'finalist-cutoff'})
 
+    def test_heuristic_winner_can_be_ablated_to_neutral_without_alias_conflict(self):
+        base, state = self._synthetic_pipeline()
+        confirmation = _build_phase('confirmation', state, base, None)
+        finalist = confirmation['agents']['finalist-cutoff']
+        finalist['cutoff_evaluator'] = {'kind': 'game_heuristic', 'index': 0}
+        self.assertEqual(agent_from_values(finalist).heuristic, 0)
+        match = next(c for c in confirmation['contrasts'] if c['factor'] == 'cutoff_confirmation')
+        match['result'] = {'verdict': 'b_ahead'}
+        confirmation['status'] = 'complete'
+        state['phases']['confirmation'] = confirmation
+        phase = _build_phase('ablations', state, base, None)
+        contrast = next(c for c in phase['contrasts'] if c['factor'] == 'cutoff_evaluator')
+        neutral = phase['agents'][contrast['a']]
+        winner = phase['agents'][contrast['b']]
+        self.assertEqual(neutral['cutoff_evaluator'], {'kind': 'neutral'})
+        self.assertIsNone(agent_from_values(neutral).heuristic)
+        self.assertEqual(winner, finalist)
+        self.assertEqual([key for key in winner if winner[key] != neutral[key]], ['cutoff_evaluator'])
+        self.assertEqual(confirmation['agents']['finalist-cutoff'], finalist)
+
     def test_ablation_interrupt_resumes_frozen_pairs_without_recalibrating(self):
         from meeple_bots.studies import run_matches as real_run
         base, state = self._synthetic_pipeline()
