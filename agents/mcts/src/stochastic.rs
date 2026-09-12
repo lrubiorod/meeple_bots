@@ -155,244 +155,238 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
     {
         self.budget.begin(self.config.budget);
         self.stats = AgentDecisionStats::default();
-        let result = (|| {
-            self.config.validate().map_err(AgentError::message)?;
-            self.config.rollout_policy.validate()?;
-            let bias_weight = self.selection_bias.weight();
-            if !bias_weight.is_finite() || bias_weight < 0.0 {
-                return Err(AgentError::message(
-                    "progressive bias weight must be finite and non-negative",
-                ));
+        self.config.validate().map_err(AgentError::message)?;
+        self.config.rollout_policy.validate()?;
+        let bias_weight = self.selection_bias.weight();
+        if !bias_weight.is_finite() || bias_weight < 0.0 {
+            return Err(AgentError::message(
+                "progressive bias weight must be finite and non-negative",
+            ));
+        }
+        let game = decision.game();
+        let root = decision.state();
+        let owner = decision.player();
+        if game.status(root) != PositionStatus::PlayerTurn(owner) {
+            return Err(AgentError::message("expected a player decision"));
+        }
+        if nodes.is_empty() {
+            nodes.push(node(game, root));
+        }
+        if nodes[0].edges.is_empty() {
+            return Err(AgentError::NoLegalActions);
+        }
+        let mut states: HashMap<G::State, usize> = HashMap::new();
+        if transpositions {
+            states.extend(nodes.iter().enumerate().map(|(i, n)| (n.state.clone(), i)));
+        }
+        let mut rollout_memory = RolloutMemory::default();
+        let mut iterations = 0;
+        let mut terminal_simulations = 0_u64;
+        loop {
+            let exhausted = match self.config.budget {
+                SearchBudget::Iterations(n) => iterations >= n.get(),
+                SearchBudget::Time(_) => iterations > 0 && self.budget.exhausted(),
+            };
+            if exhausted {
+                break;
             }
-            let game = decision.game();
-            let root = decision.state();
-            let owner = decision.player();
-            if game.status(root) != PositionStatus::PlayerTurn(owner) {
-                return Err(AgentError::message("expected a player decision"));
-            }
-            if nodes.is_empty() {
-                nodes.push(node(game, root));
-            }
-            if nodes[0].edges.is_empty() {
-                return Err(AgentError::NoLegalActions);
-            }
-            let mut states: HashMap<G::State, usize> = HashMap::new();
-            if transpositions {
-                states.extend(nodes.iter().enumerate().map(|(i, n)| (n.state.clone(), i)));
-            }
-            let mut rollout_memory = RolloutMemory::default();
-            let mut iterations = 0;
-            let mut terminal_simulations = 0_u64;
-            loop {
-                let exhausted = match self.config.budget {
-                    SearchBudget::Iterations(n) => iterations >= n.get(),
-                    SearchBudget::Time(_) => iterations > 0 && self.budget.exhausted(),
-                };
-                if exhausted {
+            rollout_memory.trajectory.clear();
+            let mut state = root.clone();
+            let mut index = 0;
+            let mut path = Vec::new();
+            let mut depth = 0;
+            while let PositionStatus::PlayerTurn(active) = game.status(&state) {
+                if depth >= self.config.rollout_depth.max(1) {
                     break;
                 }
-                rollout_memory.trajectory.clear();
-                let mut state = root.clone();
-                let mut index = 0;
-                let mut path = Vec::new();
-                let mut depth = 0;
-                while let PositionStatus::PlayerTurn(active) = game.status(&state) {
-                    if depth >= self.config.rollout_depth.max(1) {
-                        break;
-                    }
-                    let n = &nodes[index];
-                    if n.edges.is_empty() {
-                        return Err(AgentError::NoLegalActions);
-                    }
-                    let unvisited: Vec<_> = n
-                        .edges
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, e)| e.visits == 0)
-                        .map(|(i, _)| i)
-                        .collect();
-                    let chosen = if let Some(i) = rng.index(unvisited.len()) {
-                        unvisited[i]
-                    } else {
-                        let score = |e: &Edge<G::State, G::Action>| {
-                            let base = if self.config.selection_policy == SelectionPolicy::Ucb1Tuned
-                            {
-                                tuned_score(
-                                    e.visits,
-                                    e.total,
-                                    e.squared,
-                                    f64::from(n.visits),
-                                    active == owner,
-                                )
-                            } else {
-                                let mean = e.total / f64::from(e.visits);
-                                (if active == owner { mean } else { -mean })
-                                    + self.config.exploration
-                                        * (f64::from(n.visits.max(1)).ln() / f64::from(e.visits))
-                                            .sqrt()
-                            };
-                            base + edge_bias(e, bias_weight, active == owner)
-                        };
-                        n.edges
-                            .iter()
-                            .enumerate()
-                            .max_by(|(_, a), (_, b)| score(a).total_cmp(&score(b)))
-                            .unwrap()
-                            .0
-                    };
-                    let bias_applies = bias_weight > 0.0
-                        && self.selection_bias.applies(game, &state, active, owner);
-                    let action = &nodes[index].edges[chosen].action;
-                    if let Some(recorded) = self.config.rollout_policy.action_for_learning(action) {
-                        rollout_memory.trajectory.push((active, recorded));
-                    }
-                    game.apply_action(&mut state, action)
-                        .map_err(|e| AgentError::message(e.to_string()))?;
-                    depth += 1;
-                    path.push((index, chosen));
-                    resolve_chance(game, &mut state, rng)?;
-                    if bias_applies {
-                        let value = if game.status(&state) == PositionStatus::Terminal {
-                            terminal_utility(game, &state, owner)?
+                let n = &nodes[index];
+                if n.edges.is_empty() {
+                    return Err(AgentError::NoLegalActions);
+                }
+                let unvisited: Vec<_> = n
+                    .edges
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.visits == 0)
+                    .map(|(i, _)| i)
+                    .collect();
+                let chosen = if let Some(i) = rng.index(unvisited.len()) {
+                    unvisited[i]
+                } else {
+                    let score = |e: &Edge<G::State, G::Action>| {
+                        let base = if self.config.selection_policy == SelectionPolicy::Ucb1Tuned {
+                            tuned_score(
+                                e.visits,
+                                e.total,
+                                e.squared,
+                                f64::from(n.visits),
+                                active == owner,
+                            )
                         } else {
-                            validate_utility(
-                                self.selection_bias.evaluate_child(game, &state, owner)?,
-                                "bias",
-                            )?
+                            let mean = e.total / f64::from(e.visits);
+                            (if active == owner { mean } else { -mean })
+                                + self.config.exploration
+                                    * (f64::from(n.visits.max(1)).ln() / f64::from(e.visits)).sqrt()
                         };
-                        let edge = &mut nodes[index].edges[chosen];
-                        edge.heuristic_total += value;
-                        edge.heuristic_samples += 1;
-                    }
-                    if game.status(&state) == PositionStatus::Terminal {
-                        break;
-                    }
-                    let existing = nodes[index].edges[chosen]
-                        .outcomes
-                        .get(&state)
-                        .copied()
-                        .or_else(|| {
-                            if transpositions {
-                                states.get(&state).copied()
-                            } else {
-                                None
-                            }
-                        });
-                    if let Some(child) = existing {
-                        nodes[index].edges[chosen]
-                            .outcomes
-                            .insert(state.clone(), child);
-                        // A repeated node ends tree traversal. The rollout still obeys
-                        // the remaining player-action horizon, without double credit.
-                        if path.iter().any(|(visited, _)| *visited == child) {
-                            break;
-                        }
-                        index = child;
-                    } else {
-                        let child = nodes.len();
-                        nodes.push(node(game, &state));
-                        nodes[index].edges[chosen]
-                            .outcomes
-                            .insert(state.clone(), child);
-                        if transpositions {
-                            states.insert(state.clone(), child);
-                        }
-                        break;
-                    }
-                }
-                // Policies see player decisions only; depth excludes sampled chance events.
-                while depth < self.config.rollout_depth
-                    && game.status(&state) != PositionStatus::Terminal
-                {
-                    resolve_chance(game, &mut state, rng)?;
-                    let active = match game.status(&state) {
-                        PositionStatus::Terminal => break,
-                        PositionStatus::PlayerTurn(active) => active,
-                        _ => return Err(AgentError::message("expected a player decision")),
+                        base + edge_bias(e, bias_weight, active == owner)
                     };
-                    let action = self.config.rollout_policy.select_action_with_memory(
-                        game,
-                        &state,
-                        active,
-                        owner,
-                        &rollout_memory,
-                        rng,
-                    )?;
-                    if let Some(recorded) = self.config.rollout_policy.action_for_learning(&action)
-                    {
-                        rollout_memory.trajectory.push((active, recorded));
-                    }
-                    game.apply_action(&mut state, &action)
-                        .map_err(|e| AgentError::message(e.to_string()))?;
-                    depth += 1;
-                }
-                resolve_chance(game, &mut state, rng)?;
-                terminal_simulations += u64::from(game.status(&state) == PositionStatus::Terminal);
-                let utility = if game.status(&state) == PositionStatus::Terminal {
-                    f64::from(
-                        game.terminal_utility(&state, owner)
-                            .ok_or_else(|| AgentError::message("missing terminal utility"))?,
-                    )
-                } else {
-                    self.cutoff_evaluator.evaluate(game, &state, owner)?
-                };
-                if !utility.is_finite() || !(-1.0..=1.0).contains(&utility) {
-                    return Err(AgentError::message("utility must be finite and in [-1, 1]"));
-                }
-                self.config
-                    .rollout_policy
-                    .finish_simulation(&mut rollout_memory, owner, utility);
-                for (i, e) in path {
-                    nodes[i].visits += 1;
-                    let edge = &mut nodes[i].edges[e];
-                    edge.visits += 1;
-                    edge.total += utility;
-                    edge.squared += utility * utility;
-                }
-                iterations += 1;
-            }
-            self.budget.finish_search();
-            let chosen = nodes[0]
-                .edges
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| {
-                    a.visits.cmp(&b.visits).then_with(|| {
-                        (a.total / f64::from(a.visits.max(1)))
-                            .total_cmp(&(b.total / f64::from(b.visits.max(1))))
-                    })
-                })
-                .unwrap()
-                .0;
-            self.stats = AgentDecisionStats {
-                search_iterations: Some(u64::from(iterations)),
-                search_nodes: Some(nodes.len() as u64),
-                terminal_simulations: Some(terminal_simulations),
-                cutoff_simulations: Some(u64::from(iterations) - terminal_simulations),
-                root_actions: if self.root_diagnostics {
-                    nodes[0]
-                        .edges
+                    n.edges
                         .iter()
                         .enumerate()
-                        .map(|(i, e)| RootActionStats {
-                            action_index: i as u32,
-                            visits: e.visits,
-                            mean_utility: e.total / f64::from(e.visits.max(1)),
-                            heuristic_value: (e.heuristic_samples > 0)
-                                .then(|| e.heuristic_total / f64::from(e.heuristic_samples)),
-                            progressive_bias: (e.heuristic_samples > 0)
-                                .then(|| edge_bias(e, bias_weight, true)),
-                            selected: i == chosen,
-                        })
-                        .collect()
+                        .max_by(|(_, a), (_, b)| score(a).total_cmp(&score(b)))
+                        .unwrap()
+                        .0
+                };
+                let bias_applies =
+                    bias_weight > 0.0 && self.selection_bias.applies(game, &state, active, owner);
+                let action = &nodes[index].edges[chosen].action;
+                if let Some(recorded) = self.config.rollout_policy.action_for_learning(action) {
+                    rollout_memory.trajectory.push((active, recorded));
+                }
+                game.apply_action(&mut state, action)
+                    .map_err(|e| AgentError::message(e.to_string()))?;
+                depth += 1;
+                path.push((index, chosen));
+                resolve_chance(game, &mut state, rng)?;
+                if bias_applies {
+                    let value = if game.status(&state) == PositionStatus::Terminal {
+                        terminal_utility(game, &state, owner)?
+                    } else {
+                        validate_utility(
+                            self.selection_bias.evaluate_child(game, &state, owner)?,
+                            "bias",
+                        )?
+                    };
+                    let edge = &mut nodes[index].edges[chosen];
+                    edge.heuristic_total += value;
+                    edge.heuristic_samples += 1;
+                }
+                if game.status(&state) == PositionStatus::Terminal {
+                    break;
+                }
+                let existing = nodes[index].edges[chosen]
+                    .outcomes
+                    .get(&state)
+                    .copied()
+                    .or_else(|| {
+                        if transpositions {
+                            states.get(&state).copied()
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(child) = existing {
+                    nodes[index].edges[chosen]
+                        .outcomes
+                        .insert(state.clone(), child);
+                    // A repeated node ends tree traversal. The rollout still obeys
+                    // the remaining player-action horizon, without double credit.
+                    if path.iter().any(|(visited, _)| *visited == child) {
+                        break;
+                    }
+                    index = child;
                 } else {
-                    Vec::new()
-                },
-                tree_reuse: None,
+                    let child = nodes.len();
+                    nodes.push(node(game, &state));
+                    nodes[index].edges[chosen]
+                        .outcomes
+                        .insert(state.clone(), child);
+                    if transpositions {
+                        states.insert(state.clone(), child);
+                    }
+                    break;
+                }
+            }
+            // Policies see player decisions only; depth excludes sampled chance events.
+            while depth < self.config.rollout_depth
+                && game.status(&state) != PositionStatus::Terminal
+            {
+                resolve_chance(game, &mut state, rng)?;
+                let active = match game.status(&state) {
+                    PositionStatus::Terminal => break,
+                    PositionStatus::PlayerTurn(active) => active,
+                    _ => return Err(AgentError::message("expected a player decision")),
+                };
+                let action = self.config.rollout_policy.select_action_with_memory(
+                    game,
+                    &state,
+                    active,
+                    owner,
+                    &rollout_memory,
+                    rng,
+                )?;
+                if let Some(recorded) = self.config.rollout_policy.action_for_learning(&action) {
+                    rollout_memory.trajectory.push((active, recorded));
+                }
+                game.apply_action(&mut state, &action)
+                    .map_err(|e| AgentError::message(e.to_string()))?;
+                depth += 1;
+            }
+            resolve_chance(game, &mut state, rng)?;
+            terminal_simulations += u64::from(game.status(&state) == PositionStatus::Terminal);
+            let utility = if game.status(&state) == PositionStatus::Terminal {
+                f64::from(
+                    game.terminal_utility(&state, owner)
+                        .ok_or_else(|| AgentError::message("missing terminal utility"))?,
+                )
+            } else {
+                self.cutoff_evaluator.evaluate(game, &state, owner)?
             };
-            Ok(nodes[0].edges[chosen].action.clone())
-        })();
-        result
+            if !utility.is_finite() || !(-1.0..=1.0).contains(&utility) {
+                return Err(AgentError::message("utility must be finite and in [-1, 1]"));
+            }
+            self.config
+                .rollout_policy
+                .finish_simulation(&mut rollout_memory, owner, utility);
+            for (i, e) in path {
+                nodes[i].visits += 1;
+                let edge = &mut nodes[i].edges[e];
+                edge.visits += 1;
+                edge.total += utility;
+                edge.squared += utility * utility;
+            }
+            iterations += 1;
+        }
+        self.budget.finish_search();
+        let chosen = nodes[0]
+            .edges
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| {
+                a.visits.cmp(&b.visits).then_with(|| {
+                    (a.total / f64::from(a.visits.max(1)))
+                        .total_cmp(&(b.total / f64::from(b.visits.max(1))))
+                })
+            })
+            .unwrap()
+            .0;
+        self.stats = AgentDecisionStats {
+            search_iterations: Some(u64::from(iterations)),
+            search_nodes: Some(nodes.len() as u64),
+            terminal_simulations: Some(terminal_simulations),
+            cutoff_simulations: Some(u64::from(iterations) - terminal_simulations),
+            root_actions: if self.root_diagnostics {
+                nodes[0]
+                    .edges
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| RootActionStats {
+                        action_index: i as u32,
+                        visits: e.visits,
+                        mean_utility: e.total / f64::from(e.visits.max(1)),
+                        heuristic_value: (e.heuristic_samples > 0)
+                            .then(|| e.heuristic_total / f64::from(e.heuristic_samples)),
+                        progressive_bias: (e.heuristic_samples > 0)
+                            .then(|| edge_bias(e, bias_weight, true)),
+                        selected: i == chosen,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            tree_reuse: None,
+        };
+        Ok(nodes[0].edges[chosen].action.clone())
     }
 }
 
@@ -907,7 +901,7 @@ pub(super) mod tests {
         for (weight, condition) in [(0.0, true), (1.0, false)] {
             let mut baseline = chain_agent(UniformRandom, SelectionPolicy::Uct);
             let mut agent = StochasticMctsAgent::with_progressive_bias(
-                baseline.config.clone(),
+                baseline.config,
                 NeutralEvaluator,
                 crate::ProgressiveBias::new(weight, Condition(condition), Fail),
             );
