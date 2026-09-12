@@ -191,41 +191,6 @@ impl CantStopSession {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn automated_session_finishes_and_preserves_public_events() {
-        let mut s =
-            CantStopSession::new(42, Some(AgentConfig::Random), Some(AgentConfig::Random)).unwrap();
-        while s.state.winner.is_none() {
-            s.step(None).unwrap();
-        }
-        assert!(
-            s.events
-                .iter()
-                .any(|e| matches!(e.action, CantStopAction::Dice(_)))
-        );
-        assert!(
-            s.events
-                .iter()
-                .all(|e| e.player.is_none() == matches!(e.action, CantStopAction::Dice(_)))
-        );
-    }
-    #[test]
-    fn human_cannot_pick_dice_and_bad_indices_leave_state_unchanged() {
-        let mut s = CantStopSession::new(1, None, None).unwrap();
-        let before = s.state.clone();
-        assert!(s.step(Some(0)).is_err());
-        assert_eq!(s.state, before);
-        s.step(None).unwrap();
-        assert!(s.waiting_human());
-        let before = s.state.clone();
-        assert!(s.step(Some(100)).is_err());
-        assert_eq!(s.state, before);
-    }
-}
-
 struct CantStopPhaseCondition(CatalogTurnPhase);
 impl PolicyCondition<CantStop> for CantStopPhaseCondition {
     fn matches(&self, _: &CantStop, state: &CantStopState, _: PlayerId, _: PlayerId) -> bool {
@@ -423,5 +388,40 @@ impl SelectionBias<CantStop> for ConfiguredSelectionBias {
             Self::None => Ok(0.0),
             Self::Progressive { evaluator, .. } => evaluator.evaluate(game, state, root),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn automated_session_finishes_and_preserves_public_events() {
+        let mut s =
+            CantStopSession::new(42, Some(AgentConfig::Random), Some(AgentConfig::Random)).unwrap();
+        while s.state.winner.is_none() {
+            s.step(None).unwrap();
+        }
+        assert!(
+            s.events
+                .iter()
+                .any(|e| matches!(e.action, CantStopAction::Dice(_)))
+        );
+        assert!(
+            s.events
+                .iter()
+                .all(|e| e.player.is_none() == matches!(e.action, CantStopAction::Dice(_)))
+        );
+    }
+    #[test]
+    fn human_cannot_pick_dice_and_bad_indices_leave_state_unchanged() {
+        let mut s = CantStopSession::new(1, None, None).unwrap();
+        let before = s.state.clone();
+        assert!(s.step(Some(0)).is_err());
+        assert_eq!(s.state, before);
+        s.step(None).unwrap();
+        assert!(s.waiting_human());
+        let before = s.state.clone();
+        assert!(s.step(Some(100)).is_err());
+        assert_eq!(s.state, before);
     }
 }
