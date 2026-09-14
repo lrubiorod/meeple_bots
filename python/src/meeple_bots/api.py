@@ -99,6 +99,10 @@ class SampledDecisionTiming:
     milliseconds: float
     iterations: int
     nodes: int
+    legal_actions: int = 0
+    terminal_simulations: int | None = None
+    cutoff_simulations: int | None = None
+    root_visits: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +118,7 @@ class MctsAgentBenchmark:
     decision_time_max_ms: float
     milliseconds_per_iteration: float
     position_timings: tuple[SampledDecisionTiming, ...]
+    maximum_decision_horizon: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1062,6 +1067,7 @@ def benchmark_mcts_agent(
     return MctsAgentBenchmark(
         game=game,
         agent=agent,
+        maximum_decision_horizon=raw["maximum_decision_horizon"],
         sampled_positions=raw["sampled_positions"],
         decision_time_mean_ms=raw["decision_time_mean_ms"],
         decision_time_p50_ms=raw["decision_time_p50_ms"],
@@ -1074,6 +1080,10 @@ def benchmark_mcts_agent(
                 milliseconds=timing["milliseconds"],
                 iterations=timing["iterations"],
                 nodes=timing["nodes"],
+                legal_actions=timing["legal_actions"],
+                terminal_simulations=timing["terminal_simulations"],
+                cutoff_simulations=timing["cutoff_simulations"],
+                root_visits=tuple(timing["root_visits"]),
             )
             for timing in raw["position_timings"]
         ),

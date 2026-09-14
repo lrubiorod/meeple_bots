@@ -15,6 +15,7 @@ import math
 from pathlib import Path
 import re
 import subprocess
+from statistics import median, mean
 from time import perf_counter
 from typing import Callable
 
@@ -24,7 +25,7 @@ from ._agent_config import (
     ConditionalRollout, EpsilonGreedy, GameHeuristic, Greedy, Mast, MctsAgent,
     NeutralEvaluator, RandomAgent, UniformRandom,
 )
-from ._capabilities import heuristic_indices
+from ._capabilities import heuristic_indices, game_search_capabilities
 from ._mcts_profiles import (
     _configured_cutoff_evaluator, _configured_progressive_bias, _configured_rollout_policy,
     _load_mcts_profile,
@@ -38,16 +39,15 @@ from .tournaments import (
     TournamentAgent, TournamentConfig, TournamentTrace, match_jobs, run_matches,
     tournament_header,
 )
-from .study_analysis import summarize_contrast, write_study_report, study_diagnostics, cutoff_screening
+from .study_analysis import summarize_contrast, write_study_report, study_diagnostics, search_adequacy
 
 GAMES = {"connect6": Connect6, "boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
          "tic-tac-toe": TicTacToe, "splendor": Splendor}
-TERMINAL_SAFETY_DEPTH = 1024
-
-PHASES = ("horizons", "horizon_check", "parameters", "iterations", "mechanisms",
-          "refinement", "target_check", "confirmation", "ablations")
-PHASE_WEIGHTS = (.12, .08, .14, .10, .10, .10, .10, .21, .05)
-RACING_PHASES = {"horizons", "parameters", "mechanisms", "refinement"}
+PHASES = ("depth_screen", "exploration", "selectors", "rave", "family_selection",
+          "mechanisms", "refinement", "confirmation")
+# Relative resource priorities; unspent allocations flow forward. Confirmation owns 30%.
+PHASE_WEIGHTS = (.10, .14, .08, .12, .04, .12, .10, .30)
+RACING_PHASES = set(PHASES) - {"confirmation"}
 # Disjoint, fixed seed namespaces, including calibration. Never adapt seeds to results.
 SEED_STRIDE = 100_000
 
@@ -120,10 +120,9 @@ def export_profile(path: Path, name: str, agent: MctsAgent) -> None:
 
 
 def generic_baseline(game: str) -> MctsAgent:
-    indices = heuristic_indices(game)
-    return MctsAgent(iterations=1000, rollout_depth=32, exploration=1.0,
-                     cutoff_evaluator=GameHeuristic(indices[0]) if indices else NeutralEvaluator(),
-                     rollout_policy=UniformRandom(), tree_reuse=False, transpositions=False)
+    return MctsAgent(iterations=1000, rollout_depth=64, exploration=math.sqrt(2),
+                     cutoff_evaluator=NeutralEvaluator(), rollout_policy=UniformRandom(),
+                     tree_reuse=False, transpositions=False)
 
 
 def _timed(agent: MctsAgent, seconds: float) -> MctsAgent:
@@ -155,24 +154,6 @@ def _save(path: Path, value: dict) -> None:
     temp.replace(path)
 
 
-def mechanism_plan(base: MctsAgent, seconds: float) -> tuple[dict, list[dict]]:
-    agents, cells = {}, {}
-    for selector, reuse, transpositions in product(("uct", "ucb1_tuned"), (False, True), (False, True)):
-        name = f"{selector}-r{int(reuse)}-t{int(transpositions)}"
-        cells[selector, reuse, transpositions] = name
-        agents[name] = profile_values(replace(_timed(base, seconds), selection_policy=selector,
-                                            tree_reuse=reuse, transpositions=transpositions))
-    contrasts = []
-    for cell, name in cells.items():
-        for dimension, factor in enumerate(("selector", "tree_reuse", "transpositions")):
-            if cell[dimension] not in ("uct", False):
-                continue
-            other = list(cell)
-            other[dimension] = "ucb1_tuned" if dimension == 0 else True
-            contrasts.append({"a": name, "b": cells[tuple(other)], "factor": factor})
-    return agents, contrasts
-
-
 def _rank(phase: dict) -> list[str]:
     """Exploratory ordering only; not a claim of a universal strongest agent."""
     scores = {name: [] for name in phase["agents"]}
@@ -195,221 +176,141 @@ def _rank(phase: dict) -> list[str]:
                                     tuple(phase.get("tie_priority", {}).get(name, [1]))))
 
 
-def _width_candidates(phase: dict) -> dict[str, dict]:
-    contrasts = [c for c in phase["contrasts"] if c["factor"] == "anchor"]
-    if not contrasts:
-        return {}
-    def cost(contrast):
-        return phase.get("isolated_costs", {}).get(contrast["b"], contrast["result"]["timing_b"]["mean_seconds"])
-    ordered = sorted(contrasts, key=lambda c: (-c["result"]["score_b"], cost(c)))
-    strong = ordered[0]
-    close = [c for c in ordered if c["result"]["score_b"] >= strong["result"]["score_b"] - .05]
-    balanced = min(close, key=cost)
-    quick = min(ordered, key=cost)
-    return {label: phase["agents"][contrast["b"]] for label, contrast in
-            (("fast", quick), ("balanced", balanced), ("strong", strong))}
+def cutoff_depths(horizon: int) -> list[int]:
+    """Small shallow/medium/deep grid, strictly below the reference horizon."""
+    return sorted({max(1, min(horizon - 1, round(horizon * f)))
+                   for f in (.1, .25, .5, .75)}) if horizon > 1 else []
 
 
-def _terminal_reference(agent: MctsAgent, seconds: float) -> MctsAgent:
-    """Roll out toward terminal, with an explicit safety cap for unbounded games."""
-    return replace(_timed(agent, seconds), rollout_depth=TERMINAL_SAFETY_DEPTH,
-                   heuristic=None, cutoff_evaluator=NeutralEvaluator())
-
-
-def _family(values: dict) -> str:
-    return "full" if values["rollout_depth"] == TERMINAL_SAFETY_DEPTH else "cutoff"
-
-
-def _leaders(phase: dict, count: int = 1) -> list[str]:
-    ranking = [name for name in _rank(phase) if name != "anchor"]
-    return [name for family in ("full", "cutoff")
-            for name in [n for n in ranking if _family(phase["agents"][n]) == family][:count]]
-
-
-def _horizon_survivors(phase: dict) -> list[str]:
-    selection = cutoff_screening(phase)
-    return ["full"] + ([selection["candidate"]] if selection["candidate"] else [])
+def _group_leaders(phase: dict) -> dict[str, str]:
+    leaders = {}
+    for group, members in phase["groups"].items():
+        subset = {**phase, "agents": {n: phase["agents"][n] for n in members},
+                  "contrasts": [c for c in phase["contrasts"] if c["a"] in members and c["b"] in members]}
+        leaders[group] = next(iter(_rank(subset)), members[0])
+    return leaders
 
 
 def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent | None) -> dict:
-    target = state["calibration"]["decision_seconds"]
-    seconds = target if name in ("horizon_check", "target_check", "confirmation", "ablations") else state["calibration"].get("screening_seconds", target)
-    n = state["calibration"]["center_iterations"]
-    fixed_profiles = {}
-    tie_priority = {}
-    contrasts = []
-    if name == "horizons":
-        parent = replace(base, tree_reuse=False, transpositions=False)
-        agents = {"full": profile_values(_terminal_reference(parent, seconds))}
-        evaluators = [NeutralEvaluator()]
-        game = state.get("request", {}).get("game")
-        if game is not None:
-            registered = heuristic_indices(game)
-            evaluators.extend(GameHeuristic(index) for index in (0, 1) if index in registered)
-        if base.cutoff_evaluator not in evaluators:
-            evaluators.append(base.cutoff_evaluator)
-        for depth, evaluator in product((16, 32, 64), evaluators):
-            label = "neutral" if isinstance(evaluator, NeutralEvaluator) else f"h{evaluator.index}"
-            if isinstance(evaluator, GameHeuristic) and evaluator.params:
-                label += "-custom"
-            candidate = f"cutoff-d{depth}-{label}"
-            agents[candidate] = profile_values(replace(_timed(parent, seconds), rollout_depth=depth,
-                                                       heuristic=None, cutoff_evaluator=evaluator))
-            tie_priority[candidate] = [int(evaluator != base.cutoff_evaluator), abs(depth - base.rollout_depth)]
-            contrasts.append({"a": "full", "b": candidate, "factor": "cutoff_equal_time"})
-    elif name == "horizon_check":
-        horizon = state["phases"]["horizons"]
-        agents = {"full": profile_values(_terminal_reference(base, target))}
-        ordered = sorted(horizon["contrasts"], key=lambda c: (-c.get("result", {}).get("score_b", 0),
-                         tuple(horizon.get("tie_priority", {}).get(c["b"], [1]))))
-        for contrast in ordered[:2]:
-            candidate = contrast["b"]
-            tie_priority[candidate] = horizon.get("tie_priority", {}).get(candidate, [1])
-            agents[candidate] = profile_values(_timed(agent_from_values(horizon["agents"][candidate]), target))
-            contrasts.append({"a": "full", "b": candidate, "factor": "cutoff_equal_time"})
-    elif name == "parameters":
-        horizons = state["phases"].get("horizon_check", state["phases"]["horizons"])
-        agents = {}
-        for winner in _horizon_survivors(horizons):
-            parent = _timed(agent_from_values(horizons["agents"][winner]), seconds)
-            family = _family(horizons["agents"][winner])
-            control = f"{family}-parent"
-            agents[control] = profile_values(parent)
-            tie_priority[control] = [0]
-            for selector in ("uct", "ucb1_tuned"):
-                exploration = sorted({base.exploration*f for f in (.25, .5, 1, 2)}) if selector == "uct" else [base.exploration]
-                for c in exploration:
-                    values = profile_values(replace(parent, selection_policy=selector, exploration=c))
-                    if values == agents[control]:
-                        continue
-                    candidate = f"{family}-{selector}-c{c:g}"
-                    agents[candidate] = values
-                    tie_priority[candidate] = [int(selector != parent.selection_policy) + int(c != parent.exploration)]
-                    contrasts.append({"a": control, "b": candidate, "factor": "parameters"})
-    elif name == "iterations":
-        parameters = state["phases"]["parameters"]
-        agents = {"anchor": profile_values(_iterations(base, n))}
-        for winner in _leaders(parameters):
-            parent = agent_from_values(parameters["agents"][winner])
-            family = _family(parameters["agents"][winner])
-            center = state["calibration"].get("families", {}).get(family, {}).get("center_iterations", n)
-            for count in sorted({max(1, min(2**32-1, round(center*f))) for f in (.25, .5, 1, 2, 4)}):
-                candidate = f"{family}-i{count}"
-                agents[candidate] = profile_values(_iterations(parent, count))
-                contrasts.append({"a": "anchor", "b": candidate, "factor": "anchor"})
+    """Frozen sequential screens within ONE evaluator family; all matches use equal time."""
+    cal, phases, request = state["calibration"], state["phases"], state["request"]
+    seconds, horizon = cal["decision_seconds"], cal["horizon"]["depth"]
+    start = replace(_timed(base, seconds), rollout_depth=horizon, tree_reuse=False, transpositions=False,
+                    selection_policy="uct", rollout_policy=UniformRandom(), progressive_bias=None)
+    agents, contrasts, groups, priority = {}, [], {}, {}
+
+    def add(label, agent, group="main"):
+        agents[label] = profile_values(_timed(agent, seconds))
+        groups.setdefault(group, []).append(label)
+        priority[label] = [len(agents)]
+        return label
+
+    def compare(a, b, factor, **extra):
+        if agents[a] != agents[b]:
+            contrasts.append({"a": a, "b": b, "factor": factor, **extra})
+
+    def carry(previous):
+        result = {}
+        for group, leader in _group_leaders(phases[previous]).items():
+            result[group] = agent_from_values(phases[previous]["agents"][leader])
+        return result
+
+    if name == "depth_screen":
+        depths = cal["cutoff_depths"] if request["mode"] == "heuristic_cutoff" else [horizon]
+        for depth in depths:
+            add(f"depth-{depth}", replace(start, rollout_depth=depth))
+        names = list(agents)
+        if len(names) > 1:
+            control = names[len(names)//2]
+            for candidate in names:
+                if candidate != control:
+                    compare(control, candidate, "rollout_depth")
+    elif name == "exploration":
+        screen = phases["depth_screen"]
+        coverage = all(c.get("result", {}).get("seed_pairs", 0) >= 4 for c in screen["contrasts"])
+        ordered = _rank(screen) or list(screen["agents"])
+        shortlist = ordered[:2] if coverage else list(screen["agents"])
+        # No early depth elimination on one minimal batch; scarce budgets keep
+        # the depths rather than pretending that unmeasured depths lost.
+        for winner in shortlist:
+            parent = agent_from_values(screen["agents"][winner])
+            group = f"d{parent.rollout_depth}"
+            control = add(f"{group}-uct-start", parent, group)
+            for c in sorted({.25, .5, 1., 1.4, 2., parent.exploration}):
+                if c != parent.exploration:
+                    candidate = add(f"{group}-uct-c{c:g}", replace(parent, exploration=c), group)
+                    compare(control, candidate, "exploration")
+    elif name == "selectors":
+        for group, parent in carry("exploration").items():
+            control = add(f"{group}-uct", parent, group)
+            if "ucb1_tuned" in request["selection_policies"]:
+                candidate = add(f"{group}-tuned", replace(parent, selection_policy="ucb1_tuned"), group)
+                compare(control, candidate, "selection_policy")
+    elif name == "rave":
+        ucts = carry("exploration")
+        for group, parent in carry("selectors").items():
+            control = add(f"{group}-selector", parent, group)
+            if "uct_rave" in request["selection_policies"]:
+                # Cover medium and high AMAF persistence before filling the grid:
+                # budget-limited plans must not omit the entire high-k region.
+                for k in (1000, 20000, 100, 3000, 10000):
+                    candidate = add(f"{group}-rave-k{k}", replace(ucts[group], selection_policy="uct_rave", rave_equivalence=k), group)
+                    compare(control, candidate, "rave")
+    elif name == "family_selection":
+        for group, parent in carry("rave").items():
+            add(f"tuned-{group}", parent)
+        names = list(agents)
+        for i, a in enumerate(names):
+            for b in names[i+1:]:
+                compare(a, b, "tuned_depth")
     elif name == "mechanisms":
-        width = state["phases"]["iterations"]
-        agents = {}
-        for family in ("full", "cutoff"):
-            subset = {**width, "contrasts": [c for c in width["contrasts"]
-                      if c["factor"] == "anchor" and _family(width["agents"][c["b"]]) == family]}
-            if not subset["contrasts"]:
-                continue
-            parent = agent_from_values(_width_candidates(subset)["balanced"])
-            cube, _ = mechanism_plan(parent, seconds)
-            for candidate, values in cube.items():
-                if values["selection_policy"] == parent.selection_policy:
-                    agents[f"{family}-{candidate}"] = profile_values(_iterations(agent_from_values(values), parent.iterations))
-                    tie_priority[f"{family}-{candidate}"] = [int(values["tree_reuse"] != parent.tree_reuse) + int(values["transpositions"] != parent.transpositions)]
-            prefix = f"{family}-{parent.selection_policy}"
-            for reuse, transpositions in ((True, False), (False, True), (True, True)):
-                factor = "combined_mechanisms" if reuse and transpositions else "tree_reuse" if reuse else "transpositions"
-                contrasts.append({"a": prefix+"-r0-t0", "b": prefix+f"-r{int(reuse)}-t{int(transpositions)}", "factor": factor})
+        parent = next(iter(carry("family_selection").values()))
+        for reuse, trans in product((False, True), repeat=2):
+            add(f"r{int(reuse)}-t{int(trans)}", replace(parent, tree_reuse=reuse, transpositions=trans))
+        names = list(agents)
+        # Full 2x2 round robin: the joint cell also competes against each single mechanism.
+        for i, a in enumerate(names):
+            for b in names[i+1:]:
+                compare(a, b, "mechanisms")
     elif name == "refinement":
-        mechanisms = state["phases"]["mechanisms"]
-        agents = {"anchor": profile_values(_timed(base, seconds))}
-        for winner in _leaders(mechanisms):
-            parent = agent_from_values(mechanisms["agents"][winner])
-            control = f"{winner}-parent"
-            agents[control] = profile_values(_timed(parent, seconds))
-            fixed_profiles[control] = profile_values(parent)
-            tie_priority[control] = [0]
-            variants = set()
-            if _family(mechanisms["agents"][winner]) == "cutoff":
-                variants.update((max(1, min(TERMINAL_SAFETY_DEPTH-1, round(parent.rollout_depth*f))), parent.exploration) for f in (.75, 1.25))
-            if parent.selection_policy == "uct":
-                variants.update((parent.rollout_depth, parent.exploration*f) for f in (.5, 2))
-            for depth, c in sorted(variants):
-                candidate = f"{winner}-d{depth}-c{c:g}"
-                tuned = replace(parent, rollout_depth=depth, exploration=c)
-                agents[candidate] = profile_values(_timed(tuned, seconds))
-                fixed_profiles[candidate] = profile_values(tuned)
-                tie_priority[candidate] = [int(depth != parent.rollout_depth) + int(c != parent.exploration)]
-                contrasts.append({"a": control, "b": candidate, "factor": "refinement"})
-        # A family without local variants still needs a measured representative.
-        for winner in _leaders(mechanisms):
-            control = f"{winner}-parent"
-            if not any(c["a"] == control for c in contrasts):
-                contrasts.append({"a": "anchor", "b": control, "factor": "refinement"})
-    elif name == "target_check":
-        refined = state["phases"]["refinement"]
-        agents = {"anchor": profile_values(_timed(base, target))}
-        # Validate two alternatives per family at deployment time before final selection.
-        for candidate in _leaders(refined, 2):
-            agents[candidate] = profile_values(_timed(agent_from_values(refined["agents"][candidate]), target))
-            fixed_profiles[candidate] = refined["fixed_profiles"][candidate]
-            tie_priority[candidate] = refined.get("tie_priority", {}).get(candidate, [1])
-            contrasts.append({"a": "anchor", "b": candidate, "factor": "target_time_check"})
+        parent = next(iter(carry("mechanisms").values()))
+        control = add("incumbent", parent)
+        if parent.selection_policy in ("uct", "uct_rave"):
+            for multiplier in (.7, 1.4):
+                c = max(.01, parent.exploration * multiplier)
+                compare(control, add(f"refine-c{c:g}", replace(parent, exploration=c)), "exploration")
+        if parent.selection_policy == "uct_rave":
+            for k in (max(1, parent.rave_equivalence // 2), parent.rave_equivalence * 2):
+                compare(control, add(f"refine-k{k}", replace(parent, rave_equivalence=k)), "rave_equivalence")
+        if request["mode"] == "heuristic_cutoff":
+            for depth in sorted({max(1, min(horizon-1, round(parent.rollout_depth * f))) for f in (.75, 1.25)}):
+                if depth != parent.rollout_depth:
+                    compare(control, add(f"refine-d{depth}", replace(parent, rollout_depth=depth)), "rollout_depth")
     elif name == "confirmation":
-        refined = state["phases"].get("target_check", state["phases"]["refinement"])
-        agents = {"anchor": profile_values(_timed(base, target))}
-        finalists = []
-        for winner in _leaders(refined):
-            family = _family(refined["agents"][winner])
-            candidate = f"finalist-{family}"
-            agents[candidate] = profile_values(_timed(agent_from_values(refined["agents"][winner]), target))
-            finalists.append(candidate)
-            fixed_profiles[f"tuned-{family}-balanced"] = refined["fixed_profiles"][winner]
-        if len(finalists) == 2:
-            contrasts.append({"a": "finalist-full", "b": "finalist-cutoff", "factor": "cutoff_confirmation", "primary": True})
-        for candidate in finalists:
-            contrasts.append({"a": "anchor", "b": candidate, "factor": "confirmation", "primary": len(finalists) == 1})
+        prior = phases["refinement"]
+        ranked = _rank(prior) or list(prior["agents"])
+        winner = agent_from_values(prior["agents"][ranked[0]])
+        # Lock the nominee before fresh seeds; confirmation cannot select a new winner by noise.
+        add("finalist", winner)
+        alternatives = [agent_from_values(prior["agents"][n]) for n in ranked[1:]]
+        alternatives.append(agent_from_values(next(iter(phases["depth_screen"]["agents"].values()))))
+        challenger = next((a for a in alternatives if profile_values(a) != profile_values(winner)), None)
+        if challenger:
+            compare(add("runner-up", challenger), "finalist", "confirmation", primary=True)
         if reference:
-            agents["reference-time"] = profile_values(_timed(reference, target))
-            for candidate in finalists:
-                contrasts.append({"a": "reference-time", "b": candidate, "factor": "reference_equal_time"})
-    elif name == "ablations":
-        confirmation = state["phases"]["confirmation"]
-        candidates = [key for key in confirmation["agents"] if key.startswith("finalist-")]
-        comparison = next((c for c in confirmation["contrasts"] if c["factor"] == "cutoff_confirmation"), None)
-        if comparison:
-            verdict = comparison.get("result", {}).get("verdict")
-            if verdict == "b_ahead":
-                candidates = [comparison["b"]]
-            elif verdict == "a_ahead":
-                candidates = [comparison["a"]]
-        if len(candidates) > 1:
-            candidates = ["finalist-full"]  # Conservative provisional choice; not evidence of superiority.
-        agents = {}
-        for candidate in candidates:
-            final = agent_from_values(confirmation["agents"][candidate])
-            agents[candidate] = profile_values(_timed(final, seconds))
-            family = _family(agents[candidate])
-            horizons = state["phases"].get("horizon_check", state["phases"]["horizons"])
-            origin = next(key for key in _horizon_survivors(horizons) if _family(horizons["agents"][key]) == family)
-            parent = agent_from_values(horizons["agents"][origin])
-            reversions = {"selection_policy": parent.selection_policy, "exploration": parent.exploration,
-                          "tree_reuse": parent.tree_reuse, "transpositions": parent.transpositions,
-                          "rollout_depth": parent.rollout_depth, "cutoff_evaluator": NeutralEvaluator()}
-            for field, value in reversions.items():
-                if getattr(final, field) == value or (field == "exploration" and final.selection_policy != "uct"):
-                    continue
-                reverted = f"{candidate}-revert-{field}"
-                agents[reverted] = profile_values(replace(_timed(final, seconds), heuristic=None, **{field: value}))
-                contrasts.append({"a": reverted, "b": candidate, "factor": field, "purpose": "ablation"})
-            if final.tree_reuse and final.transpositions:
-                reverted = f"{candidate}-revert-both-mechanisms"
-                agents[reverted] = profile_values(replace(_timed(final, seconds), tree_reuse=False, transpositions=False))
-                contrasts.append({"a": reverted, "b": candidate, "factor": "combined_mechanisms", "purpose": "ablation"})
+            compare(add("reference", reference), "finalist", "reference", primary=not contrasts)
     else:
         raise ValueError(f"unknown study phase: {name}")
-    return {"name": name, "agents": agents, "contrasts": contrasts, "fixed_profiles": fixed_profiles, "tie_priority": tie_priority, "status": "pending"}
+    return {"name": name, "agents": agents, "groups": groups, "contrasts": contrasts,
+            "tie_priority": priority, "status": "pending"}
+
 
 class StudyRunner:
     def __init__(self, game: str, baseline: MctsAgent, *, output: Path, budget: float,
                  reference: MctsAgent | None = None, seed: int = 42, max_pairs: int = 8,
                  confirmation_pairs: int = 32, auxiliary_pairs: int = 4,
                  decision_seconds: float | None = None, screening_seconds: float | None = None, max_plies: int = 10000,
+                 heuristic: int | None = None, target_match_time: float = 60.0,
                  workers: WorkerSetting = 1, resume: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
         if game not in GAMES:
             raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
@@ -429,12 +330,30 @@ class StudyRunner:
             raise ValueError("max_plies must be a positive u32")
         if decision_seconds is not None and (not math.isfinite(decision_seconds) or decision_seconds <= 0):
             raise ValueError("decision time must be finite and positive")
+        if not math.isfinite(target_match_time) or target_match_time <= 0:
+            raise ValueError("target match time must be finite and positive")
+        if screening_seconds is not None:
+            raise ValueError("--screening-time was removed: all candidates use the same derived decision budget")
+        if heuristic is not None and (type(heuristic) is not int or heuristic not in heuristic_indices(game)):
+            raise ValueError(f"unknown cutoff heuristic H{heuristic} for {game}")
+        evaluator = NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic)
+        baseline = replace(baseline, heuristic=None, cutoff_evaluator=evaluator,
+                           selection_policy="uct", rollout_policy=UniformRandom(), progressive_bias=None,
+                           tree_reuse=False, transpositions=False)
+        if reference and (reference.cutoff_evaluator != evaluator or reference.rollout_policy != UniformRandom()
+                          or reference.progressive_bias is not None):
+            raise ValueError("reference must belong to the same evaluator family with uniform rollout and no bias; compare families in a separate tournament")
+        selectors = game_search_capabilities(game)["selection_policies"]
+        if reference and reference.selection_policy not in selectors:
+            raise ValueError("reference selection policy is unavailable for this game")
         worker_count = resolve_workers(workers)
         self.game = create_game(game, game_params)
         self.base, self.reference = baseline, reference
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
-        request = {"version": 10, "game": game, **({"game_params": game_parameters(self.game)} if game_parameters(self.game) else {}), "baseline": profile_values(baseline),
+        request = {"version": 11, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
+                   "heuristic": heuristic, "target_match_time": target_match_time, "safety_margin": 1.2,
+                   "selection_policies": selectors, "game": game, **({"game_params": game_parameters(self.game)} if game_parameters(self.game) else {}), "baseline": profile_values(baseline),
                    "reference": profile_values(reference) if reference else None,
                    "seed": seed, "max_pairs": max_pairs, "confirmation_pairs": confirmation_pairs, "auxiliary_pairs": auxiliary_pairs,
                    "decision_seconds": decision_seconds, "screening_seconds": screening_seconds,
@@ -444,6 +363,8 @@ class StudyRunner:
             if not resume:
                 raise FileExistsError(f"study exists: {self.path}; use --resume")
             self.state = json.loads(self.path.read_text())
+            if self.state["request"].get("version") != 11:
+                raise ValueError("old study protocol cannot resume with single-family tuning; use a new output directory")
             # Git revision is provenance, not an execution compatibility key.
             # Keep the original revision in the saved request.
             saved_request = self.state["request"]
@@ -551,73 +472,105 @@ class StudyRunner:
     def calibrate(self):
         if self.state["calibration"]:
             return
-        self.progress("Calibration: short paired games, then isolated early/middle/late timings.")
-        pilot = {"name": "calibration", "agents": {"pilot": profile_values(_iterations(self.base, min(self.base.iterations or 128, 128))),
-                                                       "random": None},
+        request = self.state["request"]
+        label = "Full-depth optimization" if request["mode"] == "full_depth" else f"Heuristic cutoff optimization (H{request['heuristic']})"
+        self.progress(f"Study mode: {label}. Target match time: {request['target_match_time']:g}s.")
+        work = self.state.setdefault("calibration_progress", {})
+        pilot_agent = replace(_iterations(self.base, 32), rollout_depth=64)
+        pilot = {"name": "calibration", "agents": {"pilot": profile_values(pilot_agent), "random": None},
                  "contrasts": [{"a": "pilot", "b": "random", "factor": "sanity"}]}
-        # Native construction validates the input policies for this registered game
-        # before an expensive screening run, including the held-out reference.
-        for agent in (self.base, self.reference):
-            if agent is not None:
-                benchmark_mcts_agent(self.game, _iterations(agent, 1), 0, self.state["request"]["seed"])
-        rows = self._pair(pilot, 0, 0, pilot=True)
-        mean_plies = sum(r["result"]["plies"] for r in rows) / len(rows)
-        bench_agent = _iterations(self.base, min(self.base.iterations or 256, 256))
-        bench = benchmark_mcts_agent(self.game, bench_agent, max(1, round(mean_plies)), self.state["request"]["seed"])
-        seconds_per_iteration = max(1e-9, bench.milliseconds_per_iteration / 1000)
-        # Reserve enough runtime for several rounds across ~50 contrasts. Small
-        # budgets imply cheap screening, not a promise of strong play.
-        target = self.state["request"]["decision_seconds"] or min(1.0, max(.001, self.budget / (800 * max(1, mean_plies))))
-        screen = self.state["request"]["screening_seconds"]
-        if screen is None:
-            screen = min(target / 4, max(.000001, self.budget * .4 / (300 * max(1, mean_plies))))
-        self.state["calibration"] = {"mean_plies": mean_plies, "decision_seconds": target, "screening_seconds": screen,
-                                     "center_iterations": max(1, min(2**32-1, round(screen / seconds_per_iteration))),
-                                     "seconds_per_iteration": seconds_per_iteration,
-                                     "position_timings": [asdict(t) for t in bench.position_timings],
-                                     "pilot": pilot, "seconds": self.spent}
-        self.progress(f"Estimated match length: {mean_plies:.0f} actions; screening: {screen:.4f}s/decision; final target: {target:.4f}s/decision; iteration center: {self.state['calibration']['center_iterations']}.")
-        self.save()
-
-    def calibrate_families(self):
-        calibration = self.state["calibration"]
-        families = calibration.setdefault("families", {})
-        phase = self.state["phases"]["parameters"]
-        for winner in _leaders(phase):
-            values = phase["agents"][winner]
-            family = _family(values)
-            if family in families:
-                continue
-            if self.spent >= self.budget:
-                return
-            self.progress(f"Calibrating {family} iteration costs on early/middle/late positions.")
-            bench = benchmark_mcts_agent(self.game, _iterations(agent_from_values(values), 8),
-                                         max(1, round(calibration["mean_plies"])), self.state["request"]["seed"])
-            cost = max(1e-9, bench.milliseconds_per_iteration / 1000)
-            families[family] = {"candidate": winner, "profile": values,
-                                "seconds_per_iteration": cost,
-                                "center_iterations": max(1, min(2**32-1, round(calibration.get("screening_seconds", calibration["decision_seconds"]) / cost))),
-                                "position_timings": [asdict(t) for t in bench.position_timings]}
+        if "mean_plies" not in work:
+            rows = self._pair(pilot, 0, 0, pilot=True)
+            # Simulation's plies/moves count only player decisions; chance_events is separate.
+            work["mean_plies"] = mean(r["result"]["plies"] for r in rows)
+            work["pilot"] = pilot
             self.save()
+        length = max(1, work["mean_plies"])
+        target = request["decision_seconds"] or request["target_match_time"] / (length * request["safety_margin"])
+        samples = work.setdefault("horizon_samples", [])
+        depth = samples[-1]["depth"] if samples else min(64, request["max_plies"])
+        neutral = replace(self.base, heuristic=None, cutoff_evaluator=NeutralEvaluator())
+        while "horizon" not in work:
+            if not samples or samples[-1]["depth"] != depth:
+                # Two independent search/state seeds, same depths for stable comparisons.
+                benches = [benchmark_mcts_agent(self.game, _iterations(replace(neutral, rollout_depth=depth), 64),
+                                                round(length), request["seed"] + offset) for offset in (17, 31)]
+                timings = [asdict(t) for b in benches for t in b.position_timings]
+                hard = benches[0].maximum_decision_horizon
+                terminal = sum(t["terminal_simulations"] or 0 for t in timings)
+                cutoff = sum(t["cutoff_simulations"] or 0 for t in timings)
+                fractions = [t["terminal_simulations"] / max(1, (t["terminal_simulations"] or 0) + (t["cutoff_simulations"] or 0))
+                             for t in timings if t["terminal_simulations"] is not None]
+                samples.append({"depth": depth, "hard_maximum": hard, "terminal_fraction": terminal / max(1, terminal+cutoff),
+                                "minimum_position_terminal_fraction": min(fractions, default=0), "position_timings": timings})
+                self.save()
+            sample = samples[-1]
+            hard = sample["hard_maximum"]
+            if hard is not None and depth != hard:
+                depth = hard
+                continue
+            reached = sample["minimum_position_terminal_fraction"] >= .99
+            if hard is not None or reached or self.spent >= self.budget * .08 or depth >= request["max_plies"]:
+                kind = "hard_maximum" if hard is not None else "practical_full_depth" if reached else "practical_unverified"
+                work["horizon"] = {"depth": depth, "kind": kind, "terminal_fraction": sample["terminal_fraction"],
+                                   "minimum_position_terminal_fraction": sample["minimum_position_terminal_fraction"],
+                                   "target_terminal_fraction": .99, "samples": samples}
+                break
+            depth = min(depth * 2, request["max_plies"])
+        horizon = work["horizon"]
+        depths = cutoff_depths(horizon["depth"]) if request["mode"] == "heuristic_cutoff" else []
+        if request["mode"] == "heuristic_cutoff" and not depths:
+            raise ValueError("the reference horizon leaves no distinct heuristic cutoff depth")
+        if self.reference:
+            if (request["mode"] == "full_depth" and self.reference.rollout_depth != horizon["depth"]) or (
+                    request["mode"] == "heuristic_cutoff" and self.reference.rollout_depth >= horizon["depth"]):
+                raise ValueError("reference horizon belongs to another family; compare it in a separate tournament")
+        operating_depth = depths[len(depths)//2] if depths else horizon["depth"]
+        if "position_timings" not in work:
+            probe = replace(_timed(self.base, target), rollout_depth=operating_depth, root_diagnostics=True)
+            bench = benchmark_mcts_agent(self.game, probe, round(length), request["seed"] + 47)
+            work["position_timings"] = [asdict(t) for t in bench.position_timings]
+            self.save()
+        adequacy = search_adequacy(work["position_timings"], request["target_match_time"])
+        if request["decision_seconds"] is not None:
+            # Changing the match target cannot affect an explicit per-decision override.
+            adequacy["suggested_targets"] = []
+        center = max(1, round(adequacy["median_iterations_per_decision"]))
+        cal = {"mean_plies": length, "estimated_game_decisions": length, "target_match_time": request["target_match_time"],
+               "safety_margin": request["safety_margin"], "safety_adjusted_decisions": length * request["safety_margin"],
+               "decision_seconds": target, "decision_time_source": "explicit_override" if request["decision_seconds"] else "target_match_time",
+               "estimated_match_seconds": length * target, "horizon": horizon, "cutoff_depths": depths,
+               "center_iterations": center, "operating_point": {"iterations": center, "depth": operating_depth,
+                   "interpretation": "Measured work at the requested time; diagnostic only, never a winner-selection budget."},
+               "seconds_per_iteration": 1 / max(1e-9, adequacy["iterations_per_second"]),
+               "position_timings": work["position_timings"], "search_adequacy": adequacy,
+               "pilot": work["pilot"], "seconds": self.spent}
+        warnings = []
+        if horizon["kind"] == "practical_unverified":
+            warnings.append("Full-depth is impractical or unverified within calibration limits; this is an explicit neutral safety cutoff, not proven terminal search.")
+        if adequacy["category"] in ("LOW", "VERY LOW"):
+            warnings.append("Requested target provides little search per decision; results describe under-searched agents. The requested target is unchanged.")
+        cal["warnings"] = warnings
+        self.state["calibration"] = cal
+        self.progress(f"Horizon: {horizon['depth']} ({horizon['kind']}); estimated decisions: {length:.1f}; time/decision: {target:.4f}s.")
+        self.progress(f"Search adequacy: {adequacy['category']}; median iterations: {center}; representative branching: {adequacy['representative_branching']:g}.")
+        for warning in warnings:
+            self.progress("Warning: " + warning)
+        for recommendation in adequacy["suggested_targets"]:
+            self.progress(f"Approximate target {recommendation['target_match_time']:.1f}s/match -> {recommendation['estimated_category']} (linear throughput estimate, not a guarantee).")
+        self.save()
 
     def _estimated_round_seconds(self, phase: dict) -> float:
         cal = self.state["calibration"]
-        def cost(values):
-            iteration_cost = cal["seconds_per_iteration"]
-            for sample in cal.get("families", {}).values():
-                if all(values.get(key) == sample["profile"].get(key)
-                       for key in ("rollout_depth", "selection_policy", "exploration", "cutoff_evaluator")):
-                    iteration_cost = sample["seconds_per_iteration"]
-                    break
-            return values.get("time_budget", values.get("iterations", 0) * iteration_cost)
-        # Two swapped games: each agent takes approximately one full game's plies.
-        return cal["mean_plies"] * sum(cost(phase["agents"][c["a"]]) + cost(phase["agents"][c["b"]]) for c in phase["contrasts"])
+        return cal["mean_plies"] * sum(
+            phase["agents"][c[role]]["time_budget"]
+            for c in phase["contrasts"] for role in ("a", "b"))
 
     def _recover(self):
         duration = 0.0
         phases = list(self.state["phases"].values())
-        cal = self.state.get("calibration")
-        if cal:
+        cal = self.state.get("calibration") or self.state.get("calibration_progress")
+        if cal and "pilot" in cal:
             phases = [cal["pilot"], *phases]
         for phase in phases:
             for index, contrast in enumerate(phase["contrasts"]):
@@ -651,94 +604,40 @@ class StudyRunner:
         phase.update(allocated_seconds=available, started_spent=self.spent)
         estimate = self._estimated_round_seconds(phase)
         cap = request["max_pairs"]
-        if phase["name"] in ("horizon_check", "target_check", "ablations"):
-            cap = min(cap, request["auxiliary_pairs"])
         pairs = min(cap, max(2, int(available / max(.001, estimate))))
         remaining = available
-        for ci, contrast in enumerate(phase["contrasts"]):
+        # Round-robin groups when resources are scarce: one depth cannot consume
+        # another depth's entire tuning allocation merely by insertion order.
+        ordered = list(enumerate(phase["contrasts"]))
+        if phase["name"] in ("exploration", "selectors", "rave"):
+            group_of = {n: g for g, members in phase["groups"].items() for n in members}
+            buckets = {}
+            for item in ordered:
+                buckets.setdefault(group_of[item[1]["b"]], []).append(item)
+            ordered = [bucket[i] for i in range(max(map(len, buckets.values()), default=0))
+                       for bucket in buckets.values() if i < len(bucket)]
+        for ci, contrast in ordered:
             cost = max(.001, self._cost_pair(phase, contrast))
-            if phase["name"] == "confirmation":
-                limit = request["confirmation_pairs"] if contrast.get("primary") else min(request["max_pairs"], request["auxiliary_pairs"])
-                # The primary contrast is first and receives the reserved budget first.
-                count = min(limit, int(remaining / cost))
-                count = max(2, count) if contrast.get("primary") else count if count >= 2 else 0
-            elif phase["name"] == "ablations":
-                count = min(pairs, int(remaining / cost))
-                count = count if count >= 2 else 0
-            else:
-                count = pairs
+            limit = (request["confirmation_pairs"] if contrast.get("primary") else request["auxiliary_pairs"]) if phase["name"] == "confirmation" else pairs
+            count = min(limit, int(remaining / cost))
+            count = count if count >= 2 else 0
             contrast["target_pairs"] = count
             contrast["workers"] = self._contrast_workers(phase, ci)
             contrast["timing_mode"] = "isolated" if contrast["workers"] == 1 else "shared_cpu"
             if count == 0:
                 contrast["screening_status"] = "not_prioritized"
-                contrast["stop_reason"] = "auxiliary_budget"
+                contrast["stop_reason"] = "phase_budget_not_evaluated"
             remaining -= count * cost
         phase["planned_pairs"] = max((c["target_pairs"] for c in phase["contrasts"]), default=0)
         phase["estimated_seconds"] = sum(c["target_pairs"] * self._cost_pair(phase, c) for c in phase["contrasts"])
 
     def _prioritize(self, phase, completed_round):
-        if phase["name"] not in RACING_PHASES or completed_round not in (2, 4):
-            return
-        if completed_round in phase.get("prioritized_rounds", []):
-            return
-        # This is resource allocation, not a hypothesis test or a proof of inferiority.
-        for family in ("full", "cutoff"):
-            candidates = [c for c in phase["contrasts"] if _family(phase["agents"][c["b"]]) == family
-                          and c.get("screening_status") != "not_prioritized"]
-            candidates.sort(key=lambda c: (-c.get("result", {}).get("score_b", 0),
-                                           tuple(phase.get("tie_priority", {}).get(c["b"], [1]))))
-            for contrast in candidates[2:]:
-                contrast["screening_status"] = "not_prioritized"
-                contrast["stop_reason"] = "exploratory_ranking"
-        phase.setdefault("prioritized_rounds", []).append(completed_round)
-        self.save()
-
-    def _benchmark_widths(self, phase):
-        costs = phase.setdefault("isolated_costs", {})
-        samples = phase.setdefault("isolated_benchmarks", {})
-        for name in dict.fromkeys(c["b"] for c in phase["contrasts"]):
-            if name in costs:
-                continue
-            if self.spent >= self.budget:
-                return False
-            agent = agent_from_values(phase["agents"][name])
-            # A small isolated sample estimates cost; contested match times never rank speed.
-            bench = benchmark_mcts_agent(self.game, _iterations(agent, min(128, agent.iterations)),
-                                         max(1, round(self.state["calibration"]["mean_plies"])),
-                                         self.state["request"]["seed"])
-            costs[name] = bench.milliseconds_per_iteration / 1000 * agent.iterations
-            samples[name] = [asdict(t) for t in bench.position_timings]
-            self.save()
-        return True
+        # Complete initial coverage, then respect the phase allocation. No early
+        # per-depth elimination: every shortlisted depth reaches selector/RAVE tuning.
+        return
 
     def _announce_plan(self):
-        if "budget_plan" in self.state:
-            return
-        cal = self.state["calibration"]
-        # Conservative upper count for two families. Later plans use actual survivors/costs.
-        counts = (9, 2, 8, 10, 6, 6, 4, 3 + (2 if self.reference else 0), 4)
-        estimates = []
-        for i, (name, count) in enumerate(zip(PHASES, counts)):
-            seconds = cal["decision_seconds"] if name in ("horizon_check", "target_check", "confirmation", "ablations") else cal.get("screening_seconds", cal["decision_seconds"])
-            pairs = 2 * count
-            if name == "confirmation":
-                pairs = self.state["request"]["confirmation_pairs"] + (count-1)*self.state["request"]["auxiliary_pairs"]
-            if name == "ablations":
-                pairs = count*self.state["request"]["auxiliary_pairs"]
-            estimated = 2 * cal["mean_plies"] * seconds * pairs
-            estimates.append({"phase": name, "estimated_seconds": estimated,
-                              "allocated_seconds": self.budget * PHASE_WEIGHTS[i]})
-        total = sum(p["estimated_seconds"] for p in estimates)
-        self.state["budget_plan"] = {"phases": estimates, "estimated_seconds": total,
-                                      "fits_budget": total <= self.budget-self.spent,
-                                      "interpretation": "Preliminary estimate before survivor selection; excludes optional racing rounds and does not assume linear worker scaling."}
-        self.progress(f"Preliminary plan: {total/3600:.2f}h; budget {self.budget/3600:.2f}h. Final comparison gets a reserved allocation; auxiliary work is capped.")
-        for estimate in estimates:
-            self.progress(f"  {estimate['phase']}: estimate {estimate['estimated_seconds']/60:.1f}min; allocation {estimate['allocated_seconds']/60:.1f}min.")
-        if total > self.budget-self.spent:
-            self.progress("Requested evidence exceeds the estimated budget: sample sizes/auxiliary work will be reduced; the result may remain inconclusive.")
-        self.save()
+        self.progress("Equal-time comparisons; unused phase budget rolls forward; confirmation has a reserved allocation.")
 
     def run(self):
         try:
@@ -762,19 +661,13 @@ class StudyRunner:
                 if self.spent >= self.budget:
                     break
                 if phase is None:
-                    if name == "iterations":
-                        self.calibrate_families()
-                        if self.spent >= self.budget:
-                            break
                     phase = _build_phase(name, self.state, self.base, self.reference)
                     self._plan_phase(phase, index)
                     self.state["phases"][name] = phase
                     self.save()
-                if name == "iterations" and not self._benchmark_widths(phase):
-                    break
                 if not phase["contrasts"] or not phase["planned_pairs"]:
                     phase["status"] = "complete"
-                    phase["completion_reason"] = "no_changed_parameters" if not phase["contrasts"] else "auxiliary_budget"
+                    phase["completion_reason"] = "no_changed_parameters" if not phase["contrasts"] else "phase_budget_not_evaluated"
                     self.save()
                     continue
                 phase["status"] = "running"
@@ -812,23 +705,16 @@ class StudyRunner:
         return self.state
 
     def export_candidates(self):
-        directory = self.output / "candidates"
         profiles = {}
-        width = self.state["phases"].get("iterations")
-        if width and width["status"] == "complete":
-            profiles.update(_width_candidates(width))
-        horizons = self.state["phases"].get("horizons")
-        if horizons and horizons["status"] == "complete":
-            profiles.update({name: horizons["agents"][name] for name in _horizon_survivors(horizons)})
-        params = self.state["phases"].get("target_check", self.state["phases"].get("refinement"))
-        if params and params["status"] == "complete":
-            for name in _leaders(params):
-                profiles["parameter-" + _family(params["agents"][name])] = params["agents"][name]
-        confirmation = self.state["phases"].get("confirmation")
-        if confirmation:
-            profiles.update(confirmation.get("fixed_profiles", {}))
-            profiles.update({name: values for name, values in confirmation["agents"].items()
-                             if name.startswith(("finalist", "tuned", "terminal-"))})
+        for phase in self.state["phases"].values():
+            if phase["status"] == "complete" and phase["name"] != "confirmation":
+                for leader in _group_leaders(phase).values():
+                    profiles[f"{phase['name']}-{leader}"] = phase["agents"][leader]
+        confirmation = self.state["phases"].get("confirmation", {})
+        if "finalist" in confirmation.get("agents", {}):
+            label = "best_full_depth_agent" if self.state["request"]["mode"] == "full_depth" else "best_heuristic_cutoff_agent"
+            profiles[label] = confirmation["agents"]["finalist"]
+        directory = self.output / "candidates"
         for name, values in profiles.items():
             export_profile(directory / f"{name}.toml", name, agent_from_values(values))
         self.state["candidate_profiles"] = {name: str((directory / f"{name}.toml").relative_to(self.output)) for name in profiles}

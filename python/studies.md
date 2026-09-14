@@ -501,207 +501,180 @@ reuse and transpositions equal. The `exploration` setting only affects UCT.
 
 ## Automatic MCTS diagnosis
 
-`study` generates and executes a budgeted sequence of paired comparisons from one starting
-profile. It uses the existing Rust agents, tournament executor and version-1 traces. It currently
-supports Boop, SPOTF, Connect Four, Tic-Tac-Toe and Splendor. Can't Stop still needs public-chance transport
-in the generic tournament/extraction pipeline before this command can accept it.
+`study` optimizes **one MCTS family at a time**. Omitting `--heuristic` selects
+uninformed full-depth optimization. Specifying `--heuristic h0` (or `h1`, or a
+registered integer index) fixes that cutoff evaluator for the entire study.
+There is no automatic full-depth-versus-cutoff competition. Compare the exported
+winners yourself using the normal tournament workflow.
 
 ```bash
-meeple-bots study --game boop --budget 2h \
-  --reference configs/mcts/boop-baseline.toml \
-  --output results/studies/boop-generic-diagnosis
+# Uninformed Connect6, with the rule-proven 121-decision maximum.
+python -m meeple_bots study --game connect6 --game-param board_size=11 \
+  --budget 4h --target-match-time 60s \
+  --output results/studies/connect6-11-full
+
+# Optimize only Splendor H1 with cutoff; H0 would be a separate study.
+python -m meeple_bots study --game splendor --heuristic h1 \
+  --budget 4h --target-match-time 60s \
+  --output results/studies/splendor-h1
+
+# Resume the same protocol/configuration/build with a larger TOTAL budget.
+python -m meeple_bots study --game splendor --heuristic h1 \
+  --budget 6h --target-match-time 60s \
+  --output results/studies/splendor-h1 --resume
 ```
 
-For Splendor, start a generic diagnosis without an external reference:
+Connect6 currently has no game heuristic: its normal study works, while requesting
+an unavailable heuristic produces an explicit error. Game parameters are retained
+in checkpoints, all recreated match instances, worker transport and trace headers.
 
-```bash
-meeple-bots study --game splendor --budget 2h --workers auto \
-  --seed 42 --output results/studies/splendor-generic
+### Time budget and search work
+
+`--budget` is the total study allowance, including calibration. Independently,
+`--target-match-time` (default **60s**, accepting the same s/m/h syntax) controls
+the approximate computational cost of a candidate match:
+
+```
+time per decision = target match time / (estimated game decisions * 1.2)
 ```
 
-Splendor compares neutral, H0 (prestige) and H1 (prestige, discounts and noble proximity)
-cutoffs with uniform rollouts, without requiring a custom baseline.
-The initial horizon grid tests 16/32/64 with neutral, H0 and H1 against full depth at 1024;
-initial cutoff candidate names end in `neutral`, `h0` or `h1`. If a cutoff qualifies, its evaluator
-is retained while the full and cutoff families tune their selectors independently. H0 uses only prestige difference
-`delta / (15 + abs(delta))`; it does not value engine-building discounts. Native calibration samples public
-positions by resolving chance with an independent seeded environment RNG; chance events do
-not count as player plies and only decision positions are timed. Tournament traces retain
-all refills and are validated on resume. The standard study report and candidate TOMLs are
-available. Splendor extraction supports common tables plus `chance_events.csv`,
-with authoritative replay validation; a Splendor report generator is not registered. Fixed-iteration comparisons may use workers; timing-sensitive comparisons remain
-isolated. Equal-time results depend on runtime scheduling even with a fixed seed.
+The initial paired pilot estimates game length in **player decisions**; Chance
+events are recorded separately and never inflate this denominator. For example,
+80 estimated decisions and a 60-second target give 0.625 seconds per decision.
+This is an estimate, not a match timeout. Stronger agents may play longer or
+shorter matches than the pilot. An individual simulation can exceed its deadline.
 
-Without `--baseline`, the starting profile is **generic**: 1,000 iterations, depth 32, exploration
-1.0, UCT, uniform rollouts, no tree reuse/transpositions, and the first registered heuristic
-(or neutral evaluation if none exists). It does not read the game's calibrated baseline.
-`--reference` is excluded from calibration parameter selection, screening and rankings; it is
-only an external opponent in held-out confirmation. A one-iteration native validation checks
-that its configuration is supported before screening starts.
+All competitive screens, selector comparisons (including RAVE), the mechanism
+matrix, refinement and confirmation use this **same wall-clock budget per decision**.
+Iteration count is measured work, not the criterion used to choose the winner.
+The operating point is the measured median iterations available at that time;
+there is no compulsory equal-iteration tournament or branching-times-constant
+formula selecting the final budget. Equal-iteration experiments remain available
+as separate tournaments to investigate sample efficiency.
 
-Use `--baseline PATH` to start from another profile. The input profiles are copied into the
-output directory and are never edited. The default output is `results/studies/GAME-study`.
-Run a release native build for timing experiments (`maturin develop --release --locked`).
+Calibration runs isolated early/middle/late probes and records actual elapsed
+time, completed iterations, throughput, median iterations, legal branching and,
+when supplied by native root diagnostics, action coverage and visits (median/p10).
+Candidate matches also report median iterations and observed throughput, latency
+and terminal simulation fraction. Positions are sampled using reproducible random
+play and are not guaranteed representative of all strong-agent positions.
 
-The workflow uses **protocol 10**. Use a new output directory for this protocol;
-older studies and candidates remain readable, but their checkpoints are not migrated.
+**Search adequacy** is explicitly a heuristic diagnostic, not a confidence
+probability. Its coarse categories use median iterations divided by representative
+median legal branching:
 
-The phases run in order:
+| Approximate iterations / legal action | Category |
+| --- | --- |
+| < 1 | VERY LOW |
+| 1–<10 | LOW |
+| 10–<100 | MEDIUM |
+| >= 100 | HIGH |
 
-1. **Calibration and planning:** estimate game length and early/middle/late search costs.
-   Print a preliminary whole-plan estimate, phase allocations and whether the requested
-   evidence fits. Estimates do not assume linear worker scaling and are not deadlines.
-2. **Horizons:** compare full depth 1024 with depths 16/32/64 using neutral, registered
-   H0/H1 and any distinct custom baseline evaluator. Both seats get equal screening time.
-   Start with two paired seeds per candidate. After rounds 2 and 4, prioritize the two
-   highest-scoring challengers per family; other candidates retain their observed results
-   and a `not_prioritized` reason. This is exploratory allocation, not statistical rejection.
-3. **Horizon check:** compare the two best observed cutoffs against full depth at the target
-   decision time, with fresh seeds. Keep full depth and at most one cutoff. Low-sample
-   admission remains provisional; rejecting the shortlisted cutoffs requires at least eight
-   pairs each and all upper bounds below 45%. It does not prove all other cutoffs inferior.
-4. **Parameters:** tune each retained family's UCT exploration and UCB1-Tuned at screening
-   time. Each variant faces its incoming parent once, rather than also facing the original
-   baseline in a second attribution experiment. No self-comparisons. Ties retain the parent.
-5. **Iterations:** calibrate each family's cost independently and compare five budgets
-   (0.25/0.5/1/2/4 times the center) against the initial iteration anchor. Short **isolated
-   benchmarks** estimate candidate costs; fixed-iteration quality matches may use workers.
-   `fast`/`balanced` use those estimated isolated costs, not contended match latencies.
-   No additional adjacent-budget matches or automatic long confirmation of these profiles.
-6. **Mechanisms:** always test all four reuse/transposition settings for each family.
-   Compare reuse-only, transpositions-only and both against neither (three contrasts per
-   family). Promising settings receive additional screening samples. Fixed iterations permit
-   workers. These are quality measurements; target-time checks validate deployment performance.
-7. **Refinement:** refine depth/exploration around one mechanism winner per family, comparing
-   variants to their parent. Full depth is not shortened in this phase.
-8. **Target check:** compare the two best available refined configurations per family against
-   the same initial baseline at target time, with fresh seeds. Select each family's finalist
-   here, so a short-time ranking alone does not determine the final representatives.
-9. **Confirmation:** a single primary comparison pits full against cutoff at target time
-   (or full against the baseline if no cutoff remains). It receives up to
-   `--confirmation-pairs` (default **32**), limited to what fits its allocation. Baseline
-   checks and optional **equal-time** external-reference checks receive at most
-   `--auxiliary-pairs` (default **4**) each, and may be skipped. Sample sizes are fixed before
-   any confirmation match; no significance-based early stopping. Iteration trade-off profiles
-   are exported without launching additional confirmation tournaments. The reference does
-   not participate in screening or finalist selection.
-10. **Ablations:** diagnose the confirmed winner, or provisionally full depth if the final is
-    inconclusive. Revert individual changes and, if applicable, both mechanisms together.
-    Each comparison has the independent auxiliary-pair cap and shares a small allocation;
-    omitted comparisons are recorded without claiming an effect. Ablations do not select a
-    different winner or invalidate an already completed primary comparison.
+The thresholds are descriptive, not guarantees of search quality. Root coverage
+and visit distributions provide context. For LOW/VERY LOW the study warns and
+shows approximate 3x/10x larger match targets using linear throughput scaling.
+It **continues with the requested target**, without silently increasing time.
+Candidate adequacy uses the calibration branching as a reference, so it remains
+an approximation across changing positions. Competitive confidence is reported
+separately using actual paired games and intervals.
 
-“Full depth” means a **1024-step safety cap**, not a proven maximum game length. Engine
-semantics apply: deterministic rollout steps from the selected leaf; stochastic decision
-steps from the root. Completion counters expose safety cuts. A simulation or running pair
-can overrun its estimate. Neither completion nor a nonsignificant comparison establishes
-that two agents are equally strong; no shared baseline is automatically overwritten.
+### Pipeline
 
-`--decision-time SECONDS` sets the **target** time for checks and confirmation. By default,
-exploration uses at most one quarter of that time, reduced further for small total budgets.
-Use `--screening-time SECONDS` to override it; set both to 1 to run all timed comparisons
-at one second. Default target time is calibrated from the budget and capped at one second.
-Short-time screening can change rankings: the target checks mitigate this risk but cannot
-recover every alternative discarded during exploration.
+1. **Structural calibration and horizon.** A short paired pilot and isolated
+   native probes measure decision length, branching, search costs and terminal
+   reach. The optional Rust `Game::maximum_decision_horizon()` supplies a
+   rule-proven bound: Connect6 uses `N*N`, Connect Four 42 and Tic-Tac-Toe 9.
+   Other games may return `None`. Without a hard bound, depths grow geometrically
+   from 64, using two seeded sets of representative searches, until every sampled
+   position has at least 99% terminal simulations. The probe is capped by the
+   calibration allocation (8% of study budget) and `--max-plies`; failure to verify
+   terminal reach is labelled **practical_unverified**, never proven full-depth.
+   Hard bounds are used regardless of this empirical threshold.
+2. **Depth screen (heuristic mode only).** Generate approximately 10%, 25%, 50%
+   and 75% of the reference horizon, round/deduplicate and restrict to
+   `1 <= depth < horizon`. A medium depth is the common control. Preserve two
+   promising depths after initial coverage of at least four paired seeds per
+   contrast. If coverage is insufficient, preserve all depths for tuning rather
+   than treating them as disproven. A one-decision horizon has no distinct cutoff.
+3. **UCT exploration per surviving depth.** Compare the starting UCT against
+   C=0.25, 0.5, 1, 1.4 and 2 (deduplicating the starting C). Uniform rollout,
+   no reuse/transpositions, no MAST or Progressive Bias. The time operating point
+   stays fixed; depth-specific match measurements expose different iteration costs.
+4. **Selectors.** Compare each depth's calibrated UCT with UCB1-Tuned.
+5. **RAVE.** When the native catalog advertises UCT-RAVE, test k=100/1000/3000/10000/20000,
+   starting from that depth's calibrated UCT exploration, against its best selector.
+   Budget-limited plans prioritize 1000 and 20000 before filling the remaining
+   grid, so the high-k region is not always omitted. Local refinement can extend
+   beyond the initial range: a winner at 20000 tests 10000 and 40000.
+   Stochastic Splendor does not advertise RAVE and skips this sweep. No new search
+   algorithm is introduced.
+6. **Tuned depth selection.** Only now compare the surviving depths with their
+   tuned parameters/selectors. In normal mode there is only one full-depth family.
+7. **Mechanisms.** Test all four reuse/transposition combinations with the selected
+   configuration fixed. A six-contrast round robin covers interactions rather than
+   independently making two greedy boolean decisions.
+8. **Small refinement.** Check neighboring exploration, neighboring k when RAVE
+   won, and neighboring cutoff depths in heuristic mode. Full depth never changes
+   here. This is a local check, not a full Cartesian search.
+9. **Confirmation.** Freeze the nominee and a runner-up from the *same family*,
+   then use a fresh seed namespace with swapped seats. Confirmation reports whether
+   the nominee's advantage is supported; it does not reselect a winner after
+   seeing held-out outcomes. A nomination can remain provisional or fail confirmation.
 
-For example:
+`rollout_depth` always counts player decisions and is a soft limit: finish the
+current physical turn before evaluating, resolve mandatory Chance, and stop
+immediately at terminal. Calibration/search do not change the independent game,
+chance and agent RNG semantics.
 
-```bash
-meeple-bots study --game splendor --budget 4h --decision-time 1 \
-  --workers auto --seed 42 --output results/studies/splendor-budget-v10
-```
+### Allocation, evidence and outputs
 
-The post-calibration budget targets 12/8/14/10/10/10/10/21/5 percent for
-horizons/horizon-check/parameters/iterations/mechanisms/refinement/target-check/confirmation/ablations.
-Unused allocations flow forward. Exploratory rounds are capped by `--max-pairs` (default 8,
-minimum 2); after the initial complete two rounds, only prioritized candidates receive more
-samples while their phase allocation permits. Target checks and ablative diagnostics also
-respect the auxiliary cap. Primary confirmation is allocated before its auxiliaries.
-Very small budgets may still be insufficient for initial paired coverage: export partial
-candidates and report `budget_exhausted`, rather than fabricate a finished search.
-A larger budget improves evidence only for pending work; fixed completed plans are unchanged.
+Phase resource priorities are recalculated from remaining time; unused allocation
+flows forward. Confirmation initially receives a 30% priority, with its own
+`--confirmation-pairs` cap (default 32). Screening uses `--max-pairs` (default 8).
+Resource-limited comparisons can be omitted before play and are explicitly labelled
+`phase_budget_not_evaluated`. Within per-depth tuning the planner interleaves depth
+groups so one depth cannot consume all of another's allocation. After initial
+coverage, optional rounds yield to later phases. A small total budget may leave
+untested parameters or no independent confirmation. Completion is not evidence of
+statistical significance; large targets require a larger total budget for useful
+competitive evidence.
 
-`--workers N` or `auto` enables bounded concurrency for all fixed-iteration comparisons.
-Calibration, isolated cost benchmarks, and matches involving **any timed agent** remain
-sequential. Parallel match times are reported as shared-CPU observations, not isolated
-latency. The cost plot uses isolated estimates when available. Benchmarks require a release
-native build; estimates from short samples need not predict large retained trees exactly.
+All competitive comparisons are timing-sensitive and run sequentially to avoid
+CPU contention. `--workers` remains accepted for transport compatibility; it does
+not parallelize these equal-time comparisons. Paired seeds and balanced seats
+are retained; distinct phases have disjoint seed namespaces. Confirmation intervals
+use the existing conservative 95% paired-seed Hoeffding bound. Adaptive screening
+rankings are exploratory, and no multiple-comparison correction is claimed.
 
-Each phase has a separate fixed seed namespace and swapped-seat pairs. Decisions to stop
-allocating to a candidate and the final sample plan are persisted. Resume reuses completed
-games, including the first seat of an interrupted pair, without resampling or replaying them.
-An early-stopped exploratory trace intentionally contains fewer matches than its header's
-maximum; extraction reports that trace as incomplete even when the allocated search phase
-has finished. Search completion and evidence status are reported separately.
+The output directory contains standard per-contrast traces, frozen `study.json`,
+`summary.json`, `report.html`, stage candidates, and one of:
 
-Artifacts:
+- `candidates/best_full_depth_agent.toml`
+- `candidates/best_heuristic_cutoff_agent.toml`
 
-- `study.json`: budget estimates, allocations, adaptive selection decisions, frozen final sample plans, exact profiles, runtime budget/accounting, revision and
-  native/Python fingerprints. The original Git revision is informational: a new commit
-  alone does not block resume, but changed native/Python fingerprints do. `baseline.toml` and optional `reference.toml` snapshot the inputs.
-- `traces/`: one normal, resumable JSONL tournament per contrast. These work with existing
-  `extract` and `report` commands; the new coordinator does not introduce another game trace format.
-- `report.html` and `summary.json`: paired outcomes, results by seat (JSON), conservative
-  95% intervals, mechanism effects by background, latency, maintenance, reuse, iteration
-  throughput by game quarter and a quality/cost plot. The automatic HTML report requires
-  only the standard library; richer existing game reports still use the report extras.
-- `candidates/`: `fast`, `balanced`, `strong`, timed parameter finalists and fixed-iteration
-  `tuned*-balanced` profiles. Identical trade-offs can yield identical candidate profiles.
-  These are proposals, not automatic replacements of the game's baseline.
+These profiles use `time_budget = <derived seconds>`, the selected horizon,
+selector/exploration, optional `rave_equivalence`, fixed evaluator, uniform rollout
+and selected mechanisms. They load through the existing agent/TOML API. The report
+separates calibration/search adequacy, actual costs, discarded/untested candidates,
+observed head-to-head changes and independent confirmation. A +10 percentage-point
+score advantage over parity is **not** a 20% increase in intrinsic playing strength.
+Generated profiles never replace shared baselines automatically.
 
-The balanced screening candidate is the least costly one within five **observed** percentage
-points of the strongest observed candidate against the fixed anchor. This is a selection rule,
-not an equivalence test. Exploratory intervals are descriptive after adaptive allocation; their verdict is `exploratory`.
-Statistical intervals treat an entire seed pair as one observation;
-mechanism averages also cluster backgrounds by seed. They use a conservative Hoeffding bound,
-remain wide in small studies, and have no multiple-comparison correction. The report explicitly
-labels inconclusive results and never calls a non-significant improvement “iteration saturation”.
-A held-out advantage supports only the tested opponents, budgets and game settings.
+### Migration from mixed-family studies
 
-Resume an interrupted or budget-limited study with the same settings and a larger **total** budget:
+Protocol 11 replaces the old full-versus-neutral/H0/H1 admission pipeline. Old
+checkpoints are rejected without modification: use a new output directory rather
+than mixing old matches with the new methodology. Resuming protocol 11 retains
+frozen plans and flushed games; `--budget` is the new total allowance. Changes to
+parameters, target time, evaluator or executable code require a new directory.
+A Git commit alone still does not invalidate a compatible checkpoint.
 
-```bash
-meeple-bots study --game boop --budget 4h --resume \
-  --reference configs/mcts/boop-baseline.toml \
-  --output results/studies/boop-generic-diagnosis
-```
-
-Completed games are reused, including the first seat of an interrupted pair. Conflicting inputs,
-changed executors/native binaries, missing completed traces and truncated records are rejected.
-Raising the budget lets pending phases finish; it does not add seeds to already frozen phases.
-Start a new output directory for a larger independent replication or a changed engine.
-
-A small execution check is available, but is intentionally too weak for strength conclusions:
-
-```bash
-meeple-bots study --game boop --budget 60s --decision-time 0.0005 --max-pairs 2 \
-  --output results/studies/boop-smoke
-```
-
-### Admission and measured improvements
-
-`study.json` and `summary.json` persist `cutoff_selection`: `admitted` is true or false
-after the target-time horizon check completes, and null while pending (older reports may use the initial horizon screen). The record includes the
-selected candidate, best observed candidate and score, threshold, and reason for rejection.
-The `provisional` status means the cutoff continues without sufficient evidence to justify
-its admission or rejection on strength. This decision is separate from held-out
-`cutoff_decisions` and `final_selection`: the latter reports a resolved winner, an inconclusive
-comparison, pending confirmation, or that only the full family survived. `phase_evidence`
-separates execution completion, pair counts and decisive comparisons; `complete` alone
-never means statistical certainty.
-
-Parameter and refinement matches directly against the incoming parent serve both selection
-and attribution. When selector and exploration both change, the report labels a combined
-change rather than claiming an isolated exploration effect. This avoids extra attribution
-matches. Reuse/transposition switches and final ablations provide other direct measurements.
-
-`improvement_comparisons` records before/after parameter values, isolated versus combined
-changes, score, advantage over parity in percentage points, paired 95% interval, sample count,
-phase completion and trace. A 60% score against the predecessor is **+10 percentage points**
-over parity; it is not a claim of 20% stronger play. `improvement_rankings` orders measured
-single-factor comparisons from completed phases, separately by full/cutoff family and equal
-time/equal iterations/unequal budgets, and by screening versus held-out ablation evidence. Combined changes remain visible without attributing
-the result to a single parameter. Rankings are descriptive and conditional on their opponents
-and configurations; neither significance nor a universal factor ordering is implied. Pending
-comparisons have no measured advantage and do not enter rankings. The HTML report includes
-admission, rankings and all changes, including negative and inconclusive outcomes.
+`--baseline` remains accepted as a starting profile; its exploration is the initial
+C, but its cutoff evaluator does **not** implicitly select the study mode. Study
+initialization resets optional mechanisms, rollout and selector for calibration.
+`--reference` is allowed only within the same evaluator/horizon family, as auxiliary
+held-out evidence; external references do not select the nominee. Cross-family
+comparisons belong in a separate tournament. `--decision-time` remains an explicit
+seconds-per-decision override and is labelled as such in the report; normally use
+`--target-match-time`. `--screening-time` now errors with migration guidance because
+a cheaper screening budget would change the main comparison question.

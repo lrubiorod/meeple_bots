@@ -749,6 +749,7 @@ fn py_benchmark_mcts_agent(
         "milliseconds_per_iteration",
         report.milliseconds_per_iteration,
     )?;
+    serialized.set_item("maximum_decision_horizon", report.maximum_decision_horizon)?;
     let position_timings = PyList::empty(py);
     for timing in report.position_timings {
         let item = PyDict::new(py);
@@ -756,6 +757,10 @@ fn py_benchmark_mcts_agent(
         item.set_item("milliseconds", timing.milliseconds)?;
         item.set_item("iterations", timing.iterations)?;
         item.set_item("nodes", timing.nodes)?;
+        item.set_item("legal_actions", timing.legal_actions)?;
+        item.set_item("terminal_simulations", timing.terminal_simulations)?;
+        item.set_item("cutoff_simulations", timing.cutoff_simulations)?;
+        item.set_item("root_visits", timing.root_visits)?;
         position_timings.append(item)?;
     }
     serialized.set_item("position_timings", position_timings)?;
@@ -2489,6 +2494,7 @@ fn py_game_search_capabilities(py: Python<'_>, game: &str) -> PyResult<Py<PyDict
     let capabilities = meeple_bots_catalog::game_search_capabilities(parse_game(game)?);
     let result = PyDict::new(py);
     result.set_item("turn_phase_conditions", capabilities.turn_phase_conditions)?;
+    result.set_item("selection_policies", capabilities.selection_policies)?;
     let heuristics = PyDict::new(py);
     for heuristic in capabilities.heuristics {
         let parameters = PyDict::new(py);

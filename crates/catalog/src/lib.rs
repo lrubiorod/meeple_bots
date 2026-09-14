@@ -100,6 +100,7 @@ fn connect6_game(size: usize) -> Result<Connect6, CatalogError> {
 pub struct GameSearchCapabilities {
     pub heuristics: Vec<HeuristicDescriptor>,
     pub turn_phase_conditions: bool,
+    pub selection_policies: Vec<&'static str>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -128,6 +129,11 @@ pub fn game_search_capabilities(game: GameId) -> GameSearchCapabilities {
             GameId::Connect6(_) | GameId::ConnectFour | GameId::TicTacToe => Vec::new(),
         },
         turn_phase_conditions: supports_turn_phase_conditions(game),
+        selection_policies: if matches!(game, GameId::Splendor) {
+            vec!["uct", "ucb1_tuned"]
+        } else {
+            vec!["uct", "ucb1_tuned", "uct_rave"]
+        },
     }
 }
 

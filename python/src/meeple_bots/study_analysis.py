@@ -41,6 +41,7 @@ def _timings(rows, role):
             "p50_seconds": median(seconds) if seconds else None,
             "p95_seconds": quantile(seconds, .95), "total_seconds": total,
             "mean_iterations": mean(iterations) if iterations else None,
+            "median_iterations": median(iterations) if iterations else None,
             "iterations_per_second": sum(iterations) / total if total else None,
             "mean_nodes": mean([m.get("search_nodes") or 0 for m, _ in moves]) if moves else None,
             "maintenance_seconds": sum(m.get("maintenance_seconds", 0) for m, _ in moves),
@@ -166,6 +167,8 @@ def cutoff_screening(phase):
 
 def study_diagnostics(state):
     """Describe admission and measured effects; never infer universal strength gains."""
+    if state.get("request", {}).get("version", 0) >= 11:
+        return family_study_diagnostics(state)
     phases = state.get("phases", {})
     horizon = phases.get("horizon_check", phases.get("horizons", {}))
     selection = cutoff_screening(horizon)
@@ -235,6 +238,8 @@ def study_diagnostics(state):
 
 
 def write_study_report(output: Path, state: dict):
+    if state.get("request", {}).get("version", 0) >= 11:
+        return write_family_study_report(output, state)
     summary = {"status": state["status"], "game": state["request"]["game"],
                "budget_seconds": state["budget_seconds"], "spent_seconds": state["spent_seconds"],
                "calibration": state["calibration"], "phases": state["phases"],
@@ -342,3 +347,126 @@ def write_study_report(output: Path, state: dict):
         parts.append('<ul>' + ''.join(f'<li><a href="{escape(c["trace"], quote=True)}">{escape(c["a"])} vs {escape(c["b"])}</a></li>' for c in phase['contrasts'] if 'trace' in c) + '</ul>')
     parts.append('<h2>Candidate profiles</h2><ul>' + ''.join(f'<li><a href="{escape(path, quote=True)}">{escape(name)}</a></li>' for name, path in state.get('candidate_profiles', {}).items()) + '</ul>')
     (output / 'report.html').write_text('\n'.join(parts), encoding='utf-8')
+
+
+def search_adequacy(timings, target_match_time):
+    """Heuristic work diagnostic, NOT a probability or competitive confidence.
+
+    Ratios below 1/10/100 simulations per representative legal action are
+    VERY LOW/LOW/MEDIUM; >=100 is HIGH. Thresholds are descriptive, not guarantees.
+    """
+    def category(ratio):
+        return "VERY LOW" if ratio < 1 else "LOW" if ratio < 10 else "MEDIUM" if ratio < 100 else "HIGH"
+    iterations = median([t["iterations"] for t in timings]) if timings else 0
+    branching = max(1, median([t["legal_actions"] for t in timings])) if timings else 1
+    elapsed = sum(t["milliseconds"] for t in timings) / 1000
+    ratio = iterations / branching
+    visits, coverages = [], []
+    for t in timings:
+        if t.get("root_visits"):
+            values = list(t["root_visits"]) + [0] * max(0, t["legal_actions"] - len(t["root_visits"]))
+            visits.extend(values)
+            coverages.append(sum(v > 0 for v in values) / max(1, t["legal_actions"]))
+    recommendations = []
+    if category(ratio) in ("VERY LOW", "LOW") and ratio > 0:
+        for multiplier in (3, 10):
+            recommendations.append({"target_match_time": target_match_time * multiplier,
+                                    "estimated_category": category(ratio * multiplier),
+                                    "estimated_iterations_per_decision": iterations * multiplier})
+    return {"category": category(ratio), "median_iterations_per_decision": iterations,
+            "actual_elapsed_seconds": elapsed,
+            "iterations_completed": sum(t["iterations"] for t in timings),
+            "iterations_per_second": sum(t["iterations"] for t in timings) / elapsed if elapsed else 0,
+            "representative_branching": branching, "iterations_per_legal_action": ratio,
+            "median_root_coverage": median(coverages) if coverages else None,
+            "median_visits_per_root_action": median(visits) if visits else None,
+            "p10_visits_per_root_action": quantile(visits, .1),
+            "suggested_targets": recommendations,
+            "interpretation": "Heuristic search-work diagnostic; neither win probability nor statistical confidence. Linear time scaling is approximate."}
+
+
+def family_study_diagnostics(state):
+    phases = state.get("phases", {})
+    confirmation = phases.get("confirmation", {})
+    primary = next((c for c in confirmation.get("contrasts", []) if c.get("primary")), {})
+    result = primary.get("result", {})
+    complete = confirmation.get("status") == "complete"
+    tested = (primary.get("target_pairs", 0) >= 2
+              and result.get("seed_pairs", 0) >= primary["target_pairs"])
+    candidate = "finalist" if "finalist" in confirmation.get("agents", {}) else None
+    verdict = result.get("verdict", "not_measured")
+    effects = []
+    costs = []
+    for name, phase in phases.items():
+        for c in phase.get("contrasts", []):
+            a, b = (phase["agents"][c[role]] for role in ("a", "b"))
+            r = c.get("result", {})
+            score = r.get("score_b")
+            changes = {k: {"before": a.get(k), "after": b.get(k)} for k in a.keys() | b.keys() if a.get(k) != b.get(k)}
+            effects.append({"phase": name, "before": c["a"], "after": c["b"], "changes": changes,
+                            "score_b": score, "advantage_pp": 100*(score-.5) if score is not None else None,
+                            "ci95_b": r.get("ci95_b"), "seed_pairs": r.get("seed_pairs", 0),
+                            "reason": c.get("stop_reason", "evaluated" if score is not None else "pending"),
+                            "evidence": "held_out" if name == "confirmation" else "exploratory"})
+            for role in ("a", "b"):
+                timing = r.get("timing_" + role)
+                if timing and timing.get("decisions"):
+                    branching = (state.get("calibration") or {}).get("search_adequacy", {}).get("representative_branching", 1)
+                    adequacy = search_adequacy([{"iterations": timing["median_iterations"], "legal_actions": branching,
+                                                "milliseconds": timing["p50_seconds"] * 1000}], state["request"]["target_match_time"])
+                    costs.append({"phase": name, "candidate": c[role], "search_adequacy": adequacy["category"],
+                                  "median_iterations_per_decision": timing["median_iterations"],
+                                  "iterations_per_second": timing["iterations_per_second"],
+                                  "actual_elapsed_seconds": timing["total_seconds"], "mean_decision_seconds": timing["mean_seconds"],
+                                  "terminal_fraction": timing["terminal_fraction"]})
+    return {"mode": state["request"]["mode"], "search_complete": complete,
+            "final_selection": {"candidate": candidate, "status": "confirmed" if complete and tested and verdict == "b_ahead" else "provisional",
+                                "competitive_confidence": verdict if complete and tested else "not_measured",
+                                "score_b": result.get("score_b"), "ci95_b": result.get("ci95_b"),
+                                "seed_pairs": result.get("seed_pairs", 0),
+                                "interpretation": "Nominee fixed before confirmation. Inconclusive evidence does not establish equivalence; a loss is reported without post-hoc reselection."},
+            "improvement_comparisons": effects, "candidate_search_costs": costs}
+
+
+def write_family_study_report(output, state):
+    summary = {**state, **family_study_diagnostics(state)}
+    summary["limitations"] = [
+        "Only the requested evaluator family is optimized; compare separate studies in a tournament.",
+        "All competitive contrasts use the same decision time, in isolation. Iterations are measured work, not the selection budget.",
+        "Practical full-depth means >=99% terminal simulations at every sampled position; this finite empirical probe is not a rules guarantee. Unverified safety horizons are explicitly labelled.",
+        "Rollout depth counts player decisions, excludes Chance, and completes the physical turn before cutoff. Terminal stops immediately.",
+        "Search adequacy thresholds are heuristic diagnostics, separate from paired-seed competitive confidence.",
+        "95% intervals use conservative paired-seed Hoeffding bounds. Screening is adaptive/exploratory, not independent confirmation; no multiple-comparison correction.",
+        "The final nominee is frozen before fresh confirmation seeds. Budget-limited/untested alternatives are not proven inferior.",
+        "Pilot length and random representative positions are preliminary estimates. Actual game costs can differ; target match time is not a match deadline.",
+        "Phase allocations roll forward; match pairs and individual searches can overshoot time budgets. Old study protocols require a new output directory.",
+    ]
+    (output / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
+    cal = state.get("calibration") or {}
+    parts = ['<!doctype html><meta charset="utf-8"><title>MCTS family study</title>',
+             '<style>body{font:16px system-ui;max-width:1200px;margin:2rem auto}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:.5rem;text-align:left}</style>',
+             f'<h1>{escape(state["request"]["game"])} — {escape(state["request"]["mode"])}</h1>',
+             f'<p>Status: {escape(state["status"])}. Used {state["spent_seconds"]:.1f}/{state["budget_seconds"]:.1f}s.</p>',
+             '<p><a href="summary.json">Summary and frozen comparisons</a> · <a href="study.json">Checkpoint</a></p>',
+             '<h2>Calibration and search adequacy</h2>',
+             _table(['Measurement', 'Value'], [(k, json.dumps(cal.get(k))) for k in
+                    ('target_match_time', 'estimated_game_decisions', 'safety_margin', 'decision_seconds', 'decision_time_source', 'cutoff_depths')])]
+    parts.append(_table(['Sampled player decisions', 'Search ms', 'Iterations', 'Legal actions', 'Terminal / cutoff simulations'],
+                        [(t['sampled_ply'], t['milliseconds'], t['iterations'], t['legal_actions'],
+                          f"{t.get('terminal_simulations')} / {t.get('cutoff_simulations')}") for t in cal.get('position_timings', [])]))
+    horizon = cal.get("horizon", {})
+    parts.append(_table(['Horizon kind', 'Decision depth', 'Measured terminal fraction'], [(horizon.get('kind'), horizon.get('depth'), horizon.get('terminal_fraction'))]))
+    parts.append('<pre>' + escape(json.dumps(cal.get('search_adequacy', {}), indent=2)) + '</pre>')
+    parts.extend('<p>Warning: ' + escape(w) + '</p>' for w in cal.get('warnings', []))
+    parts.append('<h2>Independent competitive evidence</h2><pre>' + escape(json.dumps(summary['final_selection'], indent=2)) + '</pre>')
+    for name, phase in state['phases'].items():
+        parts.append(f'<h2>{escape(name)} — {escape(phase["status"])}</h2>')
+        parts.append(_table(['A', 'B', 'Changed factor', 'Pairs', 'B score', '95% CI', 'Disposition'], [
+            (c['a'], c['b'], c['factor'], (r := c.get('result', {})).get('seed_pairs', 0), r.get('score_b'),
+             r.get('ci95_b'), c.get('stop_reason', r.get('verdict', 'pending'))) for c in phase['contrasts']]))
+    parts.append('<h2>Measured candidate search work</h2>')
+    fields = ('phase', 'candidate', 'search_adequacy', 'median_iterations_per_decision', 'iterations_per_second', 'mean_decision_seconds', 'terminal_fraction')
+    parts.append(_table(fields, [[row[k] for k in fields] for row in summary['candidate_search_costs']]))
+    parts.append('<h2>Candidate profiles</h2><ul>' + ''.join(f'<li><a href="{escape(path)}">{escape(name)}</a></li>' for name, path in state.get('candidate_profiles', {}).items()) + '</ul>')
+    parts.append('<h2>Limitations</h2><ul>' + ''.join('<li>' + escape(s) + '</li>' for s in summary['limitations']) + '</ul>')
+    (output / 'report.html').write_text('\n'.join(parts))

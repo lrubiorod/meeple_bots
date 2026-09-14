@@ -98,6 +98,10 @@ impl Game for ConnectFour {
     type Observation<'a> = &'a ConnectFourState;
     type LegalActions<'a> = LegalActions<'a>;
 
+    fn maximum_decision_horizon(&self) -> Option<u32> {
+        Some(CELL_COUNT as u32)
+    }
+
     fn player_count(&self) -> u8 {
         2
     }

@@ -108,6 +108,10 @@ impl Game for TicTacToe {
     type Observation<'a> = &'a TicTacToeState;
     type LegalActions<'a> = LegalActions<'a>;
 
+    fn maximum_decision_horizon(&self) -> Option<u32> {
+        Some(9)
+    }
+
     fn player_count(&self) -> u8 {
         2
     }

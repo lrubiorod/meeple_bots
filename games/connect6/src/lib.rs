@@ -91,6 +91,10 @@ impl Game for Connect6 {
     type Action = Connect6Action;
     type Observation<'a> = &'a Connect6State;
     type LegalActions<'a> = std::vec::IntoIter<Connect6Action>;
+    fn maximum_decision_horizon(&self) -> Option<u32> {
+        Some((self.board_size * self.board_size) as u32)
+    }
+
     fn player_count(&self) -> u8 {
         2
     }

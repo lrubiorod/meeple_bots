@@ -28,6 +28,12 @@ pub trait Game {
 
     fn player_count(&self) -> u8;
     fn initial_state(&self) -> Self::State;
+
+    /// Rule-proven upper bound on player decisions from setup to terminal.
+    /// Chance events are excluded. None means no useful bound is provided.
+    fn maximum_decision_horizon(&self) -> Option<u32> {
+        None
+    }
     fn status(&self, state: &Self::State) -> PositionStatus;
 
     /// Whether this position is between physical turns, before the next player decision.

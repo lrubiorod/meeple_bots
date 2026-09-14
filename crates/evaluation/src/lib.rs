@@ -65,16 +65,21 @@ pub struct SuggestedMctsExperiment {
     pub estimated_decision_time_ms: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SampledDecisionTiming {
     pub sampled_ply: u32,
     pub milliseconds: f64,
     pub iterations: u64,
     pub nodes: u64,
+    pub legal_actions: usize,
+    pub terminal_simulations: Option<u64>,
+    pub cutoff_simulations: Option<u64>,
+    pub root_visits: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MctsAgentBenchmark {
+    pub maximum_decision_horizon: Option<u32>,
     pub sampled_positions: u32,
     pub decision_time_mean_ms: f64,
     pub decision_time_p50_ms: f64,
@@ -275,10 +280,15 @@ where
         agent
             .select_action(DecisionContext::new(game, state, player), &mut rng)
             .map_err(EvaluationError::Agent)?;
+        let milliseconds = (started.elapsed().as_secs_f64() * 1_000.0).max(f64::EPSILON);
         let stats = agent.last_decision_stats();
         position_timings.push(SampledDecisionTiming {
             sampled_ply: *sampled_ply,
-            milliseconds: (started.elapsed().as_secs_f64() * 1_000.0).max(f64::EPSILON),
+            legal_actions: game.legal_actions(state).count(),
+            terminal_simulations: stats.terminal_simulations,
+            cutoff_simulations: stats.cutoff_simulations,
+            root_visits: stats.root_actions.iter().map(|a| a.visits).collect(),
+            milliseconds,
             iterations: stats
                 .search_iterations
                 .ok_or(EvaluationError::MissingSearchStats)?,
@@ -303,6 +313,7 @@ where
     sorted_timings.sort_by(f64::total_cmp);
 
     Ok(MctsAgentBenchmark {
+        maximum_decision_horizon: game.maximum_decision_horizon(),
         sampled_positions: position_timings.len() as u32,
         decision_time_mean_ms,
         decision_time_p50_ms: percentile_f64(&sorted_timings, 50),
@@ -797,6 +808,14 @@ mod tests {
 
         let benchmark = benchmark_mcts_agent(&TicTacToe, &mut agent, 6, 42).unwrap();
 
+        assert_eq!(benchmark.maximum_decision_horizon, Some(9));
+        assert_eq!(benchmark.position_timings[0].legal_actions, 9);
+        for timing in &benchmark.position_timings {
+            assert_eq!(
+                timing.terminal_simulations.unwrap() + timing.cutoff_simulations.unwrap(),
+                4
+            );
+        }
         assert_eq!(benchmark.sampled_positions, 3);
         assert_eq!(
             benchmark
