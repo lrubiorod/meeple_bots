@@ -39,6 +39,15 @@ pub fn configured_cant_stop_agent(config: AgentConfig) -> Result<CantStopAgent, 
             root_diagnostics,
         }) => {
             validate_evaluator(&cutoff_evaluator)?;
+            if matches!(
+                search.selection_policy,
+                meeple_bots_mcts_agent::SelectionPolicy::UctRave { .. }
+            ) {
+                return Err(AgentError::message(
+                    "UCT-RAVE is only supported by deterministic MCTS",
+                ));
+            }
+
             validate_rollout(&search.rollout_policy)?;
             search.validate().map_err(AgentError::message)?;
             if let ConfiguredSelectionBias::Progressive {

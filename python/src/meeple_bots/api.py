@@ -1057,6 +1057,7 @@ def benchmark_mcts_agent(
         agent.transpositions,
         agent.selection_policy,
         game_params=game_parameters(game),
+        rave_equivalence=agent.rave_equivalence,
     )
     return MctsAgentBenchmark(
         game=game,
@@ -1241,6 +1242,7 @@ def _native_agent(agent: Agent, game: Game):
             agent.tree_reuse,
             agent.transpositions,
             agent.selection_policy,
+            rave_equivalence=agent.rave_equivalence,
         )
     return _native.AgentConfig.human(
         _human_selector(agent, game),
@@ -1250,6 +1252,8 @@ def _native_agent(agent: Agent, game: Game):
 
 def _validate_agent_evaluators(game: Game, agent: Agent) -> None:
     if isinstance(agent, MctsAgent):
+        if isinstance(game, Splendor) and agent.selection_policy == "uct_rave":
+            raise ValueError("UCT-RAVE is only supported by deterministic MCTS")
         if isinstance(agent.rollout_policy, ConditionalRollout):
             if not game_search_capabilities(_game_display_name(game))["turn_phase_conditions"]:
                 raise ValueError(

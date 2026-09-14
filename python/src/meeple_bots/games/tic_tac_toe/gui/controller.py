@@ -67,6 +67,7 @@ class TicTacToeGui(GuiController):
             time_budget=configured.time_budget,
             exploration=configured.exploration,
             selection_policy=configured.selection_policy,
+            rave_equivalence=configured.rave_equivalence,
             rollout_depth=configured.rollout_depth,
             tree_reuse=configured.tree_reuse,
             transpositions=configured.transpositions,

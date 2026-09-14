@@ -30,6 +30,7 @@ def _load_gui_baseline(filename: str) -> GuiPlayer:
         heuristic=agent.heuristic, tree_reuse=agent.tree_reuse,
         transpositions=agent.transpositions,
         selection_policy=agent.selection_policy,
+        rave_equivalence=agent.rave_equivalence,
     )
     # Do not silently discard policies or evaluator parameters absent from the GUI.
     represented = player.to_agent() if isinstance(player, ConfiguredGuiPlayer) else MctsAgent(**{k: v for k, v in player.as_dict().items() if k != "kind"})

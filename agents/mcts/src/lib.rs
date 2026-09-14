@@ -3,6 +3,10 @@
 #[cfg(test)]
 mod turn_boundary_tests;
 
+mod rave;
+pub use rave::DEFAULT_RAVE_EQUIVALENCE;
+use rave::*;
+
 mod stochastic;
 mod stochastic_reuse;
 pub use stochastic::StochasticMctsAgent;
@@ -29,6 +33,9 @@ pub enum SelectionPolicy {
     #[default]
     Uct,
     Ucb1Tuned,
+    UctRave {
+        rave_equivalence: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -46,6 +53,11 @@ impl<P> MctsConfig<P> {
     pub fn validate(&self) -> Result<(), &'static str> {
         if !self.exploration.is_finite() || self.exploration < 0.0 {
             return Err("MCTS exploration must be finite and non-negative");
+        }
+        if let SelectionPolicy::UctRave { rave_equivalence } = self.selection_policy {
+            if rave_equivalence == 0 {
+                return Err("rave_equivalence must be greater than zero");
+            }
         }
         Ok(())
     }
@@ -895,6 +907,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
     fn choose_action<G, R>(
         &mut self,
         decision: DecisionContext<'_, G>,
+        rave_ops: Option<ActionOps<G::Action>>,
         rng: &mut R,
     ) -> Result<G::Action, AgentError>
     where
@@ -921,6 +934,15 @@ impl<C, P, B> MctsAgent<C, P, B> {
             ));
         }
 
+        if matches!(
+            self.config.selection_policy,
+            SelectionPolicy::UctRave { .. }
+        ) && rave_ops.is_none()
+        {
+            return Err(AgentError::message(
+                "UCT-RAVE requires the typed TreeReuseMctsAgent or TranspositionMctsAgent adapter (reuse may be disabled)",
+            ));
+        }
         let root = Node::new(None, 0.0, game.legal_actions(root_state));
         if root.unexpanded.is_empty() {
             return Err(AgentError::NoLegalActions);
@@ -948,6 +970,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
             &mut nodes,
             root_action_indices,
             true,
+            rave_ops,
             rng,
         )?;
 
@@ -967,6 +990,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
         nodes: &mut Vec<Node<G::Action>>,
         mut root_action_indices: Option<RootActionIndices>,
         count_existing_nodes: bool,
+        rave_ops: Option<ActionOps<G::Action>>,
         rng: &mut R,
     ) -> Result<usize, AgentError>
     where
@@ -988,6 +1012,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
 
         let search_started = Instant::now();
         let mut rollout_memory = RolloutMemory::default();
+        let mut rave = RaveTrace::new(rave_ops);
         let mut completed_iterations = 0_u64;
         let mut terminal_simulations = 0_u64;
         let mut path = Vec::new();
@@ -1004,12 +1029,14 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 break;
             }
 
+            rave.clear();
             let mut state = root_state.clone();
             let mut node_index = 0;
             path.clear();
             path.push(0);
 
             loop {
+                rave.visit(node_index, game, &state, &mut nodes[node_index].amaf);
                 let status = game.status(&state);
                 if matches!(status, PositionStatus::Terminal) {
                     break;
@@ -1047,6 +1074,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                     {
                         rollout_memory.trajectory.push((active_player, recorded));
                     }
+                    rave.record(active_player, &unexpanded);
                     game.apply_action(&mut state, &unexpanded)
                         .map_err(|error| AgentError::message(error.to_string()))?;
 
@@ -1088,14 +1116,28 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 }
 
                 let maximizing = active_player == root_player;
-                let selected = best_child(
-                    nodes,
-                    node_index,
-                    maximizing,
-                    self.config.exploration,
-                    self.config.selection_policy,
-                    bias_weight,
-                );
+                let selected = if let SelectionPolicy::UctRave { rave_equivalence } =
+                    self.config.selection_policy
+                {
+                    best_rave_child(
+                        nodes,
+                        node_index,
+                        maximizing,
+                        self.config.exploration,
+                        f64::from(rave_equivalence),
+                        bias_weight,
+                        &rave,
+                    )
+                } else {
+                    best_child(
+                        nodes,
+                        node_index,
+                        maximizing,
+                        self.config.exploration,
+                        self.config.selection_policy,
+                        bias_weight,
+                    )
+                };
                 let action = nodes[selected]
                     .action
                     .as_ref()
@@ -1103,12 +1145,14 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 if let Some(recorded) = self.config.rollout_policy.action_for_learning(action) {
                     rollout_memory.trajectory.push((active_player, recorded));
                 }
+                rave.record(active_player, action);
                 game.apply_action(&mut state, action)
                     .map_err(|error| AgentError::message(error.to_string()))?;
                 node_index = selected;
                 path.push(node_index);
             }
 
+            rave.visit(node_index, game, &state, &mut nodes[node_index].amaf);
             let utility = rollout_with_memory(
                 game,
                 &mut state,
@@ -1117,6 +1161,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 &self.config.rollout_policy,
                 &self.cutoff_evaluator,
                 &mut rollout_memory,
+                &mut rave,
                 rng,
             )?;
             self.config
@@ -1128,6 +1173,14 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 if self.config.selection_policy == SelectionPolicy::Ucb1Tuned {
                     nodes[visited].total_squared_utility += utility * utility;
                 }
+            }
+            for &(visited, player, offset) in &rave.visited {
+                rave.update(
+                    nodes[visited].amaf.as_mut().unwrap(),
+                    player,
+                    offset,
+                    utility,
+                );
             }
             terminal_simulations += u64::from(game.status(&state) == PositionStatus::Terminal);
             completed_iterations += 1;
@@ -1201,7 +1254,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
     where
         G: DeterministicGame + PerfectInformationGame + TwoPlayerZeroSumGame,
         G::State: Clone + Eq + Hash,
-        G::Action: Clone,
+        G::Action: Clone + PartialEq,
         C: StateEvaluator<G>,
         P: RolloutPolicy<G>,
         B: SelectionBias<G>,
@@ -1218,6 +1271,13 @@ impl<C, P, B> MctsAgent<C, P, B> {
 
         let search_started = Instant::now();
         let mut rollout_memory = RolloutMemory::default();
+        let mut rave = RaveTrace::new(
+            matches!(
+                self.config.selection_policy,
+                SelectionPolicy::UctRave { .. }
+            )
+            .then(ActionOps::typed),
+        );
         let mut completed_iterations = 0_u64;
         let mut terminal_simulations = 0_u64;
         let mut path_nodes = Vec::new();
@@ -1235,6 +1295,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 break;
             }
 
+            rave.clear();
             let mut state = graph.nodes[0].state.clone();
             let mut node_index = 0;
             path_nodes.clear();
@@ -1242,6 +1303,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
             path_nodes.push(0);
 
             loop {
+                rave.visit(node_index, game, &state, &mut graph.nodes[node_index].amaf);
                 let status = game.status(&state);
                 if matches!(status, PositionStatus::Terminal) {
                     break;
@@ -1280,6 +1342,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                     {
                         rollout_memory.trajectory.push((active_player, recorded));
                     }
+                    rave.record(active_player, &action);
                     game.apply_action(&mut state, &action)
                         .map_err(|error| AgentError::message(error.to_string()))?;
 
@@ -1320,6 +1383,12 @@ impl<C, P, B> MctsAgent<C, P, B> {
                             .push(action_index);
                     }
                     path_edges.push((node_index, edge_index));
+                    rave.visit(
+                        child_index,
+                        game,
+                        &state,
+                        &mut graph.nodes[child_index].amaf,
+                    );
                     if !path_nodes.contains(&child_index) {
                         path_nodes.push(child_index);
                     }
@@ -1333,19 +1402,34 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 }
 
                 let maximizing = active_player == root_player;
-                let edge_index = best_graph_edge(
-                    &graph.nodes,
-                    node_index,
-                    maximizing,
-                    self.config.exploration,
-                    self.config.selection_policy,
-                    bias_weight,
-                );
+                let edge_index = if let SelectionPolicy::UctRave { rave_equivalence } =
+                    self.config.selection_policy
+                {
+                    best_rave_graph_edge(
+                        &graph.nodes,
+                        node_index,
+                        maximizing,
+                        self.config.exploration,
+                        f64::from(rave_equivalence),
+                        bias_weight,
+                        &rave,
+                    )
+                } else {
+                    best_graph_edge(
+                        &graph.nodes,
+                        node_index,
+                        maximizing,
+                        self.config.exploration,
+                        self.config.selection_policy,
+                        bias_weight,
+                    )
+                };
                 let action = graph.nodes[node_index].edges[edge_index].action.clone();
                 let child_index = graph.nodes[node_index].edges[edge_index].child;
                 if let Some(recorded) = self.config.rollout_policy.action_for_learning(&action) {
                     rollout_memory.trajectory.push((active_player, recorded));
                 }
+                rave.record(active_player, &action);
                 game.apply_action(&mut state, &action)
                     .map_err(|error| AgentError::message(error.to_string()))?;
                 path_edges.push((node_index, edge_index));
@@ -1364,6 +1448,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 &self.config.rollout_policy,
                 &self.cutoff_evaluator,
                 &mut rollout_memory,
+                &mut rave,
                 rng,
             )?;
             self.config
@@ -1376,10 +1461,18 @@ impl<C, P, B> MctsAgent<C, P, B> {
             for &(parent, edge) in &path_edges {
                 let edge = &mut graph.nodes[parent].edges[edge];
                 edge.visits += 1;
-                if self.config.selection_policy == SelectionPolicy::Ucb1Tuned {
+                if self.config.selection_policy != SelectionPolicy::Uct {
                     edge.total_utility += utility;
                     edge.total_squared_utility += utility * utility;
                 }
+            }
+            for &(visited, player, offset) in &rave.visited {
+                rave.update(
+                    graph.nodes[visited].amaf.as_mut().unwrap(),
+                    player,
+                    offset,
+                    utility,
+                );
             }
             terminal_simulations += u64::from(game.status(&state) == PositionStatus::Terminal);
             completed_iterations += 1;
@@ -1563,6 +1656,7 @@ struct ReusableGraph<G: meeple_bots_core::Game> {
 }
 
 struct GraphNode<S, A> {
+    amaf: Option<Vec<AmafEdge<A>>>,
     state: S,
     edges: Vec<GraphEdge<A>>,
     unexpanded: Vec<A>,
@@ -1580,6 +1674,7 @@ struct GraphEdge<A> {
 }
 
 struct Node<A> {
+    amaf: Option<Vec<AmafEdge<A>>>,
     action: Option<A>,
     heuristic_value: f64,
     children: Vec<usize>,
@@ -1615,6 +1710,17 @@ where
         rng: &mut R,
     ) -> Result<G::Action, AgentError> {
         if !self.enabled {
+            if matches!(
+                self.inner.config.selection_policy,
+                SelectionPolicy::UctRave { .. }
+            ) {
+                self.inner.decision_budget.begin(self.inner.config.budget);
+                let result = self
+                    .inner
+                    .choose_action(decision, Some(ActionOps::typed()), rng);
+                self.inner.decision_budget.finish();
+                return result;
+            }
             return self.inner.select_action(decision, rng);
         }
         self.inner.decision_budget.begin(self.inner.config.budget);
@@ -1692,6 +1798,11 @@ where
                 &mut tree.nodes,
                 root_action_indices,
                 fresh_tree,
+                matches!(
+                    self.inner.config.selection_policy,
+                    SelectionPolicy::UctRave { .. }
+                )
+                .then(ActionOps::typed),
                 rng,
             );
             let selected_index = match selected {
@@ -2253,6 +2364,7 @@ impl<A> Node<A> {
         I: IntoIterator<Item = A>,
     {
         Self {
+            amaf: None,
             action,
             heuristic_value,
             children: Vec::new(),
@@ -2278,6 +2390,7 @@ impl<S, A> GraphNode<S, A> {
         I: IntoIterator<Item = A>,
     {
         Self {
+            amaf: None,
             state,
             edges: Vec::new(),
             unexpanded: unexpanded.into_iter().collect(),
@@ -2313,7 +2426,7 @@ where
         rng: &mut R,
     ) -> Result<G::Action, AgentError> {
         self.decision_budget.begin(self.config.budget);
-        let result = self.choose_action(decision, rng);
+        let result = self.choose_action(decision, None, rng);
         self.decision_budget.finish();
         result
     }
@@ -2399,7 +2512,7 @@ fn graph_edge_mean<S, A>(
     edge: &GraphEdge<A>,
     policy: SelectionPolicy,
 ) -> f64 {
-    if policy == SelectionPolicy::Ucb1Tuned {
+    if policy != SelectionPolicy::Uct {
         if edge.visits == 0 {
             0.0
         } else {
@@ -2460,7 +2573,9 @@ fn selection_score<A>(
     bias_weight: f64,
 ) -> f64 {
     let uct = match selection_policy {
-        SelectionPolicy::Uct => uct_score(node, parent_visits, maximizing, exploration),
+        SelectionPolicy::Uct | SelectionPolicy::UctRave { .. } => {
+            uct_score(node, parent_visits, maximizing, exploration)
+        }
         SelectionPolicy::Ucb1Tuned => tuned_score(
             node.visits,
             node.total_utility,
@@ -2539,6 +2654,7 @@ where
         policy,
         cutoff_evaluator,
         &mut RolloutMemory::default(),
+        &mut RaveTrace::new(None),
         rng,
     )
 }
@@ -2565,6 +2681,7 @@ fn rollout_with_memory<G, P, C, R>(
     policy: &P,
     cutoff_evaluator: &C,
     memory: &mut RolloutMemory<G::Action>,
+    rave: &mut RaveTrace<G::Action>,
     rng: &mut R,
 ) -> Result<f64, AgentError>
 where
@@ -2592,6 +2709,7 @@ where
                 if let Some(recorded) = policy.action_for_learning(&action) {
                     memory.trajectory.push((active_player, recorded));
                 }
+                rave.record(active_player, &action);
                 game.apply_action(state, &action)
                     .map_err(|error| AgentError::message(error.to_string()))?;
                 decisions = decisions.saturating_add(1);

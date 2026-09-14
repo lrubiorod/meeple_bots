@@ -156,6 +156,14 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
         self.budget.begin(self.config.budget);
         self.stats = AgentDecisionStats::default();
         self.config.validate().map_err(AgentError::message)?;
+        if matches!(
+            self.config.selection_policy,
+            SelectionPolicy::UctRave { .. }
+        ) {
+            return Err(AgentError::message(
+                "UCT-RAVE is only supported by deterministic MCTS",
+            ));
+        }
         self.config.rollout_policy.validate()?;
         let bias_weight = self.selection_bias.weight();
         if !bias_weight.is_finite() || bias_weight < 0.0 {

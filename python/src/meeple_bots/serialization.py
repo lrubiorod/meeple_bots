@@ -199,6 +199,7 @@ def agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, object]:
         "rollout_depth": agent.rollout_depth,
         "exploration": agent.exploration,
         "selection_policy": agent.selection_policy,
+        **({"rave_equivalence": agent.rave_equivalence} if agent.selection_policy == "uct_rave" else {}),
         "heuristic": agent.heuristic,
         "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator),
         "rollout_policy": _rollout_policy_name(agent),

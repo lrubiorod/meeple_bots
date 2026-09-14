@@ -75,7 +75,8 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `selection_policy` | `"uct"` | Tree selection: `uct` or `ucb1_tuned`. |
+| `selection_policy` | `"uct"` | Tree selection: `uct`, `ucb1_tuned`, or deterministic `uct_rave`. |
+| `rave_equivalence` | `1000` | Positive integer k for Classic UCT-RAVE; ignored by other selectors. |
 | `iterations` | `1_000` | Exact iterations per decision; excludes `time_budget`. |
 | `time_budget` | `None` | Approximate total agent seconds per decision; excludes `iterations`. |
 | `exploration` | `sqrt(2)` | UCT balance between utility and less-visited branches. |
@@ -391,3 +392,83 @@ with the remaining rollout horizon; depth counts player actions rather than chan
 MAST memory is fresh each decision even with a retained tree. Deterministic search retains its
 existing behavior.
 See [Can't Stop integration](../games/cant-stop/README.md#engine-integration) for supported options.
+
+## Classic UCT-RAVE (deterministic games)
+
+Normal Q asks: **How good was action A when actually chosen from state S?**
+AMAF asks: **When A appeared at or after S in a simulation for the player active
+at S, how did that simulation end?** RAVE blends these estimates early and
+increasingly trusts direct evidence as the state accumulates real visits:
+
+```text
+beta = sqrt(k / (3 * N(s) + k))
+Q_RAVE = (1 - beta) * Q + beta * Q_AMAF
+score = oriented(Q_RAVE) + exploration * sqrt(ln(N(s)) / N(s,a))
+```
+
+Both means use root-player utility. `oriented` reverses the blended mean when
+selecting for the opponent, exactly as ordinary UCT does. Without AMAF samples,
+the effective beta is zero. Real edge visits, never AMAF visits, control the
+exploration denominator and whether an action has been explored.
+
+AMAF tables belong to each state's outgoing legal actions, including unexpanded
+actions. Every visited state receives at most one AMAF credit per matching action
+per simulation. Only actions in its trajectory suffix by its actual active
+`PlayerId` count; the direct action counts too. Opponent actions and actions not
+legal at that state do not count. Selection, expansion and rollout all contribute
+to the trajectory, including the extra microactions needed to complete a turn.
+Thus Connect6 credits both consecutive placements by one player without assuming
+ply parity or limiting AMAF to that physical turn.
+
+RAVE changes selection and adds a backup. It does not change expansion, rollout
+policy, MAST memory or final root choice (real visits, then real mean utility).
+Progressive Bias remains an additional term with its existing decay. AMAF is
+state-local, whereas MAST uses cross-state move statistics to guide rollouts.
+The transposition backend stores direct RAVE Q on outgoing edges (as it already
+does for UCB1-Tuned), alongside normal node statistics. Ordinary UCT retains its
+existing transposition scoring unchanged. Exact shared states share a single
+AMAF table; a repeated node receives one AMAF update per simulation. Rerooting
+and graph compaction move the whole table with the retained node.
+
+```toml
+iterations = 1000
+rollout_depth = 16
+selection_policy = "uct_rave"
+rave_equivalence = 1000
+exploration = 1.4142135623730951
+rollout_policy = { kind = "uniform_random" }
+cutoff_evaluator = { kind = "neutral" }
+tree_reuse = false
+transpositions = false
+```
+
+`rave_equivalence` is a positive u32 integer. Python/config defaults to 1000, a
+starting value, not a universally optimal setting. It is ignored by other selectors.
+Tournaments accept a grid such as `rave_equivalence = [100, 1000, 10000]`;
+serialized RAVE profiles and extracted agent tables retain the chosen value.
+
+```python
+MctsAgent(iterations=1000, rollout_depth=16,
+          selection_policy="uct_rave", rave_equivalence=1000)
+```
+
+```bash
+meeple-bots match --game connect6 --game-param board_size=11 \
+  --first mcts --second random --mcts-iterations 1000 \
+  --mcts-selection-policy uct_rave --mcts-rave-equivalence 1000
+```
+
+Rust uses `SelectionPolicy::UctRave { rave_equivalence: DEFAULT_RAVE_EQUIVALENCE }`.
+Use the existing typed `TreeReuseMctsAgent::new(inner, false)` or
+`TranspositionMctsAgent::new(inner, false, false)` adapter even if reuse is off;
+these provide action cloning/equality for trajectory identity. The catalog does
+this automatically. Basic `MctsAgent` still supports non-cloneable actions for
+UCT/UCB1-Tuned and reports an explicit error if asked for RAVE without that adapter.
+
+AMAF is most plausible when action ordering is partly interchangeable, making
+Connect6 an interesting experiment. RAVE adds trajectory recording and local
+matching work; it need not improve strength or equal-time throughput in every game.
+This implementation records each action once, reuses trajectory buffers and avoids
+per-node suffix allocations; lookup uses equality scans rather than assuming a
+hashable Action. No stochastic RAVE is implemented: stochastic agents/catalog
+reject UCT-RAVE explicitly. No GRAVE, PoolRAVE or game-specific extensions are used.

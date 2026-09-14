@@ -162,7 +162,10 @@ An MCTS entry must define exactly one of `iterations` or `time_budget`, plus `ro
 turn before evaluating. Chance events do not count, and terminal stops immediately.
 For example, Connect6 may execute 16 decisions for a depth of 15 when the last stone
 would otherwise leave its turn incomplete. No boundary option is needed.
-Either budget can be an array; `rollout_depth` and `exploration` can also use arrays. Structured
+Either budget can be an array; `rollout_depth` and `exploration` can also use arrays.
+For deterministic UCT-RAVE, set `selection_policy = "uct_rave"` and optionally
+`rave_equivalence = 1000` (positive integer, also supports grids). See
+[Classic UCT-RAVE](../agents/README.md#classic-uct-rave-deterministic-games). Structured
 configuration also accepts arrays in `cutoff_evaluator.index`, `rollout_policy.evaluator.index`,
 `rollout_policy.epsilon`, and the corresponding `rollout_policy.primary` fields of a conditional
 policy. `progressive_bias.weight` also accepts an array. The loader creates their Cartesian product.

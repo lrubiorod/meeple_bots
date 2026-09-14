@@ -83,6 +83,8 @@ def profile_values(agent: MctsAgent) -> dict:
                   selection_policy=agent.selection_policy, cutoff_evaluator=_evaluator_dict(agent.cutoff_evaluator),
                   rollout_policy=policy_values(agent.rollout_policy), tree_reuse=agent.tree_reuse,
                   transpositions=agent.transpositions, root_diagnostics=agent.root_diagnostics)
+    if agent.selection_policy == "uct_rave":
+        values["rave_equivalence"] = agent.rave_equivalence
     if agent.progressive_bias is not None:
         bias = agent.progressive_bias
         values["progressive_bias"] = {"weight": bias.weight, "evaluator": _evaluator_dict(bias.evaluator)}
@@ -95,6 +97,7 @@ def agent_from_values(values: dict) -> MctsAgent:
     return MctsAgent(iterations=values.get("iterations"), time_budget=values.get("time_budget"),
                      exploration=values["exploration"], rollout_depth=values["rollout_depth"],
                      selection_policy=values["selection_policy"],
+                     rave_equivalence=values.get("rave_equivalence", 1000),
                      cutoff_evaluator=_configured_cutoff_evaluator(values, "study"),
                      rollout_policy=_configured_rollout_policy(values, "study"),
                      progressive_bias=_configured_progressive_bias(values, "study"),

@@ -26,6 +26,15 @@ pub fn configured_agent(config: AgentConfig) -> Result<SplendorAgent, AgentError
             meeple_bots_random_agent::RandomAgent,
         )),
         AgentConfig::Mcts(c) => {
+            if matches!(
+                c.search.selection_policy,
+                meeple_bots_mcts_agent::SelectionPolicy::UctRave { .. }
+            ) {
+                return Err(AgentError::message(
+                    "UCT-RAVE is only supported by deterministic MCTS",
+                ));
+            }
+
             let valid_cutoff = match &c.cutoff_evaluator {
                 EvaluatorConfig::Neutral => true,
                 EvaluatorConfig::GameHeuristic { index, parameters } => {

@@ -46,6 +46,7 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
         "time_budget",
         "exploration",
         "selection_policy",
+        "rave_equivalence",
         "rollout_depth",
         "use_heuristic",
         "heuristic_index",
@@ -76,6 +77,7 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
         agent=MctsAgent(
             **budget,
             selection_policy=values.get("selection_policy", "uct"),
+            rave_equivalence=values.get("rave_equivalence", 1000),
             exploration=values.get("exploration", sqrt_two()),
             rollout_depth=values["rollout_depth"],
             cutoff_evaluator=_configured_cutoff_evaluator(values, "MCTS profile"),
@@ -103,6 +105,7 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         "c": "exploration",
         "exploration": "exploration",
         "selection_policy": "selection_policy",
+        "rave_equivalence": "rave_equivalence",
         "h": "heuristic",
         "heuristic": "heuristic",
         "ce": "cutoff_evaluator",
@@ -251,6 +254,7 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         iterations=iterations,
         time_budget=time_budget,
         selection_policy=values.get("selection_policy", "uct"),
+        rave_equivalence=_inline_agent_integer(str(values.get("rave_equivalence", 1000)), "rave_equivalence"),
         exploration=exploration,
         rollout_depth=rollout_depth,
         cutoff_evaluator=cutoff_evaluator,
@@ -297,6 +301,8 @@ def _inline_agent_name(agent: MctsAgent) -> str:
     parts.append(f"d{agent.rollout_depth}")
     if agent.selection_policy != "uct":
         parts.append(agent.selection_policy)
+    if agent.selection_policy == "uct_rave":
+        parts.append(f"k{agent.rave_equivalence}")
     if agent.exploration != sqrt_two():
         parts.append(f"c{agent.exploration}")
     rollout_heuristic = _evaluator_heuristic_index(
