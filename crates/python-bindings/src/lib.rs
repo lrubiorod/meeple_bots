@@ -1,6 +1,7 @@
 //! Private PyO3 boundary for the public Python package.
 
 mod cant_stop;
+mod connect6;
 mod splendor;
 
 use std::{collections::BTreeMap, num::NonZeroU32, time::Duration};
@@ -437,7 +438,7 @@ impl MatchObserver<SpiritsOfTheForest> for PythonSpiritsMatchObserver<'_> {
 }
 
 #[pyfunction(name = "evaluate_game")]
-#[pyo3(signature = (game, samples=128, max_depth=256, seed=0, target_time=5.0))]
+#[pyo3(signature = (game, samples=128, max_depth=256, seed=0, target_time=5.0, game_params=None))]
 fn py_evaluate_game(
     py: Python<'_>,
     game: &str,
@@ -445,8 +446,9 @@ fn py_evaluate_game(
     max_depth: u32,
     seed: u64,
     target_time: f64,
+    game_params: Option<BTreeMap<String, i64>>,
 ) -> PyResult<Py<PyDict>> {
-    let game = parse_game(game)?;
+    let game = parse_configured_game(game, game_params)?;
     let samples = NonZeroU32::new(samples)
         .ok_or_else(|| PyValueError::new_err("samples must be greater than zero"))?;
     let max_depth = NonZeroU32::new(max_depth)
@@ -591,6 +593,7 @@ fn py_evaluate_game(
     tree_reuse=false,
     transpositions=false,
     selection_policy="uct",
+    game_params=None,
 ))]
 // Preserve the Python keyword-argument interface.
 #[allow(clippy::too_many_arguments)]
@@ -626,8 +629,9 @@ fn py_benchmark_mcts_agent(
     tree_reuse: bool,
     transpositions: bool,
     selection_policy: &str,
+    game_params: Option<BTreeMap<String, i64>>,
 ) -> PyResult<Py<PyDict>> {
-    let game = parse_game(game)?;
+    let game = parse_configured_game(game, game_params)?;
     if !exploration.is_finite() || exploration < 0.0 {
         return Err(PyValueError::new_err(
             "exploration must be finite and non-negative",
@@ -1156,8 +1160,9 @@ impl Agent<SpiritsOfTheForest> for PythonHumanAgent<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[pyfunction(name = "run_match")]
-#[pyo3(signature = (game, first, second, seed=0, max_plies=10_000, observer=None))]
+#[pyo3(signature = (game, first, second, seed=0, max_plies=10_000, observer=None, game_params=None))]
 fn py_run_match(
     py: Python<'_>,
     game: &str,
@@ -1166,8 +1171,9 @@ fn py_run_match(
     seed: u64,
     max_plies: u32,
     observer: Option<Py<PyAny>>,
+    game_params: Option<BTreeMap<String, i64>>,
 ) -> PyResult<Py<PyDict>> {
-    let game = parse_game(game)?;
+    let game = parse_configured_game(game, game_params)?;
     let max_plies = NonZeroU32::new(max_plies)
         .ok_or_else(|| PyValueError::new_err("max_plies must be greater than zero"))?;
     let config = MatchConfig::new(seed, max_plies);
@@ -1331,6 +1337,10 @@ fn py_run_match(
                 }
                 action.set_item("resolution", serialized_resolution)?;
             }
+            CatalogAction::Connect6 { position } => {
+                action.set_item("type", "connect6")?;
+                action.set_item("position", position)?;
+            }
             CatalogAction::ConnectFour { column } => {
                 action.set_item("type", "connect_four")?;
                 action.set_item("column", column)?;
@@ -1406,17 +1416,17 @@ fn run_python_match(
     observer: Option<&Py<PyAny>>,
     config: MatchConfig,
 ) -> PyResult<CatalogMatchReport> {
-    if game == GameId::Splendor {
+    if matches!(game, GameId::Splendor | GameId::Connect6(_)) {
         if observer.is_some() {
             return Err(PyValueError::new_err(
-                "Splendor live observers are not supported yet",
+                "Live observers are not supported for this game",
             ));
         }
         let (PythonAgentConfig::Automated(first), PythonAgentConfig::Automated(second)) =
             (first, second)
         else {
             return Err(PyValueError::new_err(
-                "Splendor matches currently support automated agents only",
+                "This game currently supports automated agents only",
             ));
         };
         return meeple_bots_catalog::run_match_with_trace(
@@ -1429,7 +1439,7 @@ fn run_python_match(
     }
     if let Some(observer) = observer {
         return match game {
-            GameId::Splendor => unreachable!("handled above"),
+            GameId::Splendor | GameId::Connect6(_) => unreachable!("handled above"),
             GameId::Boop => run_observed_boop_match(first, second, observer, config),
             GameId::ConnectFour => run_observed_connect_four_match(first, second, observer, config),
             GameId::SpiritsOfTheForest => {
@@ -1440,7 +1450,7 @@ fn run_python_match(
     }
 
     match game {
-        GameId::Splendor => unreachable!("handled above"),
+        GameId::Splendor | GameId::Connect6(_) => unreachable!("handled above"),
         GameId::Boop => run_boop_match_with_trace(
             &mut python_participant(first, configured_boop_mcts)?,
             &mut python_participant(second, configured_boop_mcts)?,
@@ -1465,15 +1475,21 @@ fn run_python_match(
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
 
-#[pyfunction(name = "analyze_trace", signature = (game, moves, seed=0))]
+#[pyfunction(name = "analyze_trace", signature = (game, moves, seed=0, game_params=None))]
 fn py_analyze_trace(
     py: Python<'_>,
     game: &str,
     moves: &Bound<'_, PyAny>,
     seed: u64,
+    game_params: Option<BTreeMap<String, i64>>,
 ) -> PyResult<Py<PyDict>> {
-    let game = parse_game(game)?;
+    let game = parse_configured_game(game, game_params)?;
     let recorded = match game {
+        GameId::Connect6(_) => moves
+            .extract::<Vec<(u8, usize)>>()?
+            .into_iter()
+            .map(|(player, position)| replay_record(player, CatalogAction::Connect6 { position }))
+            .collect(),
         GameId::Splendor => {
             return Err(PyValueError::new_err(
                 "Splendor replay requires chance events; use replay_splendor",
@@ -2263,8 +2279,27 @@ fn catalog_boop_piece_name(piece: CatalogBoopPieceKind) -> &'static str {
     }
 }
 
+fn parse_configured_game(
+    game: &str,
+    parameters: Option<BTreeMap<String, i64>>,
+) -> PyResult<GameId> {
+    meeple_bots_catalog::configure_game(parse_game(game)?, &parameters.unwrap_or_default())
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+#[pyfunction(signature = (game, game_params=None))]
+fn normalize_game_parameters(
+    game: &str,
+    game_params: Option<BTreeMap<String, i64>>,
+) -> PyResult<BTreeMap<String, i64>> {
+    Ok(meeple_bots_catalog::game_parameters(parse_configured_game(
+        game,
+        game_params,
+    )?))
+}
+
 fn parse_game(game: &str) -> PyResult<GameId> {
     match game {
+        "connect6" => Ok(GameId::Connect6(meeple_bots_connect6::DEFAULT_BOARD_SIZE)),
         "boop" => Ok(GameId::Boop),
         "splendor" => Ok(GameId::Splendor),
         "connect_four" => Ok(GameId::ConnectFour),
@@ -2306,6 +2341,8 @@ fn py_game_search_capabilities(py: Python<'_>, game: &str) -> PyResult<Py<PyDict
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAgentConfig>()?;
     module.add_class::<cant_stop::PyCantStopSession>()?;
+    module.add_class::<connect6::Position>()?;
+    module.add_function(wrap_pyfunction!(normalize_game_parameters, module)?)?;
     module.add_class::<splendor::PySplendorPosition>()?;
     module.add_class::<splendor::PySplendorSession>()?;
     module.add_function(wrap_pyfunction!(py_game_search_capabilities, module)?)?;

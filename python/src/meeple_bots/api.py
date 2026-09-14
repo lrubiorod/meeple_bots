@@ -32,6 +32,8 @@ from ._agent_config import (
 )
 
 from . import _native
+from .connect6 import Connect6, Connect6Action, Connect6State
+from .game_config import game_parameters
 from .splendor import Splendor, SplendorAction, SplendorState, SplendorChanceOutcome, ChanceEvent
 from ._capabilities import game_search_capabilities
 from ._concurrency import WorkerSetting, ordered_parallel_map, resolve_workers
@@ -424,9 +426,9 @@ class SpiritGemstonePool:
             raise ValueError("each player must account for exactly three gemstones")
 
 
-Game: TypeAlias = TicTacToe | ConnectFour | Boop | SpiritsOfTheForest | Splendor
+Game: TypeAlias = TicTacToe | ConnectFour | Boop | SpiritsOfTheForest | Splendor | Connect6
 GameAction: TypeAlias = (
-    SplendorAction |
+    Connect6Action | SplendorAction |
     TicTacToeAction | ConnectFourAction | BoopAction | SpiritsOfTheForestAction
 )
 BoardCell: TypeAlias = int | BoopPiece | SpiritTile | None
@@ -582,6 +584,7 @@ class MatchResult:
 
     chance_events: tuple[ChanceEvent, ...] = ()
     splendor_state: SplendorState | None = None
+    game_params: dict[str, int] = field(default_factory=dict)
 
 
 class BatchProgressStatus(str, Enum):
@@ -663,9 +666,9 @@ class Match:
     observe_move: MatchMoveObserver | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor)):
+        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, Connect6)):
             raise TypeError(
-                "game must be TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, or Splendor"
+                "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, or Splendor"
             )
         if not isinstance(self.first, (RandomAgent, MctsAgent, HumanAgent)):
             raise TypeError("first must be RandomAgent, MctsAgent, or HumanAgent")
@@ -692,6 +695,7 @@ class Match:
             self.seed,
             self.max_plies,
             _match_move_observer(self.observe_move, self.game),
+            game_params=game_parameters(self.game),
         )
         moves = tuple(
             Move(
@@ -727,6 +731,7 @@ class Match:
             unassigned_maintenance_seconds=tuple(
                 raw.get("unassigned_maintenance_seconds", (0.0, 0.0))
             ),
+            game_params=game_parameters(self.game),
             seed=raw["seed"],
             plies=raw["plies"],
             utilities=tuple(raw["utilities"]),
@@ -767,9 +772,9 @@ class Batch:
     workers: WorkerSetting = "auto"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor)):
+        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, Connect6)):
             raise TypeError(
-                "game must be TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, or Splendor"
+                "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, or Splendor"
             )
         for name, agent in (("agent_a", self.agent_a), ("agent_b", self.agent_b)):
             if not isinstance(agent, (RandomAgent, MctsAgent)):
@@ -912,7 +917,7 @@ def evaluate_game(
 ) -> GameEvaluationReport:
     """Measure game structure and produce practical local MCTS starting points."""
 
-    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor)):
+    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, Connect6)):
         raise TypeError(
             "game must be TicTacToe, ConnectFour, Boop, or SpiritsOfTheForest"
         )
@@ -935,6 +940,7 @@ def evaluate_game(
         max_depth,
         seed,
         target_time,
+        game_params=game_parameters(game),
     )
     return GameEvaluationReport(
         game=game,
@@ -999,9 +1005,9 @@ def benchmark_mcts_agent(
 ) -> MctsAgentBenchmark:
     """Measure one exact MCTS configuration on shared early, middle, and late states."""
 
-    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor)):
+    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, Connect6)):
         raise TypeError(
-            "game must be TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, or Splendor"
+            "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, or Splendor"
         )
     if not isinstance(agent, MctsAgent):
         raise TypeError("agent must be an MctsAgent")
@@ -1050,6 +1056,7 @@ def benchmark_mcts_agent(
         agent.tree_reuse,
         agent.transpositions,
         agent.selection_policy,
+        game_params=game_parameters(game),
     )
     return MctsAgentBenchmark(
         game=game,
@@ -1073,6 +1080,8 @@ def benchmark_mcts_agent(
 
 
 def _native_game(game: Game) -> str:
+    if isinstance(game, Connect6):
+        return "connect6"
     if isinstance(game, Splendor):
         return "splendor"
     if isinstance(game, TicTacToe):
@@ -1085,6 +1094,8 @@ def _native_game(game: Game) -> str:
 
 
 def _action_from_native(raw: dict[str, object]) -> GameAction:
+    if raw["type"] == "connect6":
+        return Connect6Action(raw["position"])
     if raw["type"] == "splendor":
         return SplendorAction.from_dict(raw)
     if raw["type"] == "tic_tac_toe":
@@ -1105,7 +1116,9 @@ def _analyze_trace(game: Game, moves: tuple[Move, ...], *, seed: int = 0):
     """Dispatch a completed trace to the selected game's native analyzer."""
 
     native_moves = []
-    if isinstance(game, Boop):
+    if isinstance(game, Connect6):
+        native_moves = [(m.player, m.action.position) for m in moves]
+    elif isinstance(game, Boop):
         for move in moves:
             if not isinstance(move.action, BoopAction):
                 raise TypeError("boop trace contains a non-boop action")
@@ -1181,7 +1194,7 @@ def _analyze_trace(game: Game, moves: tuple[Move, ...], *, seed: int = 0):
             if not isinstance(move.action, TicTacToeAction):
                 raise TypeError("tic-tac-toe trace contains a non-tic-tac-toe action")
             native_moves.append((move.player, (move.action.row, move.action.column)))
-    return _native.analyze_trace(_native_game(game), native_moves, seed)
+    return _native.analyze_trace(_native_game(game), native_moves, seed, game_params=game_parameters(game))
 
 
 def _native_agent(agent: Agent, game: Game):
@@ -1904,6 +1917,8 @@ def _initial_spirits_state(seed: int):
 
 
 def _final_board_from_native(flat_board, game: Game) -> GameBoard:
+    if isinstance(game, Connect6):
+        return _board_rows([None if p is None else p["player"] for p in flat_board], columns=game.board_size)
     if isinstance(game, Splendor):
         return ()
     if isinstance(game, SpiritsOfTheForest):

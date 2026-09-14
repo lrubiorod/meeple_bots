@@ -10,6 +10,7 @@ members = [
     "games/splendor",
     "games/cant-stop",
     "games/connect-four",
+    "games/connect6",
     "games/spirits-of-the-forest",
     "games/tic-tac-toe",
     "agents/random",

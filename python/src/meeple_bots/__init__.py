@@ -66,6 +66,7 @@ from .api import (
 )
 
 __all__ = [
+    "Connect6", "Connect6Action", "Connect6State", "create_game",
     "SplendorSession",
     "Splendor", "SplendorAction", "SplendorMoveKind", "SplendorState",
     "SplendorPlayerState", "SplendorChanceOutcome", "ChanceEvent", "replay_splendor",
@@ -137,3 +138,6 @@ __all__ = [
 from .games.cant_stop import CantStopSession
 
 from .splendor import Splendor, SplendorAction, SplendorMoveKind, SplendorState, SplendorPlayerState, SplendorChanceOutcome, ChanceEvent, replay_splendor, SplendorSession
+
+from .connect6 import Connect6, Connect6Action, Connect6State
+from .game_config import create_game

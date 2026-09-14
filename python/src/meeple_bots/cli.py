@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from .connect6 import Connect6Action
+from .game_config import create_game, game_parameters, GameParameterAction
+
 import argparse
 import json
 import sys
@@ -99,7 +102,7 @@ from .tournaments import (
 )
 
 
-_PLAYABLE_GAMES = ["splendor", "boop", "connect-four", "spotf", "tic-tac-toe"]
+_PLAYABLE_GAMES = ["connect6", "splendor", "boop", "connect-four", "spotf", "tic-tac-toe"]
 _TOURNAMENT_GRID_FIELDS = (
     (("iterations",), "i"),
     (("time_budget",), "t"),
@@ -154,7 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
     gui.add_argument(
         "--game",
         type=_game_tag,
-        choices=[*_PLAYABLE_GAMES, "cant-stop"],
+        choices=[*[g for g in _PLAYABLE_GAMES if g != "connect6"], "cant-stop"],
         default="tic-tac-toe",
     )
     gui.add_argument("--host", default="127.0.0.1")
@@ -369,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
     study = commands.add_parser("study", help="automatically diagnose MCTS mechanisms, budgets and parameters")
-    study.add_argument("--game", choices=("boop", "spotf", "connect-four", "tic-tac-toe", "splendor"), required=True)
+    study.add_argument("--game", choices=tuple(_PLAYABLE_GAMES), required=True)
     study.add_argument("--baseline", type=Path, help="starting MCTS profile; default: generic profile with the first available heuristic")
     study.add_argument("--reference", type=Path, help="held-out calibrated profile, used only in confirmation")
     study.add_argument("--budget", required=True, help="total study time, e.g. 20m or 2h; includes calibration")
@@ -385,6 +388,8 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--resume", action="store_true", help="resume a frozen study; --budget may be increased")
     study.add_argument("--json", action="store_true")
 
+    for command in (match, batch, analyze, study):
+        command.add_argument("--game-param", dest="game_params", action=GameParameterAction, metavar="NAME=INTEGER", help="game initialization parameter; repeat for multiple parameters")
     return parser
 
 
@@ -406,7 +411,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                baseline=args.baseline, reference=args.reference, seed=args.seed,
                                max_pairs=args.max_pairs, confirmation_pairs=args.confirmation_pairs, decision_seconds=args.decision_time,
                                screening_seconds=args.screening_time, auxiliary_pairs=args.auxiliary_pairs,
-                               max_plies=args.max_plies, workers=args.workers, resume=args.resume,
+                               max_plies=args.max_plies, workers=args.workers, resume=args.resume, game_params=args.game_params,
                                progress=lambda message: print(message, file=sys.stderr, flush=True))
             summary = {"status": result["status"], "spent_seconds": result["spent_seconds"],
                        "report": str(output.resolve() / "report.html"),
@@ -437,7 +442,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 _print_report_summary(summary)
             return 0
-        game = _game(args.game)
+        game = create_game(args.game, args.game_params)
         if args.command == "analyze":
             profiles = _analyze_profiles(args.agent_config, args.agent, game)
             report = evaluate_game(
@@ -584,6 +589,7 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
         values = tomllib.load(config_file)
     allowed = {
         "game",
+        "game_params",
         "output",
         "pairing_mode",
         "seat_mode",
@@ -602,7 +608,7 @@ def _load_tournament_config(path: Path) -> _TournamentConfig:
         raise ValueError(
             "tournament game must be boop, connect-four, spotf, tic-tac-toe, or splendor"
         )
-    game = _game(game_name)
+    game = create_game(game_name, values.get("game_params"))
     raw_output = values.get("output")
     if raw_output is not None and (
         not isinstance(raw_output, str) or not raw_output.strip()
@@ -973,6 +979,7 @@ def _run_batch(
                     "decision_timing_scope": "agent_total_v1",
                     "study_type": "batch",
                     "game": _game_name(game),
+                    **({"game_params": game_parameters(game)} if game_parameters(game) else {}),
                     "output": str(args.output),
                     "matches_per_pair": batch.matches,
                     "seed": batch.seed,
@@ -1194,6 +1201,7 @@ def _batch_dict(
 ) -> dict[str, object]:
     payload = {
         "game": _game_name(game),
+                    **({"game_params": game_parameters(game)} if game_parameters(game) else {}),
         "seed": result.seed,
         "matches": result.matches,
         "workers": result.workers,
@@ -1267,17 +1275,8 @@ def _print_batch_result(
     print(f"  Total time: {result.elapsed_seconds:.3f}s")
 
 
-def _game(name: str) -> TicTacToe | ConnectFour | Boop | SpiritsOfTheForest:
-    if name == "splendor":
-        from .splendor import Splendor
-        return Splendor()
-    if name == "boop":
-        return Boop()
-    if name == "connect-four":
-        return ConnectFour()
-    if name == "spotf":
-        return SpiritsOfTheForest()
-    return TicTacToe()
+def _game(name: str):
+    return create_game(name)
 
 
 def _mcts_configuration(args: argparse.Namespace) -> MctsAgent:
@@ -1507,6 +1506,8 @@ def _print_result(
             selected = str(move.action.to_dict())
         elif isinstance(move.action, TicTacToeAction):
             selected = f"row {move.action.row}, column {move.action.column}"
+        elif isinstance(move.action, Connect6Action):
+            selected = f"cell {move.action.position}"
         elif isinstance(move.action, ConnectFourAction):
             selected = f"column {move.action.column}"
         elif isinstance(
@@ -1614,6 +1615,7 @@ def _evaluation_dict(
 ) -> dict[str, object]:
     return {
         "game": _game_name(report.game),
+        **({"game_params": game_parameters(report.game)} if game_parameters(report.game) else {}),
         "samples": report.samples,
         "max_depth": report.max_depth,
         "terminal_rate": report.terminal_rate,

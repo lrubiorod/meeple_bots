@@ -6,9 +6,9 @@ pub mod splendor;
 mod configuration;
 pub use configuration::{
     AgentConfig, BoopMctsAgent, ConfiguredRolloutPolicy, ConfiguredSelectionBias,
-    ConnectFourMctsAgent, EvaluatorConfig, MctsAgentConfig, RolloutConditionConfig,
-    SpiritsOfTheForestMctsAgent, TicTacToeMctsAgent, configured_boop_mcts,
-    configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
+    Connect6MctsAgent, ConnectFourMctsAgent, EvaluatorConfig, MctsAgentConfig,
+    RolloutConditionConfig, SpiritsOfTheForestMctsAgent, TicTacToeMctsAgent, configured_boop_mcts,
+    configured_connect_four_mcts, configured_connect6_mcts, configured_spirits_of_the_forest_mcts,
     configured_tic_tac_toe_mcts,
 };
 
@@ -22,6 +22,7 @@ use meeple_bots_boop::{
     Position as BoopPosition, Resolution as BoopResolution, analyze_replay as analyze_boop_replay,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
+use meeple_bots_connect6::{Connect6, Connect6Action};
 use meeple_bots_core::{
     Agent, DeterministicGame, Game, HeuristicGame, PlayerId, PositionStatus, RandomSource,
     RootActionStats, TreeReuseStats,
@@ -49,11 +50,49 @@ use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GameId {
+    Connect6(usize),
     Splendor,
     Boop,
     ConnectFour,
     SpiritsOfTheForest,
     TicTacToe,
+}
+
+/// Integer initialization parameters, validated before any game allocation.
+pub type GameParameters = std::collections::BTreeMap<String, i64>;
+
+pub fn configure_game(game: GameId, parameters: &GameParameters) -> Result<GameId, CatalogError> {
+    for key in parameters.keys() {
+        if !matches!(game, GameId::Connect6(_)) || key != "board_size" {
+            return Err(CatalogError::InvalidGameParameters(format!(
+                "{} does not accept game parameter {key:?}",
+                game_name(game)
+            )));
+        }
+    }
+    if let GameId::Connect6(default_size) = game {
+        let size = match parameters.get("board_size") {
+            Some(value) => usize::try_from(*value).map_err(|_| {
+                CatalogError::InvalidGameParameters(
+                    "board_size must be a non-negative integer".into(),
+                )
+            })?,
+            None => default_size,
+        };
+        connect6_game(size)?;
+        return Ok(GameId::Connect6(size));
+    }
+    Ok(game)
+}
+
+pub fn game_parameters(game: GameId) -> GameParameters {
+    match game {
+        GameId::Connect6(size) => [("board_size".into(), size as i64)].into(),
+        _ => GameParameters::new(),
+    }
+}
+fn connect6_game(size: usize) -> Result<Connect6, CatalogError> {
+    Connect6::new(size).map_err(|e| CatalogError::InvalidGameParameters(e.into()))
 }
 
 /// Search options exposed by the registered game integration.
@@ -86,14 +125,15 @@ pub fn game_search_capabilities(game: GameId) -> GameSearchCapabilities {
             GameId::Boop => heuristics(&Boop),
             GameId::SpiritsOfTheForest => heuristics(&spirits_of_the_forest_game(0)),
             GameId::Splendor => heuristics(&splendor::game(0)),
-            GameId::ConnectFour | GameId::TicTacToe => Vec::new(),
+            GameId::Connect6(_) | GameId::ConnectFour | GameId::TicTacToe => Vec::new(),
         },
         turn_phase_conditions: supports_turn_phase_conditions(game),
     }
 }
 
-const fn game_name(game: GameId) -> &'static str {
+pub const fn game_name(game: GameId) -> &'static str {
     match game {
+        GameId::Connect6(_) => "connect6",
         GameId::Splendor => "splendor",
         GameId::Boop => "boop",
         GameId::ConnectFour => "connect-four",
@@ -108,6 +148,9 @@ fn supports_turn_phase_conditions(game: GameId) -> bool {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogAction {
+    Connect6 {
+        position: usize,
+    },
     Splendor(meeple_bots_splendor::SplendorAction),
     Boop {
         piece: CatalogBoopPieceKind,
@@ -276,6 +319,7 @@ pub enum CatalogTraceAnalysis {
 
 #[derive(Debug)]
 pub enum CatalogError {
+    InvalidGameParameters(String),
     Match(MatchError),
     Evaluation(EvaluationError),
     UnsupportedHeuristic {
@@ -299,6 +343,7 @@ pub enum CatalogError {
 impl fmt::Display for CatalogError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidGameParameters(message) => write!(formatter, "{message}"),
             Self::Match(error) => error.fmt(formatter),
             Self::Evaluation(error) => error.fmt(formatter),
             Self::UnsupportedHeuristic {
@@ -371,6 +416,7 @@ pub fn evaluate_game(
     let report = match game {
         GameId::Splendor => return Err(CatalogError::AnalysisUnavailable(game)),
         GameId::Boop => evaluate_typed_game(&Boop, config),
+        GameId::Connect6(size) => evaluate_typed_game(&connect6_game(size)?, config),
         GameId::ConnectFour => evaluate_typed_game(&ConnectFour, config),
         GameId::SpiritsOfTheForest => {
             let game = spirits_of_the_forest_game(config.seed);
@@ -388,6 +434,10 @@ pub fn benchmark_mcts_agent(
     seed: u64,
 ) -> Result<MctsAgentBenchmark, CatalogError> {
     let benchmark = match game {
+        GameId::Connect6(size) => {
+            let mut agent = configured_connect6_mcts(config)?;
+            benchmark_typed_mcts_agent(&connect6_game(size)?, &mut agent, median_depth, seed)
+        }
         GameId::Splendor => {
             let mut agent = splendor::configured_agent(AgentConfig::Mcts(config))
                 .map_err(EvaluationError::Agent)?;
@@ -475,6 +525,14 @@ pub fn analyze_seeded_trace(
                     game,
                     message: error.to_string(),
                 })
+        }
+        GameId::Connect6(size) => {
+            analyze_generic_replay(game, &connect6_game(size)?, moves, |action| {
+                let CatalogAction::Connect6 { position } = action else {
+                    return Err("expected Connect6 action");
+                };
+                Ok(Connect6Action::Place(*position))
+            })
         }
         GameId::ConnectFour => analyze_generic_replay(game, &ConnectFour, moves, |action| {
             let CatalogAction::ConnectFour { column } = action else {
@@ -628,6 +686,11 @@ pub fn run_match(
     match game {
         GameId::Splendor => Ok(splendor::run(first, second, config)?.result),
         GameId::Boop => run_boop(first, second, config),
+        GameId::Connect6(size) => {
+            let mut a = ConfiguredAgent::new(first, configured_connect6_mcts)?;
+            let mut b = ConfiguredAgent::new(second, configured_connect6_mcts)?;
+            Ok(play_match(&connect6_game(size)?, &mut a, &mut b, config)?)
+        }
         GameId::ConnectFour => run_connect_four(first, second, config),
         GameId::SpiritsOfTheForest => run_spirits_of_the_forest(first, second, config),
         GameId::TicTacToe => run_tic_tac_toe(first, second, config),
@@ -643,6 +706,11 @@ pub fn run_match_with_trace(
     match game {
         GameId::Splendor => splendor::report(splendor::run(first, second, config)?),
         GameId::Boop => run_boop_with_trace(first, second, config),
+        GameId::Connect6(size) => {
+            let mut a = ConfiguredAgent::new(first, configured_connect6_mcts)?;
+            let mut b = ConfiguredAgent::new(second, configured_connect6_mcts)?;
+            run_connect6_match_with_trace(size, &mut a, &mut b, config)
+        }
         GameId::ConnectFour => run_connect_four_with_trace(first, second, config),
         GameId::SpiritsOfTheForest => run_spirits_of_the_forest_with_trace(first, second, config),
         GameId::TicTacToe => run_tic_tac_toe_with_trace(first, second, config),
@@ -710,6 +778,19 @@ where
     let game = spirits_of_the_forest_game(config.seed);
     let traced = play_match_with_trace_and_observer(&game, first, second, config, observer)?;
     Ok(spirits_of_the_forest_report(&game, traced))
+}
+
+pub fn run_connect6_match_with_trace<A: Agent<Connect6>, B: Agent<Connect6>>(
+    size: usize,
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+) -> Result<CatalogMatchReport, CatalogError> {
+    let game = connect6_game(size)?;
+    Ok(connect6_report(
+        game,
+        play_typed_match_with_trace(&game, first, second, config)?,
+    ))
 }
 
 pub fn run_connect_four_match_with_trace<A, B>(
@@ -851,6 +932,67 @@ fn run_tic_tac_toe_with_trace(
     let mut first = ConfiguredAgent::new(first, configured_tic_tac_toe_mcts)?;
     let mut second = ConfiguredAgent::new(second, configured_tic_tac_toe_mcts)?;
     run_tic_tac_toe_match_with_trace(&mut first, &mut second, config)
+}
+
+fn connect6_report(
+    game: Connect6,
+    traced: TracedMatchResult<Connect6Action>,
+) -> CatalogMatchReport {
+    let mut state = game.initial_state();
+    for traced_action in &traced.actions {
+        game.apply_action(&mut state, &traced_action.action)
+            .expect("trace contains actions accepted by the game");
+    }
+    let winner = winner_from_utilities(&traced.result.utilities);
+    let moves = traced
+        .actions
+        .into_iter()
+        .map(|traced_action| RecordedMove {
+            player: traced_action.player.index(),
+            action: CatalogAction::Connect6 {
+                position: match traced_action.action {
+                    Connect6Action::Place(position) => position,
+                },
+            },
+            decision_seconds: traced_action.decision_time.as_secs_f64(),
+            selection_seconds: traced_action.selection_time.as_secs_f64(),
+            maintenance_seconds: traced_action.maintenance_time.as_secs_f64(),
+            search_iterations: traced_action.decision_stats.search_iterations,
+            search_nodes: traced_action.decision_stats.search_nodes,
+            terminal_simulations: traced_action.decision_stats.terminal_simulations,
+            cutoff_simulations: traced_action.decision_stats.cutoff_simulations,
+            root_actions: traced_action.decision_stats.root_actions,
+            tree_reuse: traced_action.decision_stats.tree_reuse,
+        })
+        .collect();
+
+    CatalogMatchReport {
+        chance_events: Vec::new(),
+        splendor_state: None,
+        unassigned_maintenance_seconds: traced
+            .unassigned_maintenance_time
+            .map(|time| time.as_secs_f64()),
+        seed: traced.result.seed,
+        plies: traced.result.plies,
+        utilities: traced.result.utilities,
+        winner,
+        moves,
+        final_board: state
+            .board()
+            .iter()
+            .map(|piece| {
+                (*piece != 0).then(|| CatalogPiece {
+                    player: usize::from(*piece - 1),
+                    kind: CatalogPieceKind::Token,
+                })
+            })
+            .collect(),
+        pools: None,
+        spirit_forest: None,
+        spirit_collections: None,
+        gemstone_pools: None,
+        scores: None,
+    }
 }
 
 fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogMatchReport {
@@ -1208,7 +1350,7 @@ pub fn run_batch(
         max_plies,
     };
     match game {
-        GameId::Splendor => (0..matches.get())
+        GameId::Connect6(_) | GameId::Splendor => (0..matches.get())
             .map(|i| {
                 run_match(
                     game,
@@ -1290,6 +1432,33 @@ fn run_tic_tac_toe_batch(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn game_parameters_are_validated_by_the_catalog() {
+        use super::*;
+        let default = GameId::Connect6(meeple_bots_connect6::DEFAULT_BOARD_SIZE);
+        assert_eq!(
+            configure_game(default, &GameParameters::new()).unwrap(),
+            default
+        );
+        assert_eq!(
+            configure_game(default, &[("board_size".into(), 11)].into()).unwrap(),
+            GameId::Connect6(11)
+        );
+        for value in [-1, 0, 5, i64::MAX] {
+            assert!(configure_game(default, &[("board_size".into(), value)].into()).is_err());
+        }
+        assert!(configure_game(default, &[("unknown".into(), 11)].into()).is_err());
+        for game in [
+            GameId::Boop,
+            GameId::ConnectFour,
+            GameId::TicTacToe,
+            GameId::SpiritsOfTheForest,
+            GameId::Splendor,
+        ] {
+            assert_eq!(configure_game(game, &GameParameters::new()).unwrap(), game);
+            assert!(configure_game(game, &[("board_size".into(), 11)].into()).is_err());
+        }
+    }
     use meeple_bots_core::HeuristicParameters;
     use meeple_bots_mcts_agent::{MctsAgent, RolloutPolicy};
     use meeple_bots_spirits_of_the_forest::TurnPhase;
@@ -1776,6 +1945,7 @@ mod tests {
                     assert!(row < 3);
                     assert!(column < 3);
                 }
+                CatalogAction::Connect6 { .. } => panic!("unexpected Connect6 action"),
                 CatalogAction::ConnectFour { .. } => panic!("unexpected Connect Four action"),
                 CatalogAction::Boop { .. } => panic!("unexpected boop action"),
                 CatalogAction::Splendor(_) => panic!("unexpected Splendor action"),
@@ -1800,6 +1970,7 @@ mod tests {
         assert!((7..=42).contains(&report.plies));
         for recorded in report.moves {
             match recorded.action {
+                CatalogAction::Connect6 { .. } => panic!("unexpected Connect6 action"),
                 CatalogAction::ConnectFour { column } => assert!(column < 7),
                 CatalogAction::TicTacToe { .. } => panic!("unexpected tic-tac-toe action"),
                 CatalogAction::Boop { .. } => panic!("unexpected boop action"),

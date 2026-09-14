@@ -36,6 +36,8 @@ from .api import (
 )
 
 from .splendor import Splendor
+from .connect6 import Connect6, Connect6Action
+from .game_config import create_game, game_parameters
 
 _COMMON_OUTPUT_FILES = {
     "agents": "agents.csv",
@@ -699,7 +701,10 @@ def extract_tournament(
     else:
         output_dir = output_dir.resolve()
     game_name = studies[0].game_name
-    game = _trace_game(game_name)
+    game = create_game(game_name, studies[0].header.get("game_params"))
+    for source in studies:
+        if game_parameters(create_game(game_name, source.header.get("game_params"))) != game_parameters(game):
+            raise ValueError("cannot combine studies with different game parameters")
     if isinstance(game, Boop):
         extract_match = _extract_boop_match
         game_output_files = _BOOP_OUTPUT_FILES
@@ -903,6 +908,7 @@ def extract_tournament(
             "sources": source_summaries,
             "output_dir": str(output_dir),
             "game": game_name,
+            **({"game_params": game_parameters(game)} if game_parameters(game) else {}),
             "tournament_schema_version": 1,
             "analysis_schema_version": 9,
             "decision_timing_scope": timing_scope,
@@ -1124,14 +1130,19 @@ def _extract_chance_events(context, writers, row_counts, game):
 
 def _validate_generic_result(context: _MatchContext, game: ConnectFour | TicTacToe) -> None:
     """Convert trace data; Rust owns legality, turn order and terminal outcomes."""
+    if isinstance(game, Connect6) and context.raw_result.get("game_params") != game_parameters(game):
+        raise ValueError("Connect6 result game_params differ from tournament configuration")
     moves = []
     for ply, raw in enumerate(context.raw_moves, 1):
         where = f"match {context.match_number} ply {ply}"
         action = raw["action"]  # Structure and player were checked by generic extraction.
         try:
-            expected_type = "connect_four" if isinstance(game, ConnectFour) else "tic_tac_toe"
+            expected_type = "connect6" if isinstance(game, Connect6) else "connect_four" if isinstance(game, ConnectFour) else "tic_tac_toe"
             if action["type"] != expected_type:
                 raise ValueError(f"expected a {expected_type} action")
+            if isinstance(game, Connect6):
+                moves.append(Move(raw["player"], Connect6Action(_integer_field(action, "position", where))))
+                continue
             column = _integer_field(action, "column", where)
             typed_action = (
                 ConnectFourAction(column)
@@ -2139,25 +2150,9 @@ def _validate_header(header: object) -> str:
     if header.get("schema_version") != 1:
         raise ValueError("extract supports tournament schema_version 1")
     game = header.get("game")
-    if game not in {"boop", "connect-four", "spotf", "tic-tac-toe", "splendor"}:
+    if game not in {"boop", "connect-four", "spotf", "tic-tac-toe", "splendor", "connect6"}:
         raise ValueError(f"unknown tournament game: {game}")
     return game
-
-
-def _trace_game(name: str) -> Boop | ConnectFour | SpiritsOfTheForest | TicTacToe | Splendor:
-    match name:
-        case "splendor":
-            return Splendor()
-        case "boop":
-            return Boop()
-        case "connect-four":
-            return ConnectFour()
-        case "spotf":
-            return SpiritsOfTheForest()
-        case "tic-tac-toe":
-            return TicTacToe()
-        case _:
-            raise ValueError(f"unknown tournament game: {name}")
 
 
 def _parse_json_record(line: str, line_number: int) -> object:

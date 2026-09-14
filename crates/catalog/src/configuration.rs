@@ -6,6 +6,7 @@ use super::{
 };
 use meeple_bots_boop::Boop;
 use meeple_bots_connect_four::ConnectFour;
+use meeple_bots_connect6::Connect6;
 use meeple_bots_core::{
     AgentError, Game, HeuristicGame, HeuristicParameters, PlayerId, RandomSource,
 };
@@ -108,6 +109,8 @@ pub type ConnectFourMctsAgent = TranspositionMctsAgent<
     meeple_bots_mcts_agent::NeutralEvaluator,
     RolloutPolicyConfig,
 >;
+pub type Connect6MctsAgent =
+    TranspositionMctsAgent<Connect6, meeple_bots_mcts_agent::NeutralEvaluator, RolloutPolicyConfig>;
 pub type TicTacToeMctsAgent =
     TranspositionMctsAgent<TicTacToe, meeple_bots_mcts_agent::NeutralEvaluator, UniformRandom>;
 
@@ -383,6 +386,36 @@ pub fn configured_connect_four_mcts(
             RolloutPolicyConfig::Mast { epsilon }
         }
         _ => unreachable!("Connect Four rollout policy was validated"),
+    };
+    Ok(TranspositionMctsAgent::new(
+        MctsAgent::new(MctsConfig {
+            selection_policy: config.search.selection_policy,
+            budget: config.search.budget,
+            exploration: config.search.exploration,
+            rollout_depth: config.search.rollout_depth,
+            rollout_policy,
+        })
+        .with_root_diagnostics(config.root_diagnostics),
+        config.tree_reuse,
+        config.transpositions,
+    ))
+}
+
+pub fn configured_connect6_mcts(
+    config: MctsAgentConfig,
+) -> Result<Connect6MctsAgent, CatalogError> {
+    validate_uninformed_agent(
+        GameId::Connect6(meeple_bots_connect6::DEFAULT_BOARD_SIZE),
+        &config,
+    )?;
+    let rollout_policy = match config.search.rollout_policy {
+        ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::UniformRandom) => {
+            RolloutPolicyConfig::UniformRandom
+        }
+        ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::Mast { epsilon }) => {
+            RolloutPolicyConfig::Mast { epsilon }
+        }
+        _ => unreachable!("Connect6 rollout policy was validated"),
     };
     Ok(TranspositionMctsAgent::new(
         MctsAgent::new(MctsConfig {

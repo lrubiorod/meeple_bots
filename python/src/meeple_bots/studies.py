@@ -29,6 +29,8 @@ from ._mcts_profiles import (
     _configured_cutoff_evaluator, _configured_progressive_bias, _configured_rollout_policy,
     _load_mcts_profile,
 )
+from .game_config import create_game, game_parameters
+from .connect6 import Connect6
 from .api import Boop, ConnectFour, SpiritsOfTheForest, TicTacToe, benchmark_mcts_agent
 from .splendor import Splendor
 from .serialization import _evaluator_dict
@@ -38,7 +40,7 @@ from .tournaments import (
 )
 from .study_analysis import summarize_contrast, write_study_report, study_diagnostics, cutoff_screening
 
-GAMES = {"boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
+GAMES = {"connect6": Connect6, "boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
          "tic-tac-toe": TicTacToe, "splendor": Splendor}
 TERMINAL_SAFETY_DEPTH = 1024
 
@@ -405,7 +407,7 @@ class StudyRunner:
                  reference: MctsAgent | None = None, seed: int = 42, max_pairs: int = 8,
                  confirmation_pairs: int = 32, auxiliary_pairs: int = 4,
                  decision_seconds: float | None = None, screening_seconds: float | None = None, max_plies: int = 10000,
-                 workers: WorkerSetting = 1, resume: bool = False, progress: Callable[[str], None] = print):
+                 workers: WorkerSetting = 1, resume: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
         if game not in GAMES:
             raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
         if not math.isfinite(budget) or budget <= 0:
@@ -425,11 +427,11 @@ class StudyRunner:
         if decision_seconds is not None and (not math.isfinite(decision_seconds) or decision_seconds <= 0):
             raise ValueError("decision time must be finite and positive")
         worker_count = resolve_workers(workers)
-        self.game = GAMES[game]()
+        self.game = create_game(game, game_params)
         self.base, self.reference = baseline, reference
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
-        request = {"version": 10, "game": game, "baseline": profile_values(baseline),
+        request = {"version": 10, "game": game, **({"game_params": game_parameters(self.game)} if game_parameters(self.game) else {}), "baseline": profile_values(baseline),
                    "reference": profile_values(reference) if reference else None,
                    "seed": seed, "max_pairs": max_pairs, "confirmation_pairs": confirmation_pairs, "auxiliary_pairs": auxiliary_pairs,
                    "decision_seconds": decision_seconds, "screening_seconds": screening_seconds,

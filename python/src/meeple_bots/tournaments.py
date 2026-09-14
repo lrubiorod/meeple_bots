@@ -14,10 +14,11 @@ from pathlib import Path
 from time import perf_counter
 
 from .api import (
-    Boop, ConnectFour, SpiritsOfTheForest, TicTacToe,
+    Game, Boop, ConnectFour, SpiritsOfTheForest, TicTacToe,
     RandomAgent, MctsAgent, Match, MatchResult,
 )
 from ._concurrency import WorkerSetting, ordered_parallel_map, resolve_workers
+from .game_config import game_parameters, create_game
 from .serialization import agent_dict, game_name, trace_match_dict, write_jsonl
 
 
@@ -32,7 +33,7 @@ class TournamentAgent:
 
 @dataclass(frozen=True, slots=True)
 class TournamentConfig:
-    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest
+    game: Game
     output: Path | None
     pairing_mode: str
     seat_mode: str
@@ -81,7 +82,7 @@ class _TournamentPairingStats:
 
 def run_match(
     job: MatchJob,
-    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
+    game: Game,
     max_plies: int,
 ) -> MatchOutcome:
     first, second = (
@@ -219,6 +220,7 @@ def tournament_header(config: TournamentConfig, output: Path, workers: int) -> d
         "record_type": "tournament", "schema_version": 1,
         "decision_timing_scope": "agent_total_v1",
         "study_type": "tournament", "game": game_name(config.game),
+        **({"game_params": game_parameters(config.game)} if game_parameters(config.game) else {}),
         "output": str(output), "pairing_mode": config.pairing_mode,
         "seat_mode": config.seat_mode, "matches_per_pair": config.matches_per_pair,
         "seed": config.seed, "max_plies": config.max_plies, "workers": workers,
@@ -243,7 +245,7 @@ def match_record(job: MatchJob, outcome: MatchOutcome) -> dict[str, object]:
 
 
 def run_matches(
-    game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
+    game: Game,
     jobs: Iterable[MatchJob],
     *,
     max_plies: int,
@@ -356,11 +358,13 @@ def _validate_completed_record(record: dict, header: dict) -> None:
     if utilities[0] != -utilities[1] or utility_winner != winner:
         raise ValueError("Utilities differ from winner")
     number(record.get("duration_seconds"), "duration_seconds")
+    if header["game"] == "connect6":
+        _validate_connect6_result(result, header.get("game_params"))
     if header["game"] == "splendor":
         _validate_splendor_result(result)
     action_type = {
         "tic-tac-toe": "tic_tac_toe", "connect-four": "connect_four",
-        "boop": "boop", "spotf": "spotf", "splendor": "splendor",
+        "boop": "boop", "spotf": "spotf", "splendor": "splendor", "connect6": "connect6",
     }[header["game"]]
     if action_type == "spotf":
         for field in ("scores", "collections", "gemstone_pools"):
@@ -562,3 +566,19 @@ def run_tournament(
         "standings": standings,
         "pairing_results": [_tournament_pairing_result(pairing, config) for pairing in stats],
     }
+
+
+def _validate_connect6_result(result, parameters):
+    from .connect6 import Connect6Action
+    game = create_game('connect6', parameters)
+    if result.get('game_params') != game_parameters(game):
+        raise ValueError('Connect6 result game_params differ from tournament configuration')
+    state = game.initial_state()
+    for move in result['moves']:
+        if state.current_player != move['player'] or move['action'].get('type') != 'connect6':
+            raise ValueError('Connect6 trace has invalid player or action type')
+        state = state.apply_action(Connect6Action(move['action']['position']))
+    if not state.terminal or state.winner != result['winner']:
+        raise ValueError('Connect6 replay result differs from trace')
+    if 'final_board' in result and [list(row) for row in state.board] != result['final_board']:
+        raise ValueError('Connect6 replay board differs from trace')

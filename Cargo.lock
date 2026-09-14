@@ -36,6 +36,7 @@ version = "0.1.0"
 dependencies = [
  "meeple_bots_boop",
  "meeple_bots_cant_stop",
+ "meeple_bots_connect6",
  "meeple_bots_connect_four",
  "meeple_bots_core",
  "meeple_bots_evaluation",
@@ -45,6 +46,13 @@ dependencies = [
  "meeple_bots_spirits_of_the_forest",
  "meeple_bots_splendor",
  "meeple_bots_tic_tac_toe",
+]
+
+[[package]]
+name = "meeple_bots_connect6"
+version = "0.1.0"
+dependencies = [
+ "meeple_bots_core",
 ]
 
 [[package]]
@@ -86,6 +94,7 @@ dependencies = [
  "meeple_bots_boop",
  "meeple_bots_cant_stop",
  "meeple_bots_catalog",
+ "meeple_bots_connect6",
  "meeple_bots_connect_four",
  "meeple_bots_core",
  "meeple_bots_mcts_agent",
