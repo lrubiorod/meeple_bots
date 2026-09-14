@@ -1,12 +1,11 @@
-# Provisional Splendor baseline from results/studies/splendor/candidates/tuned1-balanced.toml.
-# Candidate only; revise after the held-out equal-time tournament.
+# Provisional Splendor baseline: UCT c=0.5, H1 depth 16, reuse and transpositions.
 name = "splendor-baseline"
-iterations = 5000
-exploration = 1.0
-rollout_depth = 128
-selection_policy = "ucb1_tuned"
-cutoff_evaluator = { "kind" = "game_heuristic", "index" = 0 }
+iterations = 10000
+exploration = 0.5
+rollout_depth = 16
+selection_policy = "uct"
+cutoff_evaluator = { "kind" = "game_heuristic", "index" = 1 }
 rollout_policy = { "kind" = "uniform_random" }
 tree_reuse = true
-transpositions = false
+transpositions = true
 root_diagnostics = false
