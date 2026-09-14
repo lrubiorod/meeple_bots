@@ -27,6 +27,31 @@ def wait_for(app, predicate):
 
 
 class SplendorGuiTests(unittest.TestCase):
+    def test_start_accepts_h1_from_baseline_and_explicit_selection(self):
+        from dataclasses import replace
+        from meeple_bots.gui.baselines import SPLENDOR_BASELINE
+
+        app = SplendorApplication()
+        try:
+            with patch('meeple_bots.games.splendor.gui.SPLENDOR_BASELINE',
+                       replace(SPLENDOR_BASELINE, heuristic=1)), \
+                 patch('meeple_bots.games.splendor.gui.controller.threading.Thread.start'):
+                state = app.start({'first': {'kind': 'mcts'}, 'second': {'kind': 'mcts'}})
+                self.assertEqual([p['heuristic'] for p in state['players']], [1, 1])
+                for heuristic in (None, 0, 1):
+                    with self.subTest(heuristic=heuristic):
+                        state = app.start({seat: {'kind': 'mcts', 'heuristic': heuristic}
+                                           for seat in ('first', 'second')})
+                        self.assertEqual([p['heuristic'] for p in state['players']],
+                                         [heuristic, heuristic])
+                before = app.snapshot()
+                with self.assertRaises(ValueError):
+                    app.start({'first': {'kind': 'mcts', 'heuristic': 2},
+                               'second': {'kind': 'human'}})
+                self.assertEqual(app.snapshot(), before)
+        finally:
+            app.cancel()
+
     def test_baseline_drives_native_controller_browser_and_manual_overrides(self):
         from meeple_bots.gui.baselines import SPLENDOR_BASELINE
         from meeple_bots._mcts_profiles import _load_mcts_profile
