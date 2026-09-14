@@ -4,6 +4,10 @@ mod cant_stop;
 mod connect6;
 mod splendor;
 
+use meeple_bots_catalog::{
+    configured_connect6_mcts, run_connect6_match_with_observer, run_connect6_match_with_trace,
+};
+use meeple_bots_connect6::{Connect6, Connect6Action};
 use std::{collections::BTreeMap, num::NonZeroU32, time::Duration};
 
 use meeple_bots_boop::{
@@ -304,6 +308,56 @@ impl MatchObserver<TicTacToe> for PythonTicTacToeMatchObserver<'_> {
                 player.index(),
                 board,
                 (action.row(), action.column()),
+                decision_time.total().as_secs_f64(),
+                decision_stats.search_iterations,
+                decision_stats.search_nodes,
+            ))?;
+            Ok(())
+        }) {
+            self.error = Some(error.to_string());
+        }
+    }
+}
+
+struct PythonConnect6MatchObserver<'a> {
+    callback: &'a Py<PyAny>,
+    error: Option<String>,
+}
+impl MatchObserver<Connect6> for PythonConnect6MatchObserver<'_> {
+    fn measures_decision_time(&self) -> bool {
+        true
+    }
+
+    fn on_action(
+        &mut self,
+        _game: &Connect6,
+        state: &<Connect6 as Game>::State,
+        player: PlayerId,
+        action: &Connect6Action,
+        decision_time: DecisionTiming,
+        decision_stats: AgentDecisionStats,
+    ) {
+        if self.error.is_some() {
+            return;
+        }
+        let board: Vec<_> = state
+            .board()
+            .iter()
+            .map(|cell| {
+                if *cell == 0 {
+                    None
+                } else {
+                    Some((*cell - 1) as usize)
+                }
+            })
+            .collect();
+        if let Err(error) = Python::attach(|py| -> PyResult<()> {
+            self.callback.bind(py).call1((
+                player.index(),
+                board,
+                match action {
+                    Connect6Action::Place(p) => *p,
+                },
                 decision_time.total().as_secs_f64(),
                 decision_stats.search_iterations,
                 decision_stats.search_nodes,
@@ -980,6 +1034,82 @@ impl Agent<TicTacToe> for PythonHumanAgent<'_> {
     }
 }
 
+impl Agent<Connect6> for PythonHumanAgent<'_> {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, Connect6>,
+        _rng: &mut R,
+    ) -> Result<Connect6Action, AgentError> {
+        let player = decision.player().index();
+        let board: Vec<_> = decision
+            .state()
+            .board()
+            .iter()
+            .map(|cell| {
+                if *cell == 0 {
+                    None
+                } else {
+                    Some((*cell - 1) as usize)
+                }
+            })
+            .collect();
+        let legal_actions: Vec<_> = decision.legal_actions().collect();
+        let legal_columns: Vec<_> = legal_actions
+            .iter()
+            .map(|action| match action {
+                Connect6Action::Place(p) => *p,
+            })
+            .collect();
+
+        let column: usize = Python::attach(|py| {
+            self.selector
+                .bind(py)
+                .call1((player, board, legal_columns))?
+                .extract()
+        })
+        .map_err(|error| AgentError::message(format!("human selector failed: {error}")))?;
+        let action = Connect6Action::Place(column);
+        if !legal_actions.contains(&action) {
+            return Err(AgentError::message(
+                "human selected a column that is not currently legal",
+            ));
+        }
+        if let Some(observer) = self.observer {
+            let mut state = decision.state().clone();
+            decision
+                .game()
+                .apply_action(&mut state, &action)
+                .map_err(|error| {
+                    AgentError::message(format!("failed to preview human action: {error}"))
+                })?;
+            let board: Vec<_> = state
+                .board()
+                .iter()
+                .map(|cell| {
+                    if *cell == 0 {
+                        None
+                    } else {
+                        Some((*cell - 1) as usize)
+                    }
+                })
+                .collect();
+            Python::attach(|py| -> PyResult<()> {
+                observer.bind(py).call1((
+                    player,
+                    board,
+                    py.None(),
+                    match action {
+                        Connect6Action::Place(p) => p,
+                    },
+                ))?;
+                Ok(())
+            })
+            .map_err(|error| AgentError::message(format!("human observer failed: {error}")))?;
+        }
+        Ok(action)
+    }
+}
+
 impl Agent<ConnectFour> for PythonHumanAgent<'_> {
     fn select_action<R: RandomSource + ?Sized>(
         &mut self,
@@ -1416,7 +1546,7 @@ fn run_python_match(
     observer: Option<&Py<PyAny>>,
     config: MatchConfig,
 ) -> PyResult<CatalogMatchReport> {
-    if matches!(game, GameId::Splendor | GameId::Connect6(_)) {
+    if matches!(game, GameId::Splendor) {
         if observer.is_some() {
             return Err(PyValueError::new_err(
                 "Live observers are not supported for this game",
@@ -1439,7 +1569,10 @@ fn run_python_match(
     }
     if let Some(observer) = observer {
         return match game {
-            GameId::Splendor | GameId::Connect6(_) => unreachable!("handled above"),
+            GameId::Connect6(size) => {
+                run_observed_connect6_match(size, first, second, observer, config)
+            }
+            GameId::Splendor => unreachable!("handled above"),
             GameId::Boop => run_observed_boop_match(first, second, observer, config),
             GameId::ConnectFour => run_observed_connect_four_match(first, second, observer, config),
             GameId::SpiritsOfTheForest => {
@@ -1450,7 +1583,13 @@ fn run_python_match(
     }
 
     match game {
-        GameId::Splendor | GameId::Connect6(_) => unreachable!("handled above"),
+        GameId::Splendor => unreachable!("handled above"),
+        GameId::Connect6(size) => run_connect6_match_with_trace(
+            size,
+            &mut python_participant(first, configured_connect6_mcts)?,
+            &mut python_participant(second, configured_connect6_mcts)?,
+            config,
+        ),
         GameId::Boop => run_boop_match_with_trace(
             &mut python_participant(first, configured_boop_mcts)?,
             &mut python_participant(second, configured_boop_mcts)?,
@@ -1963,6 +2102,31 @@ fn run_observed_boop_match(
     };
     let report = run_boop_match_with_observer(&mut first, &mut second, config, &mut observer)
         .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+
+    if let Some(error) = observer.error {
+        return Err(PyRuntimeError::new_err(format!(
+            "match observer failed: {error}"
+        )));
+    }
+    Ok(report)
+}
+
+fn run_observed_connect6_match(
+    size: usize,
+    first: &PythonAgentConfig,
+    second: &PythonAgentConfig,
+    callback: &Py<PyAny>,
+    config: MatchConfig,
+) -> PyResult<CatalogMatchReport> {
+    let mut first = python_participant(first, configured_connect6_mcts)?;
+    let mut second = python_participant(second, configured_connect6_mcts)?;
+    let mut observer = PythonConnect6MatchObserver {
+        callback,
+        error: None,
+    };
+    let report =
+        run_connect6_match_with_observer(size, &mut first, &mut second, config, &mut observer)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
 
     if let Some(error) = observer.error {
         return Err(PyRuntimeError::new_err(format!(

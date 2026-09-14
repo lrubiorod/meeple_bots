@@ -33,6 +33,7 @@ build/
 !/configs/mcts/splendor-baseline.toml
 !/configs/mcts/tic-tac-toe-baseline.toml
 !/configs/mcts/connect-four-baseline.toml
+!/configs/mcts/connect6-baseline.toml
 
 # Extensiones nativas compiladas
 *.so

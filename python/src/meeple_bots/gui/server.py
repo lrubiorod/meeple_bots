@@ -101,7 +101,11 @@ def run_gui(
 ) -> None:
     """Select and serve one supported game's GUI."""
 
-    if game == "splendor":
+    if game == "connect6":
+        from ..games.connect6.gui import PAGE, Connect6Application
+
+        application = Connect6Application()
+    elif game == "splendor":
         from ..games.splendor.gui import PAGE, SplendorApplication
 
         application = SplendorApplication()
@@ -131,7 +135,7 @@ def run_gui(
     else:
         raise ValueError(
             f"graphical interface is not available for {game}; "
-            "available games: splendor, cant-stop, boop, connect-four, spotf, tic-tac-toe"
+            "available games: connect6, splendor, cant-stop, boop, connect-four, spotf, tic-tac-toe"
         )
 
     serve_gui(

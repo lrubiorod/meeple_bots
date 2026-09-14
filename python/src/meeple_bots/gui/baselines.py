@@ -46,3 +46,5 @@ SPOTF_BASELINE = _load_gui_baseline("spotf-baseline.toml")
 CANT_STOP_BASELINE = _load_gui_baseline("cant-stop-baseline.toml")
 
 SPLENDOR_BASELINE = _load_gui_baseline("splendor-baseline.toml")
+
+CONNECT6_BASELINE = _load_gui_baseline("connect6-baseline.toml")

@@ -806,6 +806,23 @@ where
     Ok(connect_four_report(traced))
 }
 
+pub fn run_connect6_match_with_observer<A, B, O>(
+    size: usize,
+    first: &mut A,
+    second: &mut B,
+    config: MatchConfig,
+    observer: &mut O,
+) -> Result<CatalogMatchReport, CatalogError>
+where
+    A: Agent<Connect6>,
+    B: Agent<Connect6>,
+    O: MatchObserver<Connect6>,
+{
+    let game = connect6_game(size)?;
+    let traced = play_match_with_trace_and_observer(&game, first, second, config, observer)?;
+    Ok(connect6_report(game, traced))
+}
+
 pub fn run_connect_four_match_with_observer<A, B, O>(
     first: &mut A,
     second: &mut B,

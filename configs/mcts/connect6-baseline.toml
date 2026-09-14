@@ -1,0 +1,10 @@
+# Interactive starting profile, not calibrated for playing strength.
+name = "connect6-baseline"
+time_budget = 1.0
+rollout_depth = 1024
+exploration = 1.4142135623730951
+selection_policy = "uct"
+cutoff_evaluator = { kind = "neutral" }
+rollout_policy = { kind = "uniform_random" }
+tree_reuse = true
+transpositions = false

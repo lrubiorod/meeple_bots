@@ -53,5 +53,19 @@ their defaults and reject unsupported parameters.
 
 The existing deterministic MCTS reads the active player from each state, including
 consecutive decisions by one player. UCT, UCB1-Tuned, tree reuse and transpositions
-need no Connect6-specific search code. Utility is +1 / 0 / −1. No heuristic, GUI,
-human callback transport, RAVE or symmetry reduction is provided in this change.
+need no Connect6-specific search code. Utility is +1 / 0 / −1. No heuristic, RAVE or symmetry reduction is provided.
+
+## Browser play
+
+```bash
+meeple-bots gui --game connect6
+```
+
+Choose board size in the settings (default 19), then click an empty intersection
+to place each stone. The status displays the active color and remaining placements.
+Each seat supports human, random or MCTS; MCTS controls appear only for MCTS seats.
+The initial MCTS settings come from `configs/mcts/connect6-baseline.toml`, an
+uncalibrated one-second starting profile. Configure iterations/time, selector,
+exploration, depth, tree reuse and transpositions independently for each player.
+The interface includes move history, last-move marking, pacing, seeded restarts
+and optional extractable traces under `results/gui/connect6` retaining board size.

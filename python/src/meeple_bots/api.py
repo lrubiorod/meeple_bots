@@ -1397,6 +1397,8 @@ def _validate_game_heuristic(game: Game, heuristic: int | None) -> None:
 
 
 def _game_display_name(game: Game) -> str:
+    if isinstance(game, Connect6):
+        return "connect6"
     if isinstance(game, Splendor):
         return "splendor"
     if isinstance(game, TicTacToe):
@@ -1458,6 +1460,10 @@ def _human_selector(agent: HumanAgent, game: Game):
                 for row, column in native_context
             )
             pools = None
+        elif isinstance(game, Connect6):
+            board = _board_rows(flat_board, columns=game.board_size)
+            legal_actions = tuple(Connect6Action(p) for p in native_context)
+            pools = None
         elif isinstance(game, ConnectFour):
             board = _board_rows(flat_board, columns=7)
             legal_actions = tuple(
@@ -1491,6 +1497,8 @@ def _human_selector(agent: HumanAgent, game: Game):
         action = agent.select_action(turn)
         if isinstance(game, TicTacToe):
             expected_type = TicTacToeAction
+        elif isinstance(game, Connect6):
+            expected_type = Connect6Action
         elif isinstance(game, ConnectFour):
             expected_type = ConnectFourAction
         else:
@@ -1501,6 +1509,8 @@ def _human_selector(agent: HumanAgent, game: Game):
             raise ValueError("the selected action is not currently legal")
         if isinstance(action, TicTacToeAction):
             return action.row, action.column
+        if isinstance(action, Connect6Action):
+            return action.position
         if isinstance(action, ConnectFourAction):
             return action.column
         return legal_actions.index(action)
@@ -1541,6 +1551,10 @@ def _human_move_observer(agent: HumanAgent, game: Game):
                 row=native_action[0],
                 column=native_action[1],
             )
+        elif isinstance(game, Connect6):
+            board = _board_rows(flat_board, columns=game.board_size)
+            pools = None
+            action = Connect6Action(native_action)
         elif isinstance(game, ConnectFour):
             board = _board_rows(flat_board, columns=7)
             pools = None
@@ -1660,6 +1674,9 @@ def _match_move_observer(observer: MatchMoveObserver | None, game: Game):
                 column=native_action[1],
             )
             board = _board_rows(flat_board, columns=3)
+        elif isinstance(game, Connect6):
+            action = Connect6Action(native_action)
+            board = _board_rows(flat_board, columns=game.board_size)
         elif isinstance(game, ConnectFour):
             action = ConnectFourAction(column=native_action)
             board = _board_rows(flat_board, columns=7)
@@ -1700,6 +1717,15 @@ def _prompt_human_action(turn: HumanTurn) -> GameAction:
                 file=sys.stderr,
             )
 
+    if isinstance(turn.game, Connect6):
+        while True:
+            try:
+                action = Connect6Action(int(input("Cell index (row * board_size + column): ")))
+                if action in turn.legal_actions:
+                    return action
+            except ValueError:
+                pass
+            print("Choose an empty cell index.", file=sys.stderr)
     if isinstance(turn.game, ConnectFour):
         return _prompt_connect_four_action(turn)
     if isinstance(turn.game, Boop):

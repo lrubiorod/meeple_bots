@@ -37,6 +37,7 @@ def write_gui_trace(
         "decision_timing_scope": "agent_total_v1",
         "study_type": "batch",
         "game": game,
+        **({"game_params": result.game_params} if result.game_params else {}),
         "output": str(target),
         "matches_per_pair": 1,
         "seed": result.seed,
