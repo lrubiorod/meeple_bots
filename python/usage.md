@@ -263,7 +263,7 @@ Load a complete profile for one seat when the configuration should be reusable:
 
 ```bash
 meeple-bots match --game boop --first mcts --second human \
-  --first-mcts-config configs/mcts/heuristic.toml
+  --first-mcts-config configs/mcts/boop-baseline.toml
 ```
 
 Do not combine a player's profile with that player's heuristic flag. The profile format is
@@ -285,7 +285,7 @@ Compare two MCTS profiles:
 ```bash
 meeple-bots batch --game boop --matches 20 \
   --agent-a mcts --agent-a-config configs/mcts/template.toml \
-  --agent-b mcts --agent-b-config configs/mcts/heuristic.toml \
+  --agent-b mcts --agent-b-config configs/mcts/boop-baseline.toml \
   --seed 42 --json
 ```
 
@@ -297,7 +297,7 @@ Use `--output` to preserve every action in an extract-compatible JSONL trace:
 ```bash
 meeple-bots batch --game boop --matches 100 \
   --agent-a mcts --agent-a-config configs/mcts/template.toml \
-  --agent-b mcts --agent-b-config configs/mcts/heuristic.toml \
+  --agent-b mcts --agent-b-config configs/mcts/boop-baseline.toml \
   --workers auto --seed 42 \
   --output results/batches/boop-comparison.jsonl
 ```
@@ -324,7 +324,7 @@ meeple-bots analyze --game spotf --target-time 1 --seed 42 \
   --agent 'name=equal-time-random,t=1,d=120,p=random' \
   --agent 'name=rollout-h0,i=20000,d=32,ce=neutral,p=epsilon,rh=0,e=0.1' \
   --agent 'name=collect-h0,i=5000,d=32,h=0,p=epsilon,rh=0,e=0.25,phase=collect' \
-  --agent-config configs/mcts/heuristic.toml
+  --agent-config configs/mcts/spotf-baseline.toml
 ```
 
 Each `--agent-config` uses the [reusable scalar profile](../agents/README.md#reusable-profiles)

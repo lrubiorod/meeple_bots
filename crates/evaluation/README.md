@@ -21,7 +21,7 @@ meeple-bots analyze --game boop --target-time 1 \
   --agent 'iterations=5000,depth=120' \
   --agent 'name=equal-time,time_budget=1,depth=120' \
   --agent 'name=rollout-h1,iterations=20000,depth=32,ce=neutral,p=epsilon,rh=1,e=0.1' \
-  --agent-config configs/mcts/heuristic.toml
+  --agent-config configs/mcts/boop-baseline.toml
 ```
 
 From Python:

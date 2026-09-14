@@ -26,7 +26,6 @@ build/
 !/configs/tournaments/template-study.toml
 /configs/mcts/*
 !/configs/mcts/template.toml
-!/configs/mcts/heuristic.toml
 !/configs/mcts/boop-baseline.toml
 !/configs/mcts/cant-stop-baseline.toml
 !/configs/mcts/spotf-baseline.toml

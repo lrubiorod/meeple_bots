@@ -1,7 +1,0 @@
-# Copy this file to create a reproducible MCTS profile.
-name = "heuristic-mcts"
-iterations = 10000
-rollout_depth = 16
-exploration = 1.4142135623730951
-cutoff_evaluator = { kind = "game_heuristic", index = 0 }
-rollout_policy = { kind = "uniform_random" }
