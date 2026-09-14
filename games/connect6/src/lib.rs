@@ -109,6 +109,9 @@ impl Game for Connect6 {
             PositionStatus::PlayerTurn(state.current_player)
         }
     }
+    fn is_turn_boundary(&self, state: &Self::State) -> bool {
+        state.placements_remaining == 2 || state.board.iter().all(|&cell| cell == 0)
+    }
     fn legal_actions<'a>(&'a self, state: &'a Self::State) -> Self::LegalActions<'a> {
         if matches!(self.status(state), PositionStatus::Terminal) {
             return Vec::new().into_iter();
@@ -196,6 +199,7 @@ mod tests {
             assert_eq!(g.legal_actions(&s).count(), n * n);
             assert_eq!(s.current_player(), PlayerId::FIRST);
             assert_eq!(s.placements_remaining(), 1);
+            assert!(g.is_turn_boundary(&s));
             for (i, p, left) in [
                 (0, PlayerId::SECOND, 2),
                 (1, PlayerId::SECOND, 1),
@@ -204,6 +208,7 @@ mod tests {
                 g.apply_action(&mut s, &Connect6Action::Place(i)).unwrap();
                 assert_eq!(g.status(&s), PositionStatus::PlayerTurn(p));
                 assert_eq!(s.placements_remaining(), left);
+                assert_eq!(g.is_turn_boundary(&s), left == 2);
                 assert_eq!(g.legal_actions(&s).count(), n * n - i - 1);
             }
             let before = s.clone();

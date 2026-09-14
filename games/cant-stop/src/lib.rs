@@ -114,6 +114,9 @@ impl Game for CantStop {
             _ => PositionStatus::PlayerTurn(state.active),
         }
     }
+    fn is_turn_boundary(&self, state: &Self::State) -> bool {
+        state.runners == [0; 11]
+    }
     fn legal_actions<'a>(&'a self, state: &'a CantStopState) -> Self::LegalActions<'a> {
         match state.phase {
             Phase::Choose => self.advances(state),
@@ -254,6 +257,29 @@ mod tests {
     use meeple_bots_simulation::{MatchConfig, SplitMix64, play_match_with_trace};
 
     #[test]
+    fn turn_boundary_survives_initial_dice_but_not_roll_again() {
+        let game = CantStop;
+        let mut state = game.initial_state();
+        game.apply_chance_outcome(&mut state, &CantStopAction::Dice([1, 2, 3, 4]))
+            .unwrap();
+        assert!(game.is_turn_boundary(&state));
+        let advance = game.legal_actions(&state).next().unwrap();
+        game.apply_action(&mut state, &advance).unwrap();
+        assert!(!game.is_turn_boundary(&state));
+        game.apply_action(&mut state, &CantStopAction::RollAgain)
+            .unwrap();
+        assert!(!game.is_turn_boundary(&state));
+        game.apply_chance_outcome(&mut state, &CantStopAction::Dice([1, 2, 3, 4]))
+            .unwrap();
+        assert!(!game.is_turn_boundary(&state));
+        let advance = game.legal_actions(&state).next().unwrap();
+        game.apply_action(&mut state, &advance).unwrap();
+        game.apply_action(&mut state, &CantStopAction::Stop)
+            .unwrap();
+        assert!(game.is_turn_boundary(&state));
+    }
+
+    #[test]
     fn dice_are_public_events_and_invalid_actions_are_atomic() {
         let g = CantStop;
         let mut s = g.initial_state();
@@ -318,13 +344,16 @@ mod tests {
     fn bust_discards_only_temporary_progress_and_passes_turn() {
         let g = CantStop;
         let mut s = g.initial_state();
+        assert!(g.is_turn_boundary(&s));
         s.progress[0][0] = 1;
         s.runners[0] = 2;
         s.runners[1] = 1;
         s.runners[2] = 1;
+        assert!(!g.is_turn_boundary(&s));
         g.apply_action(&mut s, &CantStopAction::Dice([6, 6, 6, 6]))
             .unwrap();
         assert!(s.last_bust);
+        assert!(g.is_turn_boundary(&s));
         assert_eq!(s.progress[0][0], 1);
         assert_eq!(s.runners, [0; 11]);
         assert_eq!(s.active, PlayerId::SECOND);

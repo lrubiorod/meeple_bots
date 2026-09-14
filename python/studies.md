@@ -158,6 +158,10 @@ node and its accumulated utility, while each action edge keeps an independent vi
 exploration. `search_nodes` then counts unique states created by the graph search.
 
 An MCTS entry must define exactly one of `iterations` or `time_budget`, plus `rollout_depth`.
+`rollout_depth` is a nominal player-decision limit: rollout finishes the current physical
+turn before evaluating. Chance events do not count, and terminal stops immediately.
+For example, Connect6 may execute 16 decisions for a depth of 15 when the last stone
+would otherwise leave its turn incomplete. No boundary option is needed.
 Either budget can be an array; `rollout_depth` and `exploration` can also use arrays. Structured
 configuration also accepts arrays in `cutoff_evaluator.index`, `rollout_policy.evaluator.index`,
 `rollout_policy.epsilon`, and the corresponding `rollout_policy.primary` fields of a conditional

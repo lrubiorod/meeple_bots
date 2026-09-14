@@ -298,10 +298,11 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
                 }
             }
             // Policies see player decisions only; depth excludes sampled chance events.
-            while depth < self.config.rollout_depth
-                && game.status(&state) != PositionStatus::Terminal
-            {
+            loop {
                 resolve_chance(game, &mut state, rng)?;
+                if super::rollout_cutoff_reached(game, &state, depth, self.config.rollout_depth) {
+                    break;
+                }
                 let active = match game.status(&state) {
                     PositionStatus::Terminal => break,
                     PositionStatus::PlayerTurn(active) => active,
@@ -320,7 +321,7 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
                 }
                 game.apply_action(&mut state, &action)
                     .map_err(|e| AgentError::message(e.to_string()))?;
-                depth += 1;
+                depth = depth.saturating_add(1);
             }
             resolve_chance(game, &mut state, rng)?;
             terminal_simulations += u64::from(game.status(&state) == PositionStatus::Terminal);

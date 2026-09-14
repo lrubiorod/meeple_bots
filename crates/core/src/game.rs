@@ -30,6 +30,19 @@ pub trait Game {
     fn initial_state(&self) -> Self::State;
     fn status(&self, state: &Self::State) -> PositionStatus;
 
+    /// Whether this position is between physical turns, before the next player decision.
+    /// The initial position is also a boundary. This is independent of player identity:
+    /// the same player may take consecutive turns. Mandatory chance preparation may
+    /// leave a boundary in place, but callers must resolve Chance before evaluating.
+    ///
+    /// The default describes one-decision turns (possibly followed by chance).
+    /// The rollout policy must eventually reach another boundary or terminal position.
+    /// Games with microactions must override this using their authoritative phase or
+    /// progress state, returning false until the current physical turn is complete.
+    fn is_turn_boundary(&self, state: &Self::State) -> bool {
+        !matches!(self.status(state), PositionStatus::Chance)
+    }
+
     fn legal_actions<'a>(&'a self, state: &'a Self::State) -> Self::LegalActions<'a>;
 
     fn apply_action(

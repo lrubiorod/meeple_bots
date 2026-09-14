@@ -549,6 +549,9 @@ impl Game for SpiritsOfTheForest {
         }
     }
 
+    fn is_turn_boundary(&self, state: &Self::State) -> bool {
+        state.phase == TurnPhase::Collect && state.collected_this_turn == 0
+    }
     fn legal_actions<'a>(&'a self, state: &'a Self::State) -> Self::LegalActions<'a> {
         if matches!(self.status(state), PositionStatus::Terminal) {
             return Vec::new().into_iter();
@@ -971,15 +974,18 @@ mod tests {
         let game = SpiritsOfTheForest::from_tiles(tiles);
         let mut state = game.initial_state();
         state.completed_turns = 1;
+        assert!(game.is_turn_boundary(&state));
 
         game.apply_action(&mut state, &take(position(0, 0)))
             .unwrap();
         assert_eq!(state.next_player(), PlayerId::FIRST);
+        assert!(!game.is_turn_boundary(&state));
         assert_eq!(state.phase(), TurnPhase::Collect);
 
         game.apply_action(&mut state, &take(position(0, 1)))
             .unwrap();
         assert_eq!(state.next_player(), PlayerId::FIRST);
+        assert!(!game.is_turn_boundary(&state));
         assert_eq!(state.phase(), TurnPhase::PlaceGemstone);
 
         game.apply_action(&mut state, &SpiritsOfTheForestAction::SkipGemstone)
@@ -987,6 +993,7 @@ mod tests {
         assert_eq!(state.next_player(), PlayerId::SECOND);
         assert_eq!(state.phase(), TurnPhase::Collect);
         assert_eq!(state.completed_turns(), 2);
+        assert!(game.is_turn_boundary(&state));
     }
 
     #[test]

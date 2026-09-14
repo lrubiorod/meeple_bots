@@ -62,7 +62,11 @@ states report the same `PlayerId`. Evaluation always reads `Game::status`; it do
 one action changes the player. A path containing action blocks of lengths `3, 2, 1` therefore has
 six plies, three player turns, and two player changes.
 
-MCTS follows the same rule. Selection maximizes at every node controlled by the root player and
+These structural same-player-block metrics are not the explicit physical-turn boundary
+used for rollout cutoff. A player may receive another physical turn without changing
+identity.
+
+MCTS selection maximizes at every node controlled by the root player and
 minimizes at every node controlled by the opponent. Consecutive phases owned by one player do not
 alternate maximize/minimize merely because tree depth increased.
 
@@ -230,3 +234,12 @@ the practical iteration suggestions.
 `benchmark_mcts_agent<G, A>` measures an already configured agent on reproducibly sampled states.
 Both support deterministic, perfect-information, two-player, zero-sum games with cloneable states
 and actions. No game-specific phase API is required: player-turn blocks come from `Game::status`.
+
+### Rollout horizon interpretation
+
+`rollout_depth` in cost estimates is the configured **soft decision limit**, not a
+measurement of actual rollout actions. Calibration uses the real MCTS implementation,
+including completion of the current physical turn and mandatory Chance resolution.
+`approximate_player_turns` remains a nominal same-player-block estimate; it does not
+measure overshoot. Terminal/cutoff counts reflect the actual stopping outcome.
+Structural sampling's `max_depth` remains a separate hard sampling limit.

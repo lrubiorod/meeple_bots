@@ -1,5 +1,8 @@
 //! Monte Carlo Tree Search for deterministic, perfect-information games.
 
+#[cfg(test)]
+mod turn_boundary_tests;
+
 mod stochastic;
 mod stochastic_reuse;
 pub use stochastic::StochasticMctsAgent;
@@ -33,6 +36,8 @@ pub struct MctsConfig<P = RolloutPolicyConfig<NeutralEvaluator>> {
     pub budget: SearchBudget,
     pub exploration: f64,
     pub selection_policy: SelectionPolicy,
+    /// Soft player-decision limit: finish the physical turn before cutoff evaluation.
+    /// Chance is not a decision; terminal positions always stop immediately.
     pub rollout_depth: u32,
     pub rollout_policy: P,
 }
@@ -2538,6 +2543,18 @@ where
     )
 }
 
+/// Shared deterministic/stochastic cutoff rule. Chance must be resolved first.
+fn rollout_cutoff_reached<G: meeple_bots_core::Game>(
+    game: &G,
+    state: &G::State,
+    decisions: u32,
+    nominal_depth: u32,
+) -> bool {
+    decisions >= nominal_depth
+        && matches!(game.status(state), PositionStatus::PlayerTurn(_))
+        && game.is_turn_boundary(state)
+}
+
 // Policy, evaluator and per-search memory have independent ownership and lifetimes.
 #[allow(clippy::too_many_arguments)]
 fn rollout_with_memory<G, P, C, R>(
@@ -2557,7 +2574,8 @@ where
     C: StateEvaluator<G>,
     R: RandomSource + ?Sized,
 {
-    for _ in 0..max_depth {
+    let mut decisions = 0_u32;
+    while !rollout_cutoff_reached(game, state, decisions, max_depth) {
         match game.status(state) {
             PositionStatus::Terminal => {
                 return terminal_utility(game, state, root_player);
@@ -2576,6 +2594,7 @@ where
                 }
                 game.apply_action(state, &action)
                     .map_err(|error| AgentError::message(error.to_string()))?;
+                decisions = decisions.saturating_add(1);
             }
             PositionStatus::Chance => {
                 return Err(AgentError::message(

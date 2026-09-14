@@ -47,7 +47,9 @@ pub struct IterationBudgetEstimate {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RolloutCostEstimate {
+    /// Configured soft decision limit, not actual simulated action count.
     pub rollout_depth: u32,
+    /// Nominal same-player-block estimate; excludes turn-completion overshoot.
     pub approximate_player_turns: f64,
     pub milliseconds_per_iteration: f64,
     pub iteration_budgets: Vec<IterationBudgetEstimate>,

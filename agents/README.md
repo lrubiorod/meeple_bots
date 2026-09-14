@@ -79,13 +79,39 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 | `iterations` | `1_000` | Exact iterations per decision; excludes `time_budget`. |
 | `time_budget` | `None` | Approximate total agent seconds per decision; excludes `iterations`. |
 | `exploration` | `sqrt(2)` | UCT balance between utility and less-visited branches. |
-| `rollout_depth` | `256` | Maximum simulated actions after expansion. |
+| `rollout_depth` | `256` | Soft limit in player decisions; complete the current physical turn before cutoff. |
 | `cutoff_evaluator` | `NeutralEvaluator()` | Evaluator used only when a rollout reaches its depth cutoff. |
 | `rollout_policy` | `UniformRandom()` | Policy used to select simulated actions outside the tree. |
 | `progressive_bias` | `None` | Optional decaying heuristic prior added to UCT tree selection. |
 | `root_diagnostics` | `false` | Record visits, utility, cached heuristic, and bias for expanded root actions. |
 | `tree_reuse` | `false` | Retain the reachable subtree across decisions in the same match. |
 | `transpositions` | `false` | Merge exactly equal states reached through different action sequences. |
+
+`rollout_depth` counts player decisions/actions, not Chance events. It is always a
+**soft limit**: after reaching it, simulate only the remaining decisions of the current
+physical turn, resolve mandatory Chance, and evaluate at the first turn boundary.
+Terminal positions stop immediately and use terminal utility, even halfway through a turn.
+For Connect6, a nominal depth of 15 that ends after the first stone continues to 16;
+a depth that already ends after the second stone adds nothing. Single-action turns
+retain their previous behavior. No additional configuration flag is required.
+
+Games expose `Game::is_turn_boundary(state)` explicitly; changing `PlayerId` is not the
+boundary test. Games with several microactions must override the one-action default.
+Mandatory chance preparation before the next player's first decision can preserve a
+boundary, but no evaluator receives a pending Chance state. A turn must eventually end
+under the rollout policy; extensions are not capped separately and can be longer in
+push-your-luck games such as Can't Stop.
+
+The deterministic engine counts rollout decisions after tree traversal. The stochastic
+engine retains its existing shared decision horizon for traversal plus rollout. This
+change does not alter either counting origin or Selection/Expansion/Backup; it only
+completes a pending physical turn before cutoff. Tree reuse and transpositions use
+the same cutoff rule as their corresponding non-reusing engine.
+
+Reported `rollout_depth` remains the configured nominal value, not the actual number
+of simulated actions. Terminal/cutoff simulation counts classify where the simulation
+really stopped. No per-rollout action count is currently exported; do not infer it from
+the configured horizon. Actual decisions can be fewer (terminal) or more (turn completion).
 
 The legacy `heuristic=INDEX` argument remains available as shorthand for
 `cutoff_evaluator=GameHeuristic(INDEX)`.

@@ -630,12 +630,14 @@ mod tests {
     #[test]
     fn reserve_refill_and_empty_pool() {
         let (g, mut s) = setup();
+        assert!(g.is_turn_boundary(&s));
         let a = play(Move::ReserveVisible { tier: 0, slot: 0 });
         let card = s.market[0][0].unwrap();
         g.apply_action(&mut s, &a).unwrap();
         assert_eq!(s.players[0].reserved, vec![card]);
         assert_eq!(s.players[0].tokens[5], 1);
         assert_eq!(g.status(&s), PositionStatus::Chance);
+        assert!(!g.is_turn_boundary(&s));
         assert_eq!(g.legal_actions(&s).count(), 0);
         let outcomes = g.chance_outcomes(&s).unwrap();
         assert_eq!(outcomes.len(), 36);
@@ -646,6 +648,7 @@ mod tests {
         g.apply_chance_outcome(&mut s, &event).unwrap();
         assert_eq!(s.remaining[0].len(), 35);
         assert_eq!(s.active, PlayerId::SECOND);
+        assert!(g.is_turn_boundary(&s));
         assert!(g.apply_chance_outcome(&mut s, &event).is_err());
         s.remaining[0].clear();
         s.bank[5] = 0;
