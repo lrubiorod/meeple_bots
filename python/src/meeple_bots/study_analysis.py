@@ -123,17 +123,19 @@ def _curve(phase):
     points = [(c, c.get("result", {})) for c in phase["contrasts"] if c["factor"] == "anchor" and c.get("result", {}).get("score_b") is not None]
     if not points:
         return ""
-    max_time = max(r["timing_b"]["mean_seconds"] for _, r in points) or 1
-    svg = ['<svg viewBox="0 0 760 280" role="img" aria-label="Observed score against the fixed anchor versus mean decision seconds">',
+    def cost(c, r):
+        return phase.get("isolated_costs", {}).get(c["b"], r["timing_b"]["mean_seconds"])
+    max_time = max(cost(c, r) for c, r in points) or 1
+    svg = ['<svg viewBox="0 0 760 280" role="img" aria-label="Observed score against the fixed anchor versus estimated isolated decision seconds">',
            '<path d="M55 15V230H735" fill="none" stroke="black"/>',
-           '<text x="55" y="265">Mean decision seconds →</text><text x="5" y="15">1.0</text><text x="5" y="230">0.0</text>']
+           '<text x="55" y="265">Estimated isolated seconds →</text><text x="5" y="15">1.0</text><text x="5" y="230">0.0</text>']
     for c, r in points:
-        x = 55 + 660 * r["timing_b"]["mean_seconds"] / max_time
+        x = 55 + 660 * cost(c, r) / max_time
         y = 230 - 210 * r["score_b"]
         lo, hi = r["ci95_b"]
         color = "#276baf" if c["b"].startswith("full-") else "#a84d16"
         svg.append(f'<line x1="{x}" x2="{x}" y1="{230-210*hi}" y2="{230-210*lo}" stroke="{color}" opacity=".4"/>')
-        svg.append(f'<circle cx="{x}" cy="{y}" r="5" fill="{color}"><title>{escape(c["b"])}: score {_fmt(r["score_b"])}; {_fmt(r["timing_b"]["mean_seconds"])}s</title></circle>')
+        svg.append(f'<circle cx="{x}" cy="{y}" r="5" fill="{color}"><title>{escape(c["b"])}: score {_fmt(r["score_b"])}; {_fmt(cost(c, r))}s</title></circle>')
     svg.append(f'<text x="650" y="250">{max_time:.4f}s</text></svg>')
     return "".join(svg)
 
@@ -165,13 +167,13 @@ def cutoff_screening(phase):
 def study_diagnostics(state):
     """Describe admission and measured effects; never infer universal strength gains."""
     phases = state.get("phases", {})
-    horizon = phases.get("horizons", {})
+    horizon = phases.get("horizon_check", phases.get("horizons", {}))
     selection = cutoff_screening(horizon)
     effects = []
     for phase_name, phase in phases.items():
         for contrast in phase.get("contrasts", []):
             if contrast.get("purpose") not in ("attribution", "ablation") and contrast["factor"] not in (
-                    "tree_reuse", "transpositions", "combined_mechanisms", "iterations", "cutoff_equal_time"):
+                    "tree_reuse", "transpositions", "combined_mechanisms", "iterations", "cutoff_equal_time", "parameters", "refinement"):
                 continue
             a = phase.get("agents", {}).get(contrast["a"])
             b = phase.get("agents", {}).get(contrast["b"])
@@ -209,7 +211,9 @@ def study_diagnostics(state):
     confirmation = phases.get("confirmation", {})
     final_match = next((c for c in confirmation.get("contrasts", []) if c["factor"] == "cutoff_confirmation"), None)
     verdict = final_match.get("result", {}).get("verdict") if final_match else None
-    finished = confirmation.get("status") == "complete"
+    primary = next((c for c in confirmation.get("contrasts", []) if c.get("primary")), None)
+    finished = (primary.get("result", {}).get("seed_pairs", 0) >= primary["target_pairs"]
+                if primary and primary.get("target_pairs") else confirmation.get("status") == "complete")
     winner = None
     if not finished:
         final_status = "pending"
@@ -220,8 +224,9 @@ def study_diagnostics(state):
         winner = final_match["b"] if verdict == "b_ahead" else final_match["a"]
     else:
         final_status = "inconclusive"
-    return {"cutoff_selection": selection, "improvement_comparisons": effects, "improvement_rankings": rankings,
+    return {"search_complete": finished, "cutoff_selection": selection, "improvement_comparisons": effects, "improvement_rankings": rankings,
             "final_selection": {"status": final_status, "candidate": winner,
+                                "provisional_candidate": winner or ("finalist-full" if "finalist-full" in confirmation.get("agents", {}) else None),
                                 "interpretation": "Relative to tested finalists at equal time; phase completion does not imply a decisive result."},
             "phase_evidence": {name: {"execution": p.get("status"),
                  "minimum_observed_seed_pairs": min((c.get("result", {}).get("seed_pairs", 0) for c in p.get("contrasts", [])), default=0),
@@ -233,20 +238,21 @@ def write_study_report(output: Path, state: dict):
     summary = {"status": state["status"], "game": state["request"]["game"],
                "budget_seconds": state["budget_seconds"], "spent_seconds": state["spent_seconds"],
                "calibration": state["calibration"], "phases": state["phases"],
-               "candidate_profiles": state.get("candidate_profiles", {}), "last_error": state.get("last_error")}
+               "candidate_profiles": state.get("candidate_profiles", {}), "last_error": state.get("last_error"),
+               "budget_plan": state.get("budget_plan")}
     summary.update(study_diagnostics(state))
     mechanisms = state["phases"].get("mechanisms")
     summary["mechanism_effects"] = mechanism_effects(mechanisms) if mechanisms else []
     caveats = [
         "Terminal references use neutral evaluation and a 1024-step safety cap, not a known maximum game length. Any cutoff means the reference is truncated; completion counters are reported below. A single simulation can exceed the decision deadline.",
-        "Depths 16/32/64 with neutral/H0 face full depth at equal time. Cutoff rejection requires at least 8 paired seeds per candidate and every upper 95% bound below 45%. Uncertain candidates remain provisional; completion is not evidence of equivalence. Full and optional cutoff families are tuned independently, then compared at equal time on held-out seeds.",
+        "Depths 16/32/64 with neutral/H0/H1 are screened at equal short time; two cutoffs are checked at target time. Low-sample admission is provisional. Rejection of shortlisted cutoffs is not a claim about untested alternatives. Full and optional cutoff families are tuned separately, then compared on held-out seeds.",
         "All results are preliminary and relative to the tested opponents and budgets; candidates are not automatically promoted to baselines.",
-        "Intervals use paired seed blocks and a conservative 95% Hoeffding bound. No multiple-comparison correction; screening rankings are exploratory.",
-        "Mechanisms are screened after parameter and iteration tuning; two variants per full/cutoff family enter local refinement. Screening rankings remain provisional. No global optimum is guaranteed.",
-        "Confirmation and final ablations use separate held-out seed namespaces. Inconclusive is not evidence of equal strength or iteration saturation.",
-        "Calibration, timed matches, refinement and iteration-anchor cost measurements run in isolation. Other fixed-iteration matches may share CPU; their latency is not isolated performance. Timing requires a release native build.",
-        "The calibrated external reference is excluded from screening and selection. Equal-time and original-budget reference contrasts answer different questions.",
-        "Phases run in order. An insufficient budget leaves partial results without promoting that phase. A running batch of swapped-seat pairs may exceed the deadline.",
+        "Intervals use paired seed blocks and a conservative 95% Hoeffding bound. Adaptive screening intervals and rankings are descriptive, with no claim of inferiority for candidates not prioritized. Confirmation sample sizes are fixed before play; no multiple-comparison correction.",
+        "All four mechanism settings are screened after parameter and iteration tuning; one winner per family enters local refinement and two refined alternatives per family receive target-time checks. Screening rankings remain provisional. No global optimum is guaranteed.",
+        "The primary confirmation has its own cap (default 32 pairs); auxiliaries and ablations have a smaller independent cap (default 4). All phases have separate seed namespaces. Inconclusive is not evidence of equal strength or iteration saturation.",
+        "Calibration, cost benchmarks and timed matches run in isolation. All fixed-iteration matches may share CPU; their latency is not isolated performance. Timing requires a release native build.",
+        "The external reference is excluded from screening and selection and participates only in auxiliary equal-time confirmation.",
+        "Phases run in order. After initial coverage, exploratory work is reduced to protect later allocations. Auxiliary comparisons can be omitted. Insufficient total budget leaves provisional candidates; primary search completion is reported separately from optional diagnostics. A running batch of swapped-seat pairs may exceed the deadline.",
         "Seeds vary the search RNG and, where supported, the initial setup. Distinct seeds need not mean distinct starting boards.",
     ]
     summary["cutoff_decisions"] = []
@@ -272,8 +278,13 @@ def write_study_report(output: Path, state: dict):
              f'<p>Status: <b>{escape(state["status"])}</b>. Budget used: {state["spent_seconds"]:.1f}/{state["budget_seconds"]:.1f}s.</p>',
              '<p><a href="study.json">Frozen plans and provenance</a> · <a href="summary.json">Machine-readable results</a> · <a href="baseline.toml">Starting profile</a></p>',
              '<h2>Interpretation</h2><ul>' + ''.join(f'<li>{escape(c)}</li>' for c in caveats) + '</ul>']
+    plan = summary.get("budget_plan")
+    if plan:
+        parts.append('<h2>Initial budget estimate</h2>')
+        parts.append(_table(['Phase', 'Estimated seconds', 'Allocated seconds'],
+                           [(p['phase'], _fmt(p['estimated_seconds'], 1), _fmt(p['allocated_seconds'], 1)) for p in plan['phases']]))
     final = summary["final_selection"]
-    parts.append(f'<p>Final comparison: <b>{escape(final["status"])}</b>; selected candidate: {escape(str(final["candidate"]))}. Execution completion and statistical evidence are separate.</p>')
+    parts.append(f'<p>Primary search complete: {summary["search_complete"]}. Final comparison: <b>{escape(final["status"])}</b>; selected candidate: {escape(str(final["candidate"]))}. Execution completion and statistical evidence are separate.</p>')
     selection = summary["cutoff_selection"]
     parts.append('<h2>Cutoff admission</h2>')
     parts.append(_table(['Status', 'Selected cutoff', 'Best observed cutoff', 'Observed score %', 'Threshold %', 'Reason'],
@@ -304,8 +315,8 @@ def write_study_report(output: Path, state: dict):
         parts.append(f'<p>Stopped: {escape(state["last_error"])}</p>')
     for name, phase in state["phases"].items():
         parts.append(f'<h2>{escape(name)} — {escape(phase["status"])}</h2>')
-        parts.append(_table(['A', 'B', 'Question', 'Max workers', 'Timing', 'Paired seeds', 'B W/D/L', 'B score', '95% interval', 'Conclusion', 'A mean s', 'B mean s', 'B p95 s'], [
-            (c['a'], c['b'], c['factor'], c.get('workers', 1), c.get('timing_mode', 'isolated'), (r := c.get('result', {})).get('seed_pairs', 0),
+        parts.append(_table(['A', 'B', 'Question', 'Max workers', 'Timing', 'Paired seeds', 'Target pairs', 'Allocation decision', 'B W/D/L', 'B score', '95% interval', 'Conclusion', 'A mean s', 'B mean s', 'B p95 s'], [
+            (c['a'], c['b'], c['factor'], c.get('workers', 1), c.get('timing_mode', 'isolated'), (r := c.get('result', {})).get('seed_pairs', 0), c.get('target_pairs', phase.get('planned_pairs')), c.get('stop_reason', 'allocated'),
              f"{r.get('wins_b', 0)}/{r.get('draws', 0)}/{r.get('losses_b', 0)}", _fmt(r.get('score_b')),
              ' – '.join(_fmt(x) for x in r.get('ci95_b', [0, 1])), r.get('verdict', 'not_run'),
              _fmt(r.get('timing_a', {}).get('mean_seconds')), _fmt(r.get('timing_b', {}).get('mean_seconds')),

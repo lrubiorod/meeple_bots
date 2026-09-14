@@ -131,9 +131,14 @@ meeple-bots study --game splendor --budget 2h --workers auto \
 ```
 
 It starts with a generic prestige/uniform profile unless `--baseline` is supplied, compares
-neutral, H0 and H1 cutoffs jointly with selector, depth and exploration, then iteration
+neutral, H0 and H1 cutoffs before tuning selector, depth, exploration, iteration
 budgets and reuse/transpositions, and exports candidate
-TOMLs and the standard study report. Calibration resolves chance outside agent timing with
+TOMLs and the standard study report. Protocol 10 uses cheap screening (by default at most
+one quarter of the target time), target-time checks, one primary final comparison capped
+at 32 paired seeds and auxiliary comparisons capped independently at 4. Use
+`--decision-time 1` for one-second target checks/finals, or add `--screening-time 1` to
+also screen at that time. Plans adapt to the total budget; completion is not proof of
+superiority. Start a new output directory for protocol 10. Calibration resolves chance outside agent timing with
 an independent RNG and samples decision positions only. Resume using the same arguments,
 `--resume`, and a larger **total** budget. See [automatic studies](../../python/studies.md#automatic-mcts-diagnosis).
 
