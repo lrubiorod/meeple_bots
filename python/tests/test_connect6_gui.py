@@ -68,7 +68,7 @@ class Connect6GuiTests(unittest.TestCase):
         harness = r"""
 const elements=new Map();
 class Element {
- constructor(){this.children=[];this.value='human';this.checked=false;this.classList={toggle(){},contains(){return false;}};}
+ constructor(){this.children=[];this.value='human';this.checked=false;const classes=new Set();this.classList={toggle(k,on){if(on)classes.add(k);else classes.delete(k);},contains(k){return classes.has(k);}};}
  addEventListener(){} setAttribute(){} appendChild(e){this.children.push(e);} replaceChildren(){this.children=[];}
  style={}; dataset={};
 }
@@ -87,22 +87,41 @@ let sent; global.fetch=async(path,options)=>{sent=JSON.parse(options.body);retur
 (async()=>{await play(1);if(sent.position!==1 || sent.turn!==0 || sent.session_id!=='session')throw Error('stale decision payload');
 document.querySelector('#player-0').value='mcts';document.querySelector('#selection-policy-0').value='ucb1_tuned';
 document.querySelector('#exploration-0').value='0.5';document.querySelector('#transpositions-0').checked=true;
-const config=playerConfig(0);if(config.selection_policy!=='ucb1_tuned'||config.exploration!==0.5||!config.transpositions)throw Error('missing MCTS settings');})();
+const config=playerConfig(0);if(config.selection_policy!=='ucb1_tuned'||config.exploration!==0.5||!config.transpositions)throw Error('missing MCTS settings');
+for(const i of [0,1]) {
+ document.querySelector(`#player-${i}`).value='mcts';
+ document.querySelector(`#selection-policy-${i}`).value='uct_rave';
+ document.querySelector(`#rave-equivalence-${i}`).value='20000';
+ updateAgentFields();
+ if(document.querySelector(`#rave-label-${i}`).classList.contains('hidden') || document.querySelector(`#exploration-${i}`).disabled)throw Error('RAVE fields unavailable');
+ const rave=playerConfig(i);if(rave.selection_policy!=='uct_rave'||rave.rave_equivalence!==20000)throw Error('missing RAVE payload');
+ for(const policy of ['uct','ucb1_tuned']) {
+  document.querySelector(`#selection-policy-${i}`).value=policy;updateAgentFields();
+  if(!document.querySelector(`#rave-label-${i}`).classList.contains('hidden')||'rave_equivalence' in playerConfig(i))throw Error('irrelevant RAVE field');
+ }
+ for(const kind of ['human','random']) {
+  document.querySelector(`#player-${i}`).value=kind;updateAgentFields();
+  if(!document.querySelector(`#mcts-${i}`).classList.contains('hidden')||Object.keys(playerConfig(i)).length!==1)throw Error('MCTS fields on non-MCTS player');
+ }
+}
+})();
 """
         result=subprocess.run([shutil.which('node'), '-e', harness+script+checks], capture_output=True, text=True)
         self.assertEqual(result.returncode,0,result.stderr)
 
     def test_automated_modes_trace_and_extraction(self):
-        for selector in ('uct','ucb1_tuned'):
+        for selector in ('uct','ucb1_tuned','uct_rave'):
             with self.subTest(selector=selector), tempfile.TemporaryDirectory() as tmp:
                 app=Connect6Application(Path(tmp))
                 try:
                     app.start(dict(board_size=6, seed=42,minimum_move_seconds=0,save_trace=True,
                                    first=dict(kind='mcts',iterations=8,rollout_depth=36,
-                                              selection_policy=selector,transpositions=True,tree_reuse=True),
+                                              selection_policy=selector,rave_equivalence=20000,transpositions=True,tree_reuse=True),
                                    second=dict(kind='random')))
                     state=self.wait(app,lambda s:s['status']=='finished')
                     self.assertIsNone(state['trace_error'])
+                    if selector == 'uct_rave':
+                        self.assertEqual(state['players'][0]['rave_equivalence'], 20000)
                     path=Path(state['trace_path'])
                     header=json.loads(path.read_text().splitlines()[0])
                     self.assertEqual(header['game_params'],{'board_size':6})
