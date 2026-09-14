@@ -1,10 +1,12 @@
-# Interactive starting profile, not calibrated for playing strength.
+# Calibrated on Connect6 13x13; provisional baseline for GUI defaults.
+# This agent profile does not configure the board size.
 name = "connect6-baseline"
 time_budget = 1.0
 rollout_depth = 1024
-exploration = 1.4142135623730951
-selection_policy = "uct"
+exploration = 0.5
+selection_policy = "uct_rave"
+rave_equivalence = 20000
 cutoff_evaluator = { kind = "neutral" }
 rollout_policy = { kind = "uniform_random" }
-tree_reuse = true
+tree_reuse = false
 transpositions = false

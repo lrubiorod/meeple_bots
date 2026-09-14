@@ -64,8 +64,9 @@ meeple-bots gui --game connect6
 Choose board size in the settings (default 19), then click an empty intersection
 to place each stone. The status displays the active color and remaining placements.
 Each seat supports human, random or MCTS; MCTS controls appear only for MCTS seats.
-The initial MCTS settings come from `configs/mcts/connect6-baseline.toml`, an
-uncalibrated one-second starting profile. Configure iterations/time, selector,
+The initial MCTS settings come from [`connect6-baseline.toml`](../../configs/mcts/connect6-baseline.toml), a
+provisional one-second profile calibrated on 13x13. This profile does not set the board size;
+select 13 explicitly to use its intended board size. Configure iterations/time, selector,
 exploration, depth, tree reuse and transpositions independently for each player.
 The interface includes move history, last-move marking, pacing, seeded restarts
 and optional extractable traces under `results/gui/connect6` retaining board size.
