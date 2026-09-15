@@ -834,6 +834,7 @@ mod search_tests {
             {
                 let game = Splendor::new(&mut SplitMix64::new(42));
                 let config = MctsConfig {
+                    progressive_widening: None,
                     budget: SearchBudget::Iterations(NonZeroU32::new(8).unwrap()),
                     exploration: 1.0,
                     selection_policy,

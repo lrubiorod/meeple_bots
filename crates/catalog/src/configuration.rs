@@ -389,6 +389,7 @@ pub fn configured_connect_four_mcts(
     };
     Ok(TranspositionMctsAgent::new(
         MctsAgent::new(MctsConfig {
+            progressive_widening: config.search.progressive_widening,
             selection_policy: config.search.selection_policy,
             budget: config.search.budget,
             exploration: config.search.exploration,
@@ -419,6 +420,7 @@ pub fn configured_connect6_mcts(
     };
     Ok(TranspositionMctsAgent::new(
         MctsAgent::new(MctsConfig {
+            progressive_widening: config.search.progressive_widening,
             selection_policy: config.search.selection_policy,
             budget: config.search.budget,
             exploration: config.search.exploration,
@@ -681,6 +683,7 @@ fn validate_search_config<P>(config: &MctsConfig<P>) -> Result<(), CatalogError>
 
 fn uniform_search_config(config: MctsConfig<ConfiguredRolloutPolicy>) -> MctsConfig<UniformRandom> {
     MctsConfig {
+        progressive_widening: config.progressive_widening,
         selection_policy: config.selection_policy,
         budget: config.budget,
         exploration: config.exploration,
@@ -698,6 +701,7 @@ fn standard_search_config(
         ));
     };
     Ok(MctsConfig {
+        progressive_widening: config.progressive_widening,
         selection_policy: config.selection_policy,
         budget: config.budget,
         exploration: config.exploration,

@@ -39,6 +39,11 @@ pub fn configured_cant_stop_agent(config: AgentConfig) -> Result<CantStopAgent, 
             root_diagnostics,
         }) => {
             validate_evaluator(&cutoff_evaluator)?;
+            if search.progressive_widening.is_some() {
+                return Err(AgentError::message(
+                    "Progressive Widening is only supported by deterministic MCTS",
+                ));
+            }
             if matches!(
                 search.selection_policy,
                 meeple_bots_mcts_agent::SelectionPolicy::UctRave { .. }

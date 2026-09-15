@@ -276,6 +276,7 @@ mod tests {
     fn agent(enabled: bool, iterations: u32) -> ReusableStochasticMctsAgent<ChanceChain> {
         let mut inner = StochasticMctsAgent::new(
             MctsConfig {
+                progressive_widening: None,
                 budget: SearchBudget::Iterations(NonZeroU32::new(iterations).unwrap()),
                 exploration: 1.4,
                 selection_policy: SelectionPolicy::Uct,

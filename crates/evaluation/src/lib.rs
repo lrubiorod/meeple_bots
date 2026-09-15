@@ -74,6 +74,7 @@ pub struct SampledDecisionTiming {
     pub legal_actions: usize,
     pub terminal_simulations: Option<u64>,
     pub cutoff_simulations: Option<u64>,
+    pub root_expansion: Option<(usize, usize, usize)>,
     pub root_visits: Vec<u32>,
 }
 
@@ -287,6 +288,7 @@ where
             legal_actions: game.legal_actions(state).count(),
             terminal_simulations: stats.terminal_simulations,
             cutoff_simulations: stats.cutoff_simulations,
+            root_expansion: stats.root_expansion,
             root_visits: stats.root_actions.iter().map(|a| a.visits).collect(),
             milliseconds,
             iterations: stats
@@ -667,6 +669,7 @@ where
 {
     let iterations = NonZeroU32::new(iterations).expect("calibration count is non-zero");
     let mut agent = MctsAgent::new(MctsConfig {
+        progressive_widening: None,
         selection_policy: Default::default(),
         budget: SearchBudget::Iterations(iterations),
         exploration: std::f64::consts::SQRT_2,

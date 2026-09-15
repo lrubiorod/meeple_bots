@@ -47,6 +47,9 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
         "exploration",
         "selection_policy",
         "rave_equivalence",
+        "progressive_widening",
+        "progressive_widening_k",
+        "progressive_widening_alpha",
         "rollout_depth",
         "use_heuristic",
         "heuristic_index",
@@ -78,6 +81,9 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
             **budget,
             selection_policy=values.get("selection_policy", "uct"),
             rave_equivalence=values.get("rave_equivalence", 1000),
+            progressive_widening=values.get("progressive_widening", False),
+            progressive_widening_k=values.get("progressive_widening_k", 1.5),
+            progressive_widening_alpha=values.get("progressive_widening_alpha", 0.5),
             exploration=values.get("exploration", sqrt_two()),
             rollout_depth=values["rollout_depth"],
             cutoff_evaluator=_configured_cutoff_evaluator(values, "MCTS profile"),
@@ -106,6 +112,9 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         "exploration": "exploration",
         "selection_policy": "selection_policy",
         "rave_equivalence": "rave_equivalence",
+        "progressive_widening": "progressive_widening",
+        "progressive_widening_k": "progressive_widening_k",
+        "progressive_widening_alpha": "progressive_widening_alpha",
         "h": "heuristic",
         "heuristic": "heuristic",
         "ce": "cutoff_evaluator",
@@ -250,10 +259,16 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
     transpositions_text = values.get("transpositions", "false").lower()
     if transpositions_text not in {"true", "false"}:
         raise ValueError("inline transpositions must be true or false")
+    pw_text = values.get("progressive_widening", "false").lower()
+    if pw_text not in {"true", "false"}:
+        raise ValueError("inline progressive_widening must be true or false")
     agent = MctsAgent(
         iterations=iterations,
         time_budget=time_budget,
         selection_policy=values.get("selection_policy", "uct"),
+        progressive_widening=pw_text == "true",
+        progressive_widening_k=float(values.get("progressive_widening_k", 1.5)),
+        progressive_widening_alpha=float(values.get("progressive_widening_alpha", 0.5)),
         rave_equivalence=_inline_agent_integer(str(values.get("rave_equivalence", 1000)), "rave_equivalence"),
         exploration=exploration,
         rollout_depth=rollout_depth,
@@ -303,6 +318,8 @@ def _inline_agent_name(agent: MctsAgent) -> str:
         parts.append(agent.selection_policy)
     if agent.selection_policy == "uct_rave":
         parts.append(f"k{agent.rave_equivalence}")
+    if agent.progressive_widening:
+        parts.append(f"pw-k{agent.progressive_widening_k}-a{agent.progressive_widening_alpha}")
     if agent.exploration != sqrt_two():
         parts.append(f"c{agent.exploration}")
     rollout_heuristic = _evaluator_heuristic_index(

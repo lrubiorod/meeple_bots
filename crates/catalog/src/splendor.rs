@@ -26,6 +26,11 @@ pub fn configured_agent(config: AgentConfig) -> Result<SplendorAgent, AgentError
             meeple_bots_random_agent::RandomAgent,
         )),
         AgentConfig::Mcts(c) => {
+            if c.search.progressive_widening.is_some() {
+                return Err(AgentError::message(
+                    "Progressive Widening is only supported by deterministic MCTS",
+                ));
+            }
             if matches!(
                 c.search.selection_policy,
                 meeple_bots_mcts_agent::SelectionPolicy::UctRave { .. }
@@ -51,6 +56,7 @@ pub fn configured_agent(config: AgentConfig) -> Result<SplendorAgent, AgentError
                 ));
             }
             let config = MctsConfig {
+                progressive_widening: c.search.progressive_widening,
                 budget: c.search.budget,
                 exploration: c.search.exploration,
                 rollout_depth: c.search.rollout_depth,

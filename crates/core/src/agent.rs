@@ -6,6 +6,8 @@ pub struct AgentDecisionStats {
     pub search_nodes: Option<u64>,
     pub terminal_simulations: Option<u64>,
     pub cutoff_simulations: Option<u64>,
+    /// (legal actions, admitted children, current admission limit), when available.
+    pub root_expansion: Option<(usize, usize, usize)>,
     pub root_actions: Vec<RootActionStats>,
     pub tree_reuse: Option<TreeReuseStats>,
 }

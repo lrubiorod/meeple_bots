@@ -178,11 +178,24 @@ class MctsAgent:
     transpositions: bool = False
     selection_policy: str = "uct"
     rave_equivalence: int = 1000
+    progressive_widening: bool = False
+    progressive_widening_k: float = 1.5
+    progressive_widening_alpha: float = 0.5
 
     def __post_init__(self) -> None:
         if self.selection_policy not in ("uct", "ucb1_tuned", "uct_rave"):
             raise ValueError("selection_policy must be uct, ucb1_tuned or uct_rave")
         _positive_u32("rave_equivalence", self.rave_equivalence)
+        if not isinstance(self.progressive_widening, bool):
+            raise TypeError("progressive_widening must be a boolean")
+        for key in ("progressive_widening_k", "progressive_widening_alpha"):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{key} must be a number")
+            if not isfinite(value) or value <= 0:
+                raise ValueError(f"{key} must be finite and greater than zero")
+        if self.progressive_widening_alpha > 1:
+            raise ValueError("progressive_widening_alpha must be in (0, 1]")
         if self.iterations is None and self.time_budget is None:
             object.__setattr__(self, "iterations", 1_000)
         elif self.iterations is not None and self.time_budget is not None:

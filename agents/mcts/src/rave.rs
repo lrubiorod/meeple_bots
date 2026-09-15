@@ -212,6 +212,7 @@ mod tests {
     }
     fn config(iterations: u32) -> MctsConfig<UniformRandom> {
         MctsConfig {
+            progressive_widening: None,
             budget: SearchBudget::Iterations(NonZeroU32::new(iterations).unwrap()),
             exploration: 1.4,
             selection_policy: policy(),

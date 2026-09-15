@@ -3,6 +3,9 @@
 #[cfg(test)]
 mod turn_boundary_tests;
 
+mod widening;
+pub use widening::ProgressiveWidening;
+
 mod rave;
 pub use rave::DEFAULT_RAVE_EQUIVALENCE;
 use rave::*;
@@ -43,6 +46,7 @@ pub struct MctsConfig<P = RolloutPolicyConfig<NeutralEvaluator>> {
     pub budget: SearchBudget,
     pub exploration: f64,
     pub selection_policy: SelectionPolicy,
+    pub progressive_widening: Option<ProgressiveWidening>,
     /// Soft player-decision limit: finish the physical turn before cutoff evaluation.
     /// Chance is not a decision; terminal positions always stop immediately.
     pub rollout_depth: u32,
@@ -51,6 +55,9 @@ pub struct MctsConfig<P = RolloutPolicyConfig<NeutralEvaluator>> {
 
 impl<P> MctsConfig<P> {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(pw) = self.progressive_widening {
+            pw.validate()?;
+        }
         if !self.exploration.is_finite() || self.exploration < 0.0 {
             return Err("MCTS exploration must be finite and non-negative");
         }
@@ -77,6 +84,7 @@ impl Default for SearchBudget {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MctsSearchStats {
+    pub root_expansion: (usize, usize, usize),
     pub iterations: u64,
     pub terminal_simulations: u64,
     pub cutoff_simulations: u64,
@@ -90,6 +98,7 @@ impl Default for MctsConfig<RolloutPolicyConfig<NeutralEvaluator>> {
             budget: SearchBudget::default(),
             exploration: std::f64::consts::SQRT_2,
             selection_policy: SelectionPolicy::Uct,
+            progressive_widening: None,
             rollout_depth: 256,
             rollout_policy: RolloutPolicyConfig::default(),
         }
@@ -899,6 +908,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 search_nodes: Some(stats.nodes),
                 terminal_simulations: Some(stats.terminal_simulations),
                 cutoff_simulations: Some(stats.cutoff_simulations),
+                root_expansion: Some(stats.root_expansion),
                 root_actions: self.last_root_actions.clone(),
                 tree_reuse: None,
             })
@@ -1053,7 +1063,12 @@ impl<C, P, B> MctsAgent<C, P, B> {
                     _ => return Err(AgentError::message("unsupported position status")),
                 };
 
-                if !nodes[node_index].unexpanded.is_empty() {
+                if widening::can_expand(
+                    self.config.progressive_widening,
+                    nodes[node_index].visits,
+                    nodes[node_index].children.len(),
+                    nodes[node_index].unexpanded.len(),
+                ) {
                     let bias_applies = bias_enabled
                         && self
                             .selection_bias
@@ -1228,7 +1243,16 @@ impl<C, P, B> MctsAgent<C, P, B> {
         } else {
             Vec::new()
         };
+        let legal = nodes[0].unexpanded.len() + nodes[0].children.len();
+        let root_expansion = (
+            legal,
+            nodes[0].children.len(),
+            self.config
+                .progressive_widening
+                .map_or(legal, |pw| pw.limit(nodes[0].visits, legal)),
+        );
         self.last_search_stats = Some(MctsSearchStats {
+            root_expansion,
             iterations: completed_iterations,
             terminal_simulations,
             cutoff_simulations: completed_iterations - terminal_simulations,
@@ -1320,7 +1344,12 @@ impl<C, P, B> MctsAgent<C, P, B> {
                     _ => return Err(AgentError::message("unsupported position status")),
                 };
 
-                if !graph.nodes[node_index].unexpanded.is_empty() {
+                if widening::can_expand(
+                    self.config.progressive_widening,
+                    graph.nodes[node_index].visits,
+                    graph.nodes[node_index].edges.len(),
+                    graph.nodes[node_index].unexpanded.len(),
+                ) {
                     let bias_applies = bias_enabled
                         && self
                             .selection_bias
@@ -1515,7 +1544,16 @@ impl<C, P, B> MctsAgent<C, P, B> {
         } else {
             Vec::new()
         };
+        let legal = graph.nodes[0].unexpanded.len() + graph.nodes[0].edges.len();
+        let root_expansion = (
+            legal,
+            graph.nodes[0].edges.len(),
+            self.config
+                .progressive_widening
+                .map_or(legal, |pw| pw.limit(graph.nodes[0].visits, legal)),
+        );
         self.last_search_stats = Some(MctsSearchStats {
+            root_expansion,
             iterations: completed_iterations,
             terminal_simulations,
             cutoff_simulations: completed_iterations - terminal_simulations,
@@ -3037,6 +3075,7 @@ mod tests {
                     let make_agent = |rollout_policy| {
                         TranspositionMctsAgent::new(
                             MctsAgent::new(MctsConfig {
+                                progressive_widening: None,
                                 selection_policy: Default::default(),
                                 budget: SearchBudget::Iterations(NonZeroU32::new(64).unwrap()),
                                 exploration: 1.0,
@@ -3090,6 +3129,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(128).unwrap()),
             exploration: 1.0,
@@ -3174,6 +3214,7 @@ mod tests {
                 let mut agent = TranspositionMctsAgent::new(
                     MctsAgent::with_cutoff_evaluator(
                         MctsConfig {
+                            progressive_widening: None,
                             selection_policy: Default::default(),
                             budget: SearchBudget::Iterations(NonZeroU32::new(2).unwrap()),
                             exploration: 1.0,
@@ -3593,6 +3634,7 @@ mod tests {
             continuation_player,
         };
         let mut agent = MctsAgent::new(MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(2_000).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -3663,6 +3705,7 @@ mod tests {
     fn supports_actions_that_are_not_cloneable() {
         let game = NonCloneActionGame;
         let mut agent = MctsAgent::new(MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -3763,6 +3806,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Time(Duration::ZERO),
             exploration: std::f64::consts::SQRT_2,
@@ -3787,6 +3831,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(4).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -3904,6 +3949,7 @@ mod tests {
         let game = TicTacToe;
         for invalid in [f64::NAN, f64::INFINITY, -0.1] {
             let mut agent = MctsAgent::new(MctsConfig {
+                progressive_widening: None,
                 selection_policy: Default::default(),
                 budget: SearchBudget::default(),
                 exploration: invalid,
@@ -3929,6 +3975,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4106,6 +4153,7 @@ mod tests {
 
         for seed in [0, 13, 42, 99] {
             let mut uniform = MctsAgent::new(MctsConfig {
+                progressive_widening: None,
                 selection_policy: SelectionPolicy::Uct,
                 budget,
                 exploration: std::f64::consts::SQRT_2,
@@ -4113,6 +4161,7 @@ mod tests {
                 rollout_policy: RolloutPolicyConfig::<FailingEvaluator>::UniformRandom,
             });
             let mut epsilon = MctsAgent::new(MctsConfig {
+                progressive_widening: None,
                 selection_policy: SelectionPolicy::Uct,
                 budget,
                 exploration: std::f64::consts::SQRT_2,
@@ -4167,6 +4216,7 @@ mod tests {
 
         for seed in [0, 13, 42, 99] {
             let mut uniform = MctsAgent::new(MctsConfig {
+                progressive_widening: None,
                 selection_policy: SelectionPolicy::Uct,
                 budget,
                 exploration: std::f64::consts::SQRT_2,
@@ -4174,6 +4224,7 @@ mod tests {
                 rollout_policy: UniformRandom,
             });
             let mut conditional = MctsAgent::new(MctsConfig {
+                progressive_widening: None,
                 selection_policy: SelectionPolicy::Uct,
                 budget,
                 exploration: std::f64::consts::SQRT_2,
@@ -4219,6 +4270,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let config = MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(256).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4260,6 +4312,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let mut agent = MctsAgent::new(MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(9).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4295,6 +4348,7 @@ mod tests {
     fn disabled_root_diagnostics_do_not_report_action_stats() {
         let game = TicTacToe;
         let mut agent = MctsAgent::new(MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(9).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4334,6 +4388,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let config = MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(32).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4380,6 +4435,7 @@ mod tests {
         let game = TicTacToe;
         for epsilon in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
             let mut agent = MctsAgent::new(MctsConfig {
+                progressive_widening: None,
                 selection_policy: Default::default(),
                 budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
                 exploration: std::f64::consts::SQRT_2,
@@ -4401,6 +4457,7 @@ mod tests {
     fn conditional_rollout_validates_both_branches() {
         let game = TicTacToe;
         let mut agent = MctsAgent::new(MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4426,6 +4483,7 @@ mod tests {
     fn rollout_policy_is_validated_once_per_search() {
         let game = TicTacToe;
         let mut agent = MctsAgent::new(MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(32).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4449,6 +4507,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let config = MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(64).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4483,6 +4542,7 @@ mod tests {
         let game = TicTacToe;
         let state = game.initial_state();
         let config = MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(64).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4514,10 +4574,49 @@ mod tests {
     }
 
     #[test]
+    fn widening_shared_diamond_visits_and_active_edges_survive_compaction() {
+        let game = DiamondGame;
+        let state = game.initial_state();
+        let config = MctsConfig {
+            progressive_widening: Some(ProgressiveWidening { k: 1., alpha: 0.5 }),
+            budget: SearchBudget::Iterations(NonZeroU32::new(20).unwrap()),
+            exploration: 1.4,
+            selection_policy: SelectionPolicy::Uct,
+            rollout_depth: 4,
+            rollout_policy: UniformRandom,
+        };
+        let mut agent = TranspositionMctsAgent::new(MctsAgent::new(config), true, true);
+        agent
+            .select_action(
+                DecisionContext::new(&game, &state, PlayerId::FIRST),
+                &mut SplitMix64::new(17),
+            )
+            .unwrap();
+        let graph = agent.graph.as_mut().unwrap();
+        let branches: Vec<_> = graph.nodes[0].edges.iter().map(|e| e.child).collect();
+        assert_eq!(branches.len(), 2);
+        let shared = graph.nodes[branches[0]].edges[0].child;
+        assert_eq!(shared, graph.nodes[branches[1]].edges[0].child);
+        let incoming: u32 = branches
+            .iter()
+            .map(|i| graph.nodes[*i].edges[0].visits)
+            .sum();
+        assert_eq!(graph.nodes[shared].visits, incoming);
+        assert_eq!(graph.nodes[shared].edges.len(), 1);
+        assert!(graph.nodes[shared].unexpanded.is_empty());
+        let visits = graph.nodes[shared].visits;
+        compact_graph(&mut graph.nodes, shared);
+        assert_eq!(graph.nodes[0].visits, visits);
+        assert_eq!(graph.nodes[0].edges.len(), 1);
+        assert!(graph.nodes[0].unexpanded.is_empty());
+    }
+
+    #[test]
     fn merges_transpositions_and_reuses_the_resulting_graph() {
         let game = DiamondGame;
         let mut state = game.initial_state();
         let config = MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(4).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4567,6 +4666,7 @@ mod tests {
         };
         let mut state = game.initial_state();
         let config = MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(128).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4610,6 +4710,7 @@ mod tests {
         let game = TicTacToe;
         let mut state = game.initial_state();
         let config = MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(512).unwrap()),
             exploration: std::f64::consts::SQRT_2,
@@ -4655,6 +4756,7 @@ mod tests {
         let game = TicTacToe;
         let mut state = game.initial_state();
         let config = MctsConfig {
+            progressive_widening: None,
             selection_policy: Default::default(),
             budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
             exploration: std::f64::consts::SQRT_2,

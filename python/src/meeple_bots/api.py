@@ -103,6 +103,7 @@ class SampledDecisionTiming:
     terminal_simulations: int | None = None
     cutoff_simulations: int | None = None
     root_visits: tuple[int, ...] = ()
+    root_expansion: tuple[int, int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1063,6 +1064,9 @@ def benchmark_mcts_agent(
         agent.selection_policy,
         game_params=game_parameters(game),
         rave_equivalence=agent.rave_equivalence,
+        progressive_widening=agent.progressive_widening,
+        progressive_widening_k=agent.progressive_widening_k,
+        progressive_widening_alpha=agent.progressive_widening_alpha,
     )
     return MctsAgentBenchmark(
         game=game,
@@ -1084,6 +1088,7 @@ def benchmark_mcts_agent(
                 terminal_simulations=timing["terminal_simulations"],
                 cutoff_simulations=timing["cutoff_simulations"],
                 root_visits=tuple(timing["root_visits"]),
+                root_expansion=tuple(timing["root_expansion"]) if timing["root_expansion"] is not None else None,
             )
             for timing in raw["position_timings"]
         ),
@@ -1253,6 +1258,9 @@ def _native_agent(agent: Agent, game: Game):
             agent.transpositions,
             agent.selection_policy,
             rave_equivalence=agent.rave_equivalence,
+            progressive_widening=agent.progressive_widening,
+            progressive_widening_k=agent.progressive_widening_k,
+            progressive_widening_alpha=agent.progressive_widening_alpha,
         )
     return _native.AgentConfig.human(
         _human_selector(agent, game),

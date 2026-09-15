@@ -156,6 +156,7 @@ fn stochastic_cutoff_resolves_chains_and_counts_only_decisions() {
             let evaluated = Cell::new(0);
             let mut agent = StochasticMctsAgent::new(
                 MctsConfig {
+                    progressive_widening: None,
                     budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
                     exploration: 1.0,
                     selection_policy: selector,
@@ -185,6 +186,7 @@ fn reuse_and_transposition_variants_share_turn_completion() {
             };
             let evaluated = Cell::new(0);
             let config = MctsConfig {
+                progressive_widening: None,
                 budget: SearchBudget::Iterations(NonZeroU32::new(1).unwrap()),
                 exploration: 1.0,
                 selection_policy: SelectionPolicy::Uct,

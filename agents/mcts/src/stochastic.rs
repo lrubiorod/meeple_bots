@@ -156,6 +156,11 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
         self.budget.begin(self.config.budget);
         self.stats = AgentDecisionStats::default();
         self.config.validate().map_err(AgentError::message)?;
+        if self.config.progressive_widening.is_some() {
+            return Err(AgentError::message(
+                "Progressive Widening is only supported by deterministic MCTS",
+            ));
+        }
         if matches!(
             self.config.selection_policy,
             SelectionPolicy::UctRave { .. }
@@ -370,6 +375,7 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
             .unwrap()
             .0;
         self.stats = AgentDecisionStats {
+            root_expansion: None,
             search_iterations: Some(u64::from(iterations)),
             search_nodes: Some(nodes.len() as u64),
             terminal_simulations: Some(terminal_simulations),
@@ -464,6 +470,7 @@ pub(super) mod tests {
         let game = CleanupGame(cleanup.clone());
         let mut agent = StochasticMctsAgent::new(
             MctsConfig {
+                progressive_widening: None,
                 budget: SearchBudget::Time(Duration::ZERO),
                 exploration: 1.4,
                 selection_policy: SelectionPolicy::Uct,
@@ -611,6 +618,7 @@ pub(super) mod tests {
     ) -> StochasticMctsAgent<NeutralEvaluator, P> {
         let mut agent = StochasticMctsAgent::new(
             MctsConfig {
+                progressive_widening: None,
                 budget: SearchBudget::Iterations(NonZeroU32::new(16).unwrap()),
                 exploration: 1.4,
                 selection_policy,
@@ -864,6 +872,7 @@ pub(super) mod tests {
     fn stochastic_bias_averages_outcomes_and_decays() {
         let mut agent = StochasticMctsAgent::with_progressive_bias(
             MctsConfig {
+                progressive_widening: None,
                 budget: SearchBudget::Iterations(NonZeroU32::new(500).unwrap()),
                 exploration: 2.0,
                 selection_policy: SelectionPolicy::Uct,
@@ -931,6 +940,7 @@ pub(super) mod tests {
         for policy in [SelectionPolicy::Uct, SelectionPolicy::Ucb1Tuned] {
             let mut a = StochasticMctsAgent::new(
                 MctsConfig {
+                    progressive_widening: None,
                     budget: SearchBudget::Iterations(NonZeroU32::new(500).unwrap()),
                     exploration: 2.0,
                     selection_policy: policy,
@@ -962,6 +972,7 @@ pub(super) mod tests {
     fn zero_time_budget_still_returns_a_legal_move() {
         let mut a = StochasticMctsAgent::new(
             MctsConfig {
+                progressive_widening: None,
                 budget: SearchBudget::Time(std::time::Duration::ZERO),
                 exploration: 1.0,
                 selection_policy: SelectionPolicy::Uct,
