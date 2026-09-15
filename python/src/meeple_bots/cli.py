@@ -383,17 +383,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     study = commands.add_parser("study", help="automatically diagnose MCTS mechanisms, budgets and parameters")
     study.add_argument("--game", choices=tuple(_PLAYABLE_GAMES), required=True)
-    study.add_argument("--baseline", type=Path, help="initial incumbent; preserves its evaluator, parameters and search budget")
+    study.add_argument("--baseline", "--agent-config", dest="baseline", type=Path, help="initial incumbent; preserves its evaluator, parameters and search budget")
+    from ._study_tuners import TUNING_FIELDS
+    study.add_argument("--tune", choices=tuple(TUNING_FIELDS), help="retune only this dimension; requires --agent-config/--baseline")
+    study.add_argument("--second-pass", action="store_true", help="append local C/RAVE/PW retuning on the final incumbent")
     study.add_argument("--heuristic", type=lambda v: int(v.lower().removeprefix("h")), help="cutoff heuristic for a generated baseline; must match an explicit baseline")
     study.add_argument("--target-match-time", default="60s", help="approximate compute per match, e.g. 60s or 2m; independent of --budget")
     study.add_argument("--selection-search", action="store_true", help="tune UCT exploration and compare selectors against the incumbent")
     study.add_argument("--mechanism-search", action="store_true", help="compare reuse/transposition combinations against the incumbent")
     study.add_argument("--depth-search", action="store_true", help="compare cutoff depths with the same heuristic")
     study.add_argument("--all-search", action="store_true", help="enable all supported optional search stages")
+    study.add_argument("--widening-expansion-search", action="store_true", help="compare random vs AMAF admission when the incumbent has PW enabled")
     study.add_argument("--pw-search", action="store_true", help="calibrate Progressive Widening before comparing it with the best deterministic candidate")
     study.add_argument("--rave-search", action="store_true", help="enable progressive RAVE calibration and comparison when supported; disabled by default")
-    study.add_argument("--budget", help="optional total elapsed pause limit; resume continues pending fixed games")
-    study.add_argument("--games-per-comparison", type=int, default=50, help="fixed games per contrast; even, minimum 4; default 50")
+    study.add_argument("--budget", help="optional total elapsed limit; limits candidate count while preserving comparison evidence")
+    study.add_argument("--games-per-comparison", type=int, default=50, help="fixed games per contrast; even, minimum effective 8; default 50")
     study.add_argument("--stage-games", action="append", default=[], metavar="STAGE=GAMES", help="override fixed games for depth, selection, rave, mechanisms or pw")
     study.add_argument("--output", type=Path, help="study directory; default: results/studies/GAME-study")
     study.add_argument("--seed", type=int, default=42)
@@ -433,7 +437,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.max_pairs is not None and args.games_per_comparison != 50:
                 raise ValueError("use either --games-per-comparison or --max-pairs")
             result = run_study(args.game, output=output, budget=duration_seconds(args.budget) if args.budget else None,
-                               baseline=args.baseline, seed=args.seed,
+                               baseline=args.baseline, seed=args.seed, tune=args.tune, second_pass=args.second_pass, widening_expansion_search=args.widening_expansion_search,
                                heuristic=args.heuristic, rave_search=args.rave_search, pw_search=args.pw_search,
                                selection_search=args.selection_search, mechanism_search=args.mechanism_search, depth_search=args.depth_search, all_search=args.all_search, target_match_time=duration_seconds(args.target_match_time),
                                games_per_comparison=args.games_per_comparison, stage_games=stage_games,
@@ -443,7 +447,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                                progress=lambda message: print(message, file=sys.stderr, flush=True))
             summary = {"status": result["status"], "spent_seconds": result["spent_seconds"],
                        "report": str(output.resolve() / "report.html"),
-                       "candidate_profiles": result.get("candidate_profiles", {})}
+                       "candidate_profiles": result.get("candidate_profiles", {}),
+                       "budget_limited": result.get("budget_limited", False),
+                       "local_retune": result.get("local_retune")}
             print(json.dumps(summary, indent=2) if args.json else f"Study {summary['status']}: {summary['report']}")
             return 0
         if args.command == "tournament":

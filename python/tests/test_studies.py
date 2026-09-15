@@ -132,7 +132,7 @@ class StudyTests(unittest.TestCase):
         for name in PHASES:
             phase = _build_phase(name, state, base, None)
             for c in phase['contrasts']:
-                c['result'] = {'score_b': .7 if name == 'rave' and phase['agents'][c['b']].get('rave_equivalence') == 10000 else .6, 'seed_pairs': 4}
+                c['result'] = {'score_b': .7 if (name == 'rave' or name.startswith('rave_extend_')) and phase['agents'][c['b']].get('rave_equivalence') == max(v.get('rave_equivalence', 0) for v in phase['agents'].values()) else .6, 'seed_pairs': 4}
             phase['status'] = 'complete'
             state['phases'][name] = phase
         return state
@@ -445,6 +445,7 @@ class StudyTests(unittest.TestCase):
     def test_progressive_rave_keeps_allocation_and_frozen_resume(self):
         with TemporaryDirectory() as tmp:
             runner = self.calibrated_fake(tmp, rave_search=True)
+            runner.budget = 100000  # This test exercises frozen plans, not budget pruning.
             planned = self.populate(self.state_for_plan())
             runner.state['phases'] = planned['phases']
             phase = _build_phase('rave_extend_1', runner.state, runner.base, None)
@@ -600,6 +601,7 @@ class StudyTests(unittest.TestCase):
     def test_pw_pool_reserves_followups_and_resume_preserves_plan(self):
         with TemporaryDirectory() as tmp:
             runner = self.calibrated_fake(tmp, pw_search=True)
+            runner.budget = 100000  # Leave room for complete planned comparisons.
             state = self.state_for_plan()
             state['request'].update(pw_search=True, pw_supported=True)
             runner.state['phases'] = self.populate(state)['phases']
@@ -652,10 +654,10 @@ class StudyTests(unittest.TestCase):
                 StudyRunner('boop', output=Path(tmp), budget=1000,
                             resume=True, rave_search=True, progress=lambda _: None)
 
-    def test_fixed_games_never_skip_pw_when_estimated_cost_exceeds_time(self):
+    def test_budget_omits_unaffordable_pw_candidates_without_reducing_evidence(self):
         with TemporaryDirectory() as tmp:
             runner = self.calibrated_fake(tmp, pw_search=True)
-            runner.budget = 1  # Even a tiny optional pause limit cannot rewrite the schedule.
+            runner.budget = 1  # An unaffordable race is explicitly omitted.
             state = self.state_for_plan()
             state['request'].update(pw_search=True, pw_supported=True)
             runner.state['phases'] = self.populate(state)['phases']
@@ -663,10 +665,10 @@ class StudyTests(unittest.TestCase):
                 for name in ('pw_k', 'pw_alpha', 'pw_refine', 'pw_compare'):
                     phase = _build_phase(name, runner.state, runner.base, None)
                     runner._plan_phase(phase, PHASES.index(name))
-                    self.assertTrue(phase['contrasts'])
-                    self.assertTrue(all(c['target_pairs'] == 25 for c in phase['contrasts']))
-                    self.assertTrue(all('screening_status' not in c for c in phase['contrasts']))
-                    self.assertGreater(phase['estimated_seconds'], runner.budget)
+                    self.assertFalse(phase['contrasts'])
+                    self.assertTrue(phase['discarded_comparisons'])
+                    self.assertTrue(all(c['target_pairs'] == 25 for c in phase['discarded_comparisons']))
+                    self.assertEqual(phase['estimated_seconds'], 0)
             self.assertNotIn('pw_budget', runner.state)
 
     def test_fixed_stage_overrides_and_cli_without_time_budget(self):
@@ -727,7 +729,7 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(state['status'], 'budget_exhausted')
             phase = state['phases']['pw_k']
             self.assertEqual(phase['contrasts'][0]['result']['seed_pairs'], 1)
-            self.assertEqual(phase['contrasts'][0]['target_pairs'], 2)
+            self.assertEqual(phase['contrasts'][0]['target_pairs'], 4)
             self.assertNotIn('confirmation', state['phases'])
             resumed = StudyRunner('tic-tac-toe', MctsAgent(iterations=4, rollout_depth=9), resume=True, **opts).run()
             self.assertEqual(resumed['status'], 'complete')

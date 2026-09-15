@@ -424,7 +424,7 @@ def family_study_diagnostics(state):
         return {"mode": state["request"]["mode"], "search_complete": state.get("status") == "complete",
                 "final_selection": {"candidate": selected.get("name"), "phase": selected.get("phase"),
                                     "status": "provisional", "competitive_confidence": "not_independently_confirmed",
-                                    "interpretation": "Winner of the last completed enabled stage; no final refinement or independent confirmation."},
+                                    "interpretation": "Retained incumbent after completed stages and any requested local pass; no independent confirmation."},
                 "improvement_comparisons": effects, "candidate_search_costs": costs}
     return {"mode": state["request"]["mode"], "search_complete": complete,
             "final_selection": {"candidate": candidate, "status": "confirmed" if complete and tested and verdict == "b_ahead" else "provisional",
@@ -439,14 +439,14 @@ def write_family_study_report(output, state):
     summary = {**state, **family_study_diagnostics(state)}
     summary["limitations"] = [
         "Only the requested evaluator family is optimized; compare separate studies in a tournament.",
-        "All competitive contrasts use the same decision time, in isolation. Iterations are measured work, not the selection budget.",
+        "Candidate compute budgets are equal within each race: baseline iterations/time or derived decision time. Parallel comparisons share CPU; iterations and elapsed search work are measured.",
         "Practical full-depth means >=99% terminal simulations at every sampled position; this finite empirical probe is not a rules guarantee. Unverified safety horizons are explicitly labelled.",
         "Rollout depth counts player decisions, excludes Chance, and completes the physical turn before cutoff. Terminal stops immediately.",
         "Search adequacy thresholds are heuristic diagnostics, separate from paired-seed competitive confidence.",
         "95% intervals use conservative paired-seed Hoeffding bounds. Screening is adaptive/exploratory, not independent confirmation; no multiple-comparison correction.",
-        "The exported winner has exploratory evidence only; final refinement and independent confirmation are not run.",
+        "The exported winner has exploratory evidence only; an optional second local pass is not independent confirmation.",
         "Pilot length and random representative positions are preliminary estimates. Actual game costs can differ; target match time is not a match deadline.",
-        "Fixed games per comparison; time estimates never skip stages. Optional elapsed pause limits may overshoot by a match pair. Old study protocols require a new output directory.",
+        "Fixed evidence per comparison. Budget screening can omit challengers explicitly; elapsed limits may overshoot by an in-flight match batch. Old study protocols require a new output directory.",
     ]
     (output / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
     cal = state.get("calibration") or {}
@@ -462,6 +462,8 @@ def write_family_study_report(output, state):
     parts.append(_table(['Sampled player decisions', 'Search ms', 'Iterations', 'Legal actions', 'Terminal / cutoff simulations'],
                         [(t['sampled_ply'], t['milliseconds'], t['iterations'], t['legal_actions'],
                           f"{t.get('terminal_simulations')} / {t.get('cutoff_simulations')}") for t in cal.get('position_timings', [])]))
+    if state.get('budget_limited'):
+        parts.append('<p><strong>Budget limited: some challengers were not tested. See discarded comparisons below.</strong></p>')
     parts.append('<h2>Fixed game budgets</h2><pre>' + escape(json.dumps({k: state['request'].get(k) for k in ('games_per_comparison', 'stage_games')}, indent=2)) + '</pre>')
     parts.append('<h2>Incremental stages</h2>' + _table(['Stage', 'Requested'], [(key, state['request'].get(key, False)) for key in ('selection_search', 'rave_search', 'mechanism_search', 'pw_search', 'depth_search')]))
     parts.append(f'<p>PW search requested: {state["request"].get("pw_search", False)}; supported: {state["request"].get("pw_supported", False)}.</p>')
@@ -473,8 +475,12 @@ def write_family_study_report(output, state):
     parts.append(_table(['Horizon kind', 'Decision depth', 'Measured terminal fraction'], [(horizon.get('kind'), horizon.get('depth'), horizon.get('terminal_fraction'))]))
     parts.append('<pre>' + escape(json.dumps(cal.get('search_adequacy', {}), indent=2)) + '</pre>')
     parts.extend('<p>Warning: ' + escape(w) + '</p>' for w in cal.get('warnings', []))
+    if state.get('local_retune'):
+        parts.append('<h2>LOCAL RETUNE: frozen fields and changes</h2><pre>' + escape(json.dumps(state['local_retune'], indent=2)) + '</pre>')
     parts.append('<h2>Selection evidence</h2><pre>' + escape(json.dumps(summary['final_selection'], indent=2)) + '</pre>')
     for name, phase in state['phases'].items():
+        if phase.get('discarded_comparisons') or phase.get('skip_reason'):
+            parts.append('<pre>' + escape(json.dumps({'phase': name, 'skipped': phase.get('skip_reason'), 'discarded': phase.get('discarded_comparisons', [])}, indent=2)) + '</pre>')
         parts.append(f'<h2>{escape(name)} — {escape(phase["status"])}</h2>')
         if 'planned_games' in phase:
             parts.append(f'<p>Fixed planned games: {phase["planned_games"]}; estimated duration: {phase["estimated_seconds"]:.1f}s (not a limit).</p>')

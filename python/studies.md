@@ -519,18 +519,23 @@ All search stages are opt-in. `--all-search` enables all supported stages:
 | `--rave-search` | Calibrate a RAVE copy before comparing it with the incumbent. |
 | `--mechanism-search` | Test all four reuse/transposition combinations, each alternative against the incumbent. |
 | `--pw-search` | Calibrate k/alpha on a PW copy before comparing it with the incumbent. |
+| `--widening-expansion-search` | Compare random and AMAF admission when the incumbent has PW enabled. |
+| `--second-pass` | Append local exploration, RAVE k and PW k/alpha tuning on the retained champion. |
 
-Order: depth, selection, RAVE, mechanisms, PW. The study ends at the last enabled stage.
+Order: depth, selection, RAVE, mechanisms, PW, optional widening admission, optional second local pass. `--all-search` includes admission but does not implicitly enable `--second-pass`.
 Disabled stages carry the incumbent forward with no matches or allocation.
 RAVE and PW flags enable tuning, not permission to retain those mechanisms in
 an existing baseline. Unsupported stochastic backends skip these stages explicitly.
 
 Each optional stage starts from the best candidate retained so far. A challenger
 can replace the incumbent only after completing its planned comparison (minimum
-two paired seeds), with a score above parity. Ties and incomplete comparisons
-retain the incumbent. These promotions are exploratory, not significance claims.
+four paired seeds), scoring at least 55%, with mean paired-seed score minus one
+estimated standard error above 50%. Ties, unclear and incomplete comparisons
+retain the incumbent as INCONCLUSIVE. This is a documented exploratory screening
+rule, not a 95% significance claim. All tuners share it.
 
-There is **no final general refinement or independent confirmation**. In a PW-only
+There is **no mandatory final refinement or independent confirmation**. A local
+second pass is available explicitly through `--second-pass`. In a PW-only
 study, the calibrated PW copy faces the original baseline and the winner is
 exported immediately. The joint k/alpha check remains part of PW calibration.
 Results are exploratory; use a separate tournament for independent verification.
@@ -572,7 +577,8 @@ the reference horizon. Chance does not count as a player decision, and rollouts
 still complete physical turns at cutoff.
 
 With a supplied baseline, calibration measures cost and adequacy but **does not
-replace its horizon** or restart horizon discovery. Optional depth search uses
+replace its horizon**. `--tune cutoff-depth` estimates a reference hard/practical
+horizon for candidate generation while preserving the original evaluator. Optional full-study depth search uses
 shallower fractions of its current depth. A supplied neutral cutoff is not claimed to be proven
 full-depth merely because the evaluator is neutral.
 
@@ -584,7 +590,9 @@ Search budgets follow these rules:
 - No baseline: derive seconds per decision from `--target-match-time` (default
   60s) / (estimated player decisions * 1.2).
 
-`--budget` is an optional elapsed pause limit, never a phase allocation. `--target-match-time` does not override a
+`--budget` is an optional global elapsed limit. Before a race, the coordinator
+estimates its cost and reduces the challenger shortlist if necessary, preserving
+the full evidence requested per comparison. `--target-match-time` does not override a
 supplied baseline budget. Measured elapsed time, iterations/sec, iterations per
 decision and root coverage remain diagnostics; search adequacy is distinct from
 competitive confidence. LOW/VERY LOW adequacy warns without changing the request.
@@ -616,24 +624,33 @@ Every enabled stage uses **50 games per comparison by default**, meaning 25
 paired seeds with swapped seats. This is not 50 games shared among candidates:
 comparing k=0.5 and k=4 against k=1.5 costs 100 games. An extra adaptive round
 with two new challengers costs another 100 games. Later joint checks and the incumbent
-comparison have their own full sample counts. No general refinement or confirmation follows.
+comparison have their own full sample counts. No independent confirmation follows;
+`--second-pass` optionally appends local tuning races.
 
 - `--games-per-comparison 50`: global default for every comparison.
 - `--stage-games pw=100 --stage-games selection=50`: exact per-comparison
   overrides for those stages; repeatable. Supported names: `depth`, `selection`,
   `rave`, `mechanisms`, `pw`.
-- Counts must be even, at least 4 games. Adaptive subrounds inherit their stage's
-  count. No phase shares a finite pool or skips matches because a cost estimate
-  exceeds an allocation.
+- Counts must be even. The minimum effective evidence is 8 games (4 paired seeds);
+  legacy requests for 4 or 6 games are raised to 8 with an explicit notice.
+  Adaptive subrounds inherit their stage's count.
 - Legacy `--max-pairs` remains an exact paired-seed count, **not a maximum**; stage overrides take precedence. Prefer
   the new game-count options.
 
 Time per decision/iterations are unchanged. The study reports estimated duration
-and actual elapsed/search work, but duration estimates are informational. With
-no `--budget`, it runs the fixed schedule through the last enabled stage. With `--budget`,
-it pauses between match-pair batches after reaching the total elapsed limit;
-it never discards a pending stage to advance to another. Calibration and a batch
-already in progress can overshoot that limit. Ctrl+C also preserves progress.
+and actual elapsed/search work. With no `--budget`, it runs the fixed schedule
+through the last enabled stage. With a budget, a conservative estimate (20%
+headroom, configured workers bounded by available paired jobs) determines which
+challengers fit. It retains full comparison evidence, never many one-game trials.
+Omitted challengers and their estimated costs are recorded as `insufficient_budget`;
+if none fit, that race retains its incumbent. Once a race starts, unexpected cost
+can still exhaust the elapsed limit; it pauses between batches and resumes the
+missing seats without promoting an incomplete result. Calibration and in-flight
+batches may overshoot. Ctrl+C also preserves progress.
+
+Budget-pruned races are frozen, not silently reintroduced on resume. A completed
+study with `budget_limited=true` may have omitted challengers; start a new local
+retune to explore them. Resume is for incomplete executed races.
 
 PW now calibrates k, then alpha, with up to **five additional rounds per axis**.
 The first additional round checks gaps around the coarse winner. Subsequent
@@ -659,7 +676,7 @@ unfinished internal RAVE/PW calibration does not replace it. The report explicit
 marks it `not_independently_confirmed`. `--reference`, `--confirmation-pairs` and
 `--auxiliary-pairs` have been removed; compare profiles in a separate tournament.
 
-Protocol **20** removes final refinement and confirmation from fixed-game studies.
+Protocol **21** adds coordinate tuners, conservative promotion and candidate-budget screening.
 Older studies require a new output directory. Resume requires identical game
 counts, flags and compatible code/native build; it completes exactly the missing
 matches without replaying completed seats. Git commits alone do not invalidate it.
@@ -673,3 +690,79 @@ python -m meeple_bots study --game connect6 --game-param board_size=13 \
   --output results/studies/connect6-13-pw-fixed
 # Add --resume to the identical command after an interruption.
 ```
+
+### Local coordinate retuning
+
+`--tune DIMENSION` requires `--agent-config PATH` (alias of `--baseline`). It is
+exclusive with full-study search flags and `--second-pass`. No selection-family
+switch, evaluator change, rollout adjustment or compute override is implicit.
+In particular `--decision-time` is rejected: change the source profile first if
+a different compute budget is intended. `--target-match-time` remains a calibration
+reference and never replaces an explicit profile's iterations/time budget.
+
+| Dimension | Only fields allowed to change |
+| --- | --- |
+| `exploration` | `exploration` (UCT/UCT-RAVE only) |
+| `selection` | `selection_policy`; existing C and RAVE k remain fixed |
+| `rave` | `rave_equivalence`; requires UCT-RAVE already selected |
+| `progressive-widening` | k and alpha, PW must already be enabled |
+| `progressive-widening-k` | k only |
+| `progressive-widening-alpha` | alpha only |
+| `widening-expansion` | random/rave admission, PW must already be enabled |
+| `structure` | the four reuse/transposition combinations |
+| `cutoff-depth` | rollout depth, evaluator unchanged |
+
+Each generated candidate is checked against an allowlist of fields. Local output
+is checked again against the original profile before saving. Inactive parameters
+are serialized too, so selecting a mechanism later cannot silently reset a
+previously configured k. Preservation means configuration **values**, not TOML
+whitespace/comments. Calibration probes are temporary measurements; their smaller
+budgets never become local race candidates.
+
+Exploration starts with `C +/- max(0.125, C/3)` (bounded below at zero), RAVE with
+approximately k/3 and 10k/3, PW k with k/3 and 8k/3, and alpha with +/-0.25
+(bounded to [0.05,1]). Depth starts near half/1.5 times the incumbent and respects
+the reference horizon. A first follow-up checks gaps; later rounds require a
+supported improvement. Neighbor gaps are geometric for RAVE/PW k, arithmetic
+for C/alpha/depth; boundary winners may extend outward. There are at most five
+follow-up rounds per scalar tuner, preventing unbounded searches. Categorical
+selection/admission/structure comparisons use one round. The coupled PW tuner
+runs k, alpha, then one local k recheck, never enabling/disabling PW itself.
+
+Full study and local mode call the same candidate generators in `_study_tuners.py`.
+Full stages explicitly wrap them when enabling a new selector or PW, calibrate a
+private copy and then compare it with the retained incumbent. Local mode never
+uses those enabling wrappers. Tournament execution, cost planning, paired seeds,
+trace recovery and promotion are shared in `StudyRunner`.
+
+`--second-pass` invokes the same local tuners on the current champion: C, RAVE k,
+then PW k/alpha. Unsupported/inactive dimensions are explicitly skipped. It does
+not rerun coarse selector searches or change evaluator/compute budget. We retain
+one incumbent (no beam or new confirmation stage); an independent tournament
+remains the intended verification step.
+
+```bash
+# Full supported search, optionally followed by a local pass.
+python -m meeple_bots study --game connect6 --game-param board_size=13 \
+  --all-search --second-pass --budget 4h --target-match-time 60s \
+  --output results/studies/connect6-full-local-pass
+
+# Retune ONLY C on an existing UCT-RAVE + PW champion.
+python -m meeple_bots study --game connect6 --game-param board_size=13 \
+  --agent-config configs/mcts/connect6-baseline.toml --tune exploration \
+  --budget 30m --games-per-comparison 50 \
+  --output results/studies/connect6-local-c
+
+# The resulting champion can be used for the next coordinate.
+python -m meeple_bots study --game connect6 --game-param board_size=13 \
+  --agent-config results/studies/connect6-local-c/candidates/best_agent.toml \
+  --tune rave --budget 30m --output results/studies/connect6-local-rave
+```
+
+Startup prints LOCAL RETUNE, the baseline snapshot, tunable and frozen values.
+`baseline.toml`, `study.json`, standard paired traces, `summary.json`, `report.html`
+and `candidates/best_agent.toml` preserve the experiment history. The local report
+lists tested configurations, evidence/costs, exact changed and preserved fields,
+and IMPROVED or INCONCLUSIVE. If no supported change remains, it explicitly says
+“No sufficiently supported improvement found.” Search adequacy stays separate
+from competitive uncertainty and from the absence of independent confirmation.

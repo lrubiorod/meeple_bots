@@ -9,7 +9,6 @@ from __future__ import annotations
 from contextlib import ExitStack
 from dataclasses import asdict, replace
 from hashlib import sha256
-from itertools import product
 import json
 import math
 from pathlib import Path
@@ -39,6 +38,7 @@ from .tournaments import (
     TournamentAgent, TournamentConfig, TournamentTrace, match_jobs, run_matches,
     tournament_header,
 )
+from ._study_tuners import TUNING_FIELDS, proposals, config_fields, changes, assert_frozen, validate_tuner
 from .study_analysis import summarize_contrast, write_study_report, study_diagnostics, search_adequacy
 
 GAMES = {"connect6": Connect6, "boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
@@ -93,10 +93,9 @@ def profile_values(agent: MctsAgent) -> dict:
                   selection_policy=agent.selection_policy, cutoff_evaluator=_evaluator_dict(agent.cutoff_evaluator),
                   rollout_policy=policy_values(agent.rollout_policy), tree_reuse=agent.tree_reuse,
                   transpositions=agent.transpositions, root_diagnostics=agent.root_diagnostics)
-    if agent.progressive_widening:
-        values.update(progressive_widening=agent.progressive_widening, progressive_widening_k=agent.progressive_widening_k, progressive_widening_alpha=agent.progressive_widening_alpha, progressive_widening_expansion=agent.progressive_widening_expansion)
-    if agent.selection_policy == "uct_rave":
-        values["rave_equivalence"] = agent.rave_equivalence
+    # Preserve inactive parameters too: coordinate tuning must not reset them.
+    values.update(progressive_widening=agent.progressive_widening, progressive_widening_k=agent.progressive_widening_k, progressive_widening_alpha=agent.progressive_widening_alpha, progressive_widening_expansion=agent.progressive_widening_expansion)
+    values["rave_equivalence"] = agent.rave_equivalence
     if agent.progressive_bias is not None:
         bias = agent.progressive_bias
         values["progressive_bias"] = {"weight": bias.weight, "evaluator": _evaluator_dict(bias.evaluator)}
@@ -198,6 +197,11 @@ def _rank(phase: dict) -> list[str]:
             continue
         result = contrast.get("result", {})
         complete = result.get("seed_pairs", 0) >= max(2, contrast.get("target_pairs", 2))
+        if phase.get("evidence_policy"):
+            complete = result.get("seed_pairs", 0) >= max(4, contrast.get("target_pairs", 4))
+            if not complete or not _promising(result):
+                scores[contrast["a"]].append(.5)
+                continue
         if result.get("score_b") is not None and (not phase.get("incremental") or complete):
             scores[contrast["a"]].append(1 - result["score_b"])
             scores[contrast["b"]].append(result["score_b"])
@@ -241,6 +245,8 @@ def _group_leaders(phase: dict) -> dict[str, str]:
 
 
 def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent | None) -> dict:
+    if name in state["request"].get("tuner_specs", {}):
+        return _build_tuning_phase(name, state, base)
     """Frozen incremental comparisons within one evaluator family and search budget."""
     cal, phases, request = state["calibration"], state["phases"], state["request"]
     horizon = cal["horizon"]["depth"]
@@ -269,7 +275,7 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
 
     def finish():
         return {"name": name, "agents": agents, "groups": groups, "contrasts": contrasts,
-                "incremental": True, "tie_priority": priority,
+                "incremental": True, "evidence_policy": "paired_55_one_se", "tie_priority": priority,
                 "rave_decisions": decisions if name.startswith("rave") else {},
                 "pw_decisions": decisions if name.startswith("pw_") else {}, "status": "pending"}
 
@@ -283,27 +289,26 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
     if name == "depth_screen":
         control = add("initial", start)
         if _phase_enabled(name, request):
-            for depth in cal["cutoff_depths"]:
-                compare(control, add(f"d{depth}", replace(start, rollout_depth=depth)), "rollout_depth")
+            for candidate in proposals("cutoff-depth", start, horizon=horizon, coarse=True):
+                compare(control, add(f"d{candidate.rollout_depth}", candidate), "rollout_depth")
     elif name == "exploration":
         parent = next(iter(carry("depth_screen").values()))
         control = add("incumbent", parent)
-        for c in sorted({.25, .5, 1., 1.4, 2., parent.exploration}):
-            candidate = add(f"uct-c{c:g}", replace(parent, selection_policy="uct", exploration=c))
-            compare(control, candidate, "exploration_and_selector")
+        uct = replace(parent, selection_policy="uct")
+        for candidate in [uct, *proposals("exploration", uct, coarse=True)]:
+            compare(control, add(f"uct-c{candidate.exploration:g}", candidate), "exploration_and_selector")
     elif name == "selectors":
         parent = next(iter(carry("exploration").values()))
         control = add("incumbent", parent)
-        if "ucb1_tuned" in request["selection_policies"]:
-            compare(control, add("tuned", replace(parent, selection_policy="ucb1_tuned")), "selection_policy")
+        for candidate in proposals("selection", parent, selectors=[s for s in request["selection_policies"] if s != "uct_rave"]):
+            compare(control, add(candidate.selection_policy, candidate), "selection_policy")
     elif name == "rave":
         for group, parent in carry("selectors").items():
             if request.get("rave_search", False) and "uct_rave" in request["selection_policies"]:
                 initial_k = parent.rave_equivalence if parent.selection_policy == "uct_rave" else 3000
                 control = add(f"{group}-rave-k{initial_k}", replace(parent, selection_policy="uct_rave", rave_equivalence=initial_k), group)
-                for k in sorted({max(1, initial_k // 3), min(2**32-1, round(initial_k * 10 / 3))}):
-                    candidate = add(f"{group}-rave-k{k}", replace(parent, selection_policy="uct_rave", rave_equivalence=k), group)
-                    compare(control, candidate, "rave_equivalence")
+                for candidate in proposals("rave", agent_from_values(agents[control])):
+                    compare(control, add(f"{group}-rave-k{candidate.rave_equivalence}", candidate, group), "rave_equivalence")
             else:
                 add(f"{group}-selector", carry("selectors")[group], group)
                 decisions[group] = "unavailable" if request.get("rave_search") else "disabled"
@@ -316,14 +321,14 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
             if not evidence:
                 decisions[group] = prior.get("rave_decisions", {}).get(group, "unavailable")
                 continue
-            complete = all(c.get("result", {}).get("seed_pairs", 0) >= max(2, c.get("target_pairs", 2)) for c in evidence)
+            complete = all(c.get("result", {}).get("seed_pairs", 0) >= max(4, c.get("target_pairs", 4)) for c in evidence)
             if not complete:
                 decisions[group] = "insufficient_budget_or_evidence"
                 continue
             # The first refinement always checks gaps. Later rounds require an
             # improving challenger, independently of the previous non-RAVE selector.
             improved = any(prior["agents"][c["b"]]["rave_equivalence"] == parent.rave_equivalence
-                           and c["result"].get("score_b", 0) >= .55 for c in evidence)
+                           and _promising(c["result"]) for c in evidence)
             if previous != "rave" and not improved:
                 decisions[group] = "no_clear_improvement_not_proven_plateau"
                 continue
@@ -331,41 +336,29 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
                       for member in phases[stage]["groups"][group]
                       if (v := phases[stage]["agents"][member])["selection_policy"] == "uct_rave"}
             k = parent.rave_equivalence
-            below = max((v for v in tested if v < k), default=None)
-            above = min((v for v in tested if v > k), default=None)
-            proposed = []
-            if above is None and improved:
-                proposed.append(min(2**32 - 1, k * 2))
-            if below is None:
-                proposed.append(max(1, k // 2))
-            if below is not None:
-                proposed.append(round(math.sqrt(below * k)))
-            if above is not None:
-                proposed.append(round(math.sqrt(k * above)))
-            for candidate_k in dict.fromkeys(proposed):
-                if candidate_k not in tested:
-                    compare(control, add(f"{group}-rave-k{candidate_k}", replace(parent, rave_equivalence=candidate_k), group), "rave_equivalence")
+            for candidate in proposals("rave", parent, tested=tested):
+                if candidate.rave_equivalence not in tested:
+                    compare(control, add(f"{group}-rave-k{candidate.rave_equivalence}", candidate, group), "rave_equivalence")
             decisions[group] = "refining_geometric_neighbors" if any(c["a"] == control for c in contrasts) else "no_untested_neighbors"
     elif name == "rave_exploration":
         prior = phases["rave_extend_5"]
         for group, parent in carry("rave_extend_5").items():
             control = add(f"{group}-rave", parent, group)
             evidence = [c for c in prior["contrasts"] if c["b"] in prior["groups"][group]]
-            ready = all(c.get("result", {}).get("seed_pairs", 0) >= max(2, c.get("target_pairs", 2)) for c in evidence)
+            ready = all(c.get("result", {}).get("seed_pairs", 0) >= max(4, c.get("target_pairs", 4)) for c in evidence)
             reason = prior.get("rave_decisions", {}).get(group, "unavailable")
             if not ready or reason in ("insufficient_budget_or_evidence", "unavailable", "disabled"):
                 decisions[group] = "insufficient_budget_or_evidence" if not ready else reason
                 continue
             decisions[group] = "extension_limit" if evidence else reason
-            for factor in (.5, 2.):
-                value = max(.01, parent.exploration * factor)
-                compare(control, add(f"{group}-rave-c{value:g}", replace(parent, exploration=value), group), "exploration")
+            for candidate in proposals("exploration", parent):
+                compare(control, add(f"{group}-rave-c{candidate.exploration:g}", candidate, group), "exploration")
     elif name == "rave_compare":
         prior = phases["rave_exploration"]
         for group, parent in carry("selectors").items():
             control = add(f"{group}-selector", parent, group)
             evidence = [c for c in prior["contrasts"] if c["b"] in prior["groups"][group]]
-            ready = bool(evidence) and all(c.get("result", {}).get("seed_pairs", 0) >= max(2, c.get("target_pairs", 2)) for c in evidence)
+            ready = bool(evidence) and all(c.get("result", {}).get("seed_pairs", 0) >= max(4, c.get("target_pairs", 4)) for c in evidence)
             if ready:
                 candidate = add(f"{group}-calibrated-rave", carry("rave_exploration")[group], group)
                 compare(control, candidate, "calibrated_rave_vs_selector")
@@ -375,10 +368,8 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
     elif name == "mechanisms":
         parent = next(iter(carry("rave_compare").values()))
         control = add("incumbent", parent)
-        for reuse, trans in product((False, True), repeat=2):
-            candidate = replace(parent, tree_reuse=reuse, transpositions=trans)
-            if candidate != parent:
-                compare(control, add(f"r{int(reuse)}-t{int(trans)}", candidate), "mechanisms")
+        for candidate in proposals("structure", parent):
+            compare(control, add(f"r{int(candidate.tree_reuse)}-t{int(candidate.transpositions)}", candidate), "mechanisms")
     elif "_extend_" in name and name.startswith("pw_"):
         axis = "k" if name.startswith("pw_k_") else "alpha"
         key = f"progressive_widening_{axis}"
@@ -387,7 +378,7 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
         parent = next(iter(carry(previous).values()))
         control = add("pw-incumbent", parent)
         evidence = prior["contrasts"]
-        complete = bool(evidence) and all(c.get("result", {}).get("seed_pairs", 0) >= max(2, c.get("target_pairs", 2)) for c in evidence)
+        complete = bool(evidence) and all(c.get("result", {}).get("seed_pairs", 0) >= max(4, c.get("target_pairs", 4)) for c in evidence)
         if not complete:
             decisions["main"] = prior.get("pw_decisions", {}).get("main", "calibration_incomplete") if not evidence else "calibration_incomplete"
         else:
@@ -397,18 +388,8 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
             else:
                 stages = PHASES[PHASES.index(f"pw_{axis}"):PHASES.index(name)]
                 tested = {v[key] for stage in stages for v in phases[stage]["agents"].values() if v.get("progressive_widening")}
-                value = getattr(parent, key)
-                below = max((v for v in tested if v < value), default=None)
-                above = min((v for v in tested if v > value), default=None)
-                midpoint = (lambda a,b: math.sqrt(a)*math.sqrt(b)) if axis == "k" else (lambda a,b: (a+b)/2)
-                proposed = []
-                if below is not None: proposed.append(midpoint(below, value))
-                elif improving: proposed.append(value/2)
-                if above is not None: proposed.append(midpoint(value, above))
-                elif improving: proposed.append(value*2 if axis == "k" else min(1., value+.125))
-                for candidate in sorted(set(proposed)):
-                    if candidate not in tested and math.isfinite(candidate) and candidate > 0:
-                        compare(control, add(f"pw-{axis}{candidate:g}", replace(parent, **{key: candidate})), key)
+                for candidate in proposals(f"progressive-widening-{axis}", parent, tested=tested):
+                    compare(control, add(f"pw-{axis}{getattr(candidate, key):g}", candidate), key)
                 decisions["main"] = "refining_neighbors" if contrasts else "no_untested_neighbors"
     elif name in ("pw_k", "pw_alpha", "pw_refine", "pw_compare"):
         original = next(iter(carry("mechanisms").values()))
@@ -418,7 +399,7 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
         if previous:
             prior = phases[previous]
             ready = ready and (bool(prior["contrasts"]) or prior.get("pw_decisions", {}).get("main") in ("no_clear_improvement_not_proven_plateau", "no_untested_neighbors")) and all(
-                c.get("result", {}).get("seed_pairs", 0) >= max(2, c.get("target_pairs", 2))
+                c.get("result", {}).get("seed_pairs", 0) >= max(4, c.get("target_pairs", 4))
                 for c in prior["contrasts"])
         if not ready:
             add("incumbent", original)
@@ -430,22 +411,59 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
         else:
             parent = replace(original, progressive_widening=True) if name == "pw_k" else next(iter(carry(previous).values()))
             control = add("pw-incumbent", parent)
-            if name == "pw_k":
-                proposals = [(parent.progressive_widening_k * factor, parent.progressive_widening_alpha) for factor in (1/3, 8/3)]
-            elif name == "pw_alpha":
-                proposals = [(parent.progressive_widening_k, min(1., max(.05, parent.progressive_widening_alpha + delta))) for delta in (-.25, .25)]
-            else:
-                # A small joint neighborhood tests interaction without a large grid.
-                proposals = [(parent.progressive_widening_k * factor,
-                              min(1., max(.05, parent.progressive_widening_alpha + delta)))
-                             for factor, delta in product((.5, 2.), (-.125, .125))]
-            for k, alpha in proposals:
-                compare(control, add(f"pw-k{k:g}-a{alpha:g}", replace(parent,
-                        progressive_widening_k=k, progressive_widening_alpha=alpha)), name)
+            dimension = {"pw_k": "progressive-widening-k", "pw_alpha": "progressive-widening-alpha", "pw_refine": "progressive-widening"}[name]
+            for candidate in proposals(dimension, parent):
+                compare(control, add(f"pw-k{candidate.progressive_widening_k:g}-a{candidate.progressive_widening_alpha:g}", candidate), name)
             decisions["main"] = "calibrating_pw_only"
     else:
         raise ValueError(f"unknown study phase: {name}")
     return finish()
+
+
+def tuning_specs(dimension, prefix="local"):
+    axes = ["progressive-widening-k", "progressive-widening-alpha", "progressive-widening-k"] if dimension == "progressive-widening" else [dimension]
+    specs = {}
+    for step, axis in enumerate(axes):
+        rounds = 1 if axis in ("selection", "structure", "widening-expansion") or step == 2 else 6
+        chain = f"{prefix}-{step}-{axis}"
+        for round_index in range(rounds):
+            specs[f"{chain}-{round_index}"] = {"dimension": axis, "round": round_index, "chain": chain}
+    return specs
+
+
+def _build_tuning_phase(name, state, base):
+    request = state["request"]
+    spec = request["tuner_specs"][name]
+    dimension = spec["dimension"]
+    selected = state.get("selected_candidate")
+    parent = agent_from_values(selected["profile"]) if selected else base
+    phases = [p for p in state["phases"].values() if p.get("chain") == spec["chain"]]
+    phase = {"name": name, **spec, "tuner": dimension, "agents": {"incumbent": profile_values(parent)},
+             "groups": {"main": ["incumbent"]}, "contrasts": [], "incremental": True,
+             "evidence_policy": "paired_55_one_se", "accept": True,
+             "tie_priority": {"incumbent": [0]}, "status": "pending"}
+    try:
+        validate_tuner(dimension, parent, request["selection_policies"])
+    except ValueError as error:
+        phase["skip_reason"] = str(error)
+        return phase
+    if phases and (not phases[-1]["contrasts"] or (spec["round"] > 1 and next(iter(_group_leaders(phases[-1]).values())) == "incumbent")):
+        phase["skip_reason"] = "no_supported_improvement; not proof of a plateau"
+        return phase
+    field = TUNING_FIELDS[dimension][0]
+    tested = {getattr(agent_from_values(v), field) for p in phases for v in p["agents"].values()}
+    candidates = proposals(dimension, parent, selectors=request["selection_policies"],
+                           horizon=state["calibration"]["horizon"]["depth"], tested=tested)
+    for i, candidate in enumerate(candidates):
+        assert_frozen(parent, candidate, dimension)
+        if request.get("tune"):
+            assert_frozen(base, candidate, request["tune"])
+        label = f"{dimension}-{i}"
+        phase["agents"][label] = profile_values(candidate)
+        phase["groups"]["main"].append(label)
+        phase["tie_priority"][label] = [i+1]
+        phase["contrasts"].append({"a": "incumbent", "b": label, "factor": dimension})
+    return phase
 
 
 class StudyRunner:
@@ -455,6 +473,7 @@ class StudyRunner:
                  decision_seconds: float | None = None, screening_seconds: float | None = None, max_plies: int = 10000,
                  heuristic: int | None = None, target_match_time: float = 60.0, rave_search: bool = False, pw_search: bool = False,
                  selection_search: bool = False, mechanism_search: bool = False, depth_search: bool = False, all_search: bool = False,
+                 tune: str | None = None, second_pass: bool = False, widening_expansion_search: bool = False,
                  workers: WorkerSetting = "auto", resume: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
         if game not in GAMES:
             raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
@@ -485,6 +504,14 @@ class StudyRunner:
         if heuristic is not None and (type(heuristic) is not int or heuristic not in heuristic_indices(game)):
             raise ValueError(f"unknown cutoff heuristic H{heuristic} for {game}")
         supplied = baseline is not None
+        if tune is not None:
+            if baseline is None:
+                raise ValueError("--tune requires --baseline/--agent-config")
+            if any((all_search, selection_search, rave_search, pw_search, mechanism_search, depth_search, second_pass, widening_expansion_search)):
+                raise ValueError("--tune cannot be combined with full-study stages or --second-pass")
+            if decision_seconds is not None:
+                raise ValueError("--tune freezes the agent search budget; remove --decision-time")
+            validate_tuner(tune, baseline, game_search_capabilities(game)["selection_policies"])
         if baseline is None:
             baseline = replace(generic_baseline(game), cutoff_evaluator=NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic))
         elif heuristic is not None and baseline.cutoff_evaluator != GameHeuristic(heuristic):
@@ -498,11 +525,20 @@ class StudyRunner:
             if agent and agent.selection_policy not in selectors:
                 raise ValueError(f"{label} selection policy is unavailable for this game")
         for name, value in dict(rave_search=rave_search, pw_search=pw_search, selection_search=selection_search,
-                                mechanism_search=mechanism_search, depth_search=depth_search, all_search=all_search).items():
+                                mechanism_search=mechanism_search, depth_search=depth_search, all_search=all_search, second_pass=second_pass, widening_expansion_search=widening_expansion_search).items():
             if type(value) is not bool:
                 raise ValueError(f"{name} must be a boolean")
         rave_search, pw_search, selection_search, mechanism_search, depth_search = [
             all_search or value for value in (rave_search, pw_search, selection_search, mechanism_search, depth_search)]
+        specs = tuning_specs(tune) if tune else {}
+        if not tune and (widening_expansion_search or all_search):
+            specs.update(tuning_specs("widening-expansion", prefix="admission"))
+        if second_pass:
+            for dimension in ("exploration", "rave", "progressive-widening"):
+                specs.update(tuning_specs(dimension, prefix="second"))
+        self.phase_names = tuple(specs) if tune else (*PHASES, *specs)
+        if seed >= 2**64 - (len(self.phase_names)+1)*SEED_STRIDE:
+            raise ValueError("seed leaves insufficient room for tuning phases")
         # Current catalog exposes UCT-RAVE exactly for deterministic search backends.
         pw_supported = "uct_rave" in selectors
         if not pw_supported and any(a and a.progressive_widening for a in (baseline, reference)):
@@ -514,7 +550,7 @@ class StudyRunner:
         self.base, self.reference = baseline, reference
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
-        request = {"version": 20, "games_per_comparison": 2 * max_pairs, "stage_games": stage_games, "baseline_supplied": supplied, "selection_search": selection_search, "mechanism_search": mechanism_search, "depth_search": depth_search, "pw_search": pw_search, "pw_supported": pw_supported, "rave_search": rave_search, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
+        request = {"version": 21, "execution_mode": "local_retune" if tune else "full_study", "minimum_evidence_pairs": 4, "tune": tune, "second_pass": second_pass, "widening_expansion_search": widening_expansion_search, "tuner_specs": specs, "phase_names": list(self.phase_names), "games_per_comparison": 2 * max_pairs, "stage_games": stage_games, "baseline_supplied": supplied, "selection_search": selection_search, "mechanism_search": mechanism_search, "depth_search": depth_search, "pw_search": pw_search, "pw_supported": pw_supported, "rave_search": rave_search, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
                    "heuristic": heuristic, "target_match_time": target_match_time, "safety_margin": 1.2,
                    "selection_policies": selectors, "game": game, **({"game_params": game_parameters(self.game)} if game_parameters(self.game) else {}), "baseline": profile_values(baseline),
                    "reference": profile_values(reference) if reference else None,
@@ -526,8 +562,8 @@ class StudyRunner:
             if not resume:
                 raise FileExistsError(f"study exists: {self.path}; use --resume")
             self.state = json.loads(self.path.read_text())
-            if self.state["request"].get("version") != 20:
-                raise ValueError("old study protocol cannot resume with fixed-game scheduling; use a new output directory")
+            if self.state["request"].get("version") != 21:
+                raise ValueError("old study protocol cannot resume with coordinate tuners; use a new output directory")
             # Git revision is provenance, not an execution compatibility key.
             # Keep the original revision in the saved request.
             saved_request = self.state["request"]
@@ -558,10 +594,20 @@ class StudyRunner:
     def save(self):
         accepted = {"depth_screen", "exploration", "selectors", "rave_compare", "mechanisms", "pw_compare"}
         selected = next((p for name, p in reversed(list(self.state["phases"].items()))
-                         if name in accepted and p["status"] == "complete"), None)
+                         if (name in accepted or p.get("accept")) and p["status"] == "complete"), None)
         if selected:
             winner = next(iter(_group_leaders(selected).values()))
             self.state["selected_candidate"] = {"phase": selected["name"], "name": winner, "profile": selected["agents"][winner]}
+        if self.state["request"].get("tune"):
+            final = agent_from_values(self.state.get("selected_candidate", {}).get("profile", profile_values(self.base)))
+            dimension = self.state["request"]["tune"]
+            assert_frozen(self.base, final, dimension)
+            modified = changes(self.base, final)
+            self.state["local_retune"] = {"dimension": dimension, "changed_fields": modified,
+                "preserved_fields": {k: v for k, v in config_fields(self.base).items() if k not in modified},
+                "result": "IMPROVED" if modified else "INCONCLUSIVE",
+                "message": "Supported exploratory improvement found." if modified else "No sufficiently supported improvement found."}
+            self.state.setdefault("selected_candidate", {"phase": None, "name": "incumbent", "profile": profile_values(self.base)})
         self.state["spent_seconds"] = self.spent
         self.state.update(study_diagnostics(self.state))
         _save(self.path, self.state)
@@ -571,7 +617,7 @@ class StudyRunner:
         agents = tuple(TournamentAgent(n, RandomAgent() if phase["agents"][n] is None else agent_from_values(phase["agents"][n]))
                        for n in (contrast["a"], contrast["b"]))
         path = self.output / "traces" / f"{phase['name']}-{index:02d}.jsonl"
-        phase_index = 0 if pilot else PHASES.index(phase["name"]) + 1
+        phase_index = 0 if pilot else self.phase_names.index(phase["name"]) + 1
         return TournamentConfig(game=self.game, output=path, pairing_mode="round_robin", seat_mode="paired",
                                 matches_per_pair=2 if pilot else 2 * contrast.get("target_pairs", phase["planned_pairs"]),
                                 seed=self.state["request"]["seed"] + phase_index * SEED_STRIDE,
@@ -638,6 +684,11 @@ class StudyRunner:
         label = "Full-depth optimization" if request["mode"] == "full_depth" else f"Heuristic cutoff optimization (H{request['heuristic']})"
         if request["baseline_supplied"]:
             label = "Incremental optimization of supplied baseline"
+        if request.get("tune"):
+            label = "LOCAL RETUNE"
+            self.progress("Base agent: " + str(self.output / "baseline.toml"))
+            self.progress("Tuning: " + ", ".join(TUNING_FIELDS[request["tune"]]))
+            self.progress("Frozen: " + json.dumps({k: v for k, v in config_fields(self.base).items() if k not in TUNING_FIELDS[request["tune"]]}, sort_keys=True))
         self.progress(f"Study mode: {label}. Target match time: {request['target_match_time']:g}s.")
         work = self.state.setdefault("calibration_progress", {})
         pilot_agent = replace(_iterations(self.base, 32), rollout_depth=64)
@@ -652,7 +703,7 @@ class StudyRunner:
         length = max(1, work["mean_plies"])
         target = request["decision_seconds"] or (self.base.time_budget if request["baseline_supplied"] else None) or request["target_match_time"] / (length * request["safety_margin"])
         fixed_iterations = self.base.iterations if request["baseline_supplied"] and request["decision_seconds"] is None else None
-        if request["baseline_supplied"]:
+        if request["baseline_supplied"] and request.get("tune") != "cutoff-depth":
             work["horizon"] = {"depth": self.base.rollout_depth, "kind": "baseline", "samples": []}
         samples = work.setdefault("horizon_samples", [])
         depth = samples[-1]["depth"] if samples else min(64, request["max_plies"])
@@ -786,31 +837,49 @@ class StudyRunner:
 
     def _plan_phase(self, phase, index):
         request = self.state["request"]
-        stage = stage_for_phase(phase["name"])
+        stage = {"exploration": "selection", "selection": "selection", "rave": "rave", "structure": "mechanisms", "cutoff-depth": "depth"}.get(phase.get("tuner"), "pw" if phase.get("tuner") else stage_for_phase(phase["name"]))
         default_pairs = request["max_pairs"]
         for ci, contrast in enumerate(phase["contrasts"]):
-            pairs = request.get("stage_games", {}).get(stage, 2 * default_pairs) // 2
+            pairs = max(4, request.get("stage_games", {}).get(stage, 2 * default_pairs) // 2)
             contrast.update(target_pairs=pairs, workers=self._contrast_workers(phase, ci),
                             timing_mode="isolated" if self._contrast_workers(phase, ci) == 1 else "shared_cpu")
+        # Keep complete evidence for a smaller shortlist. Include 20% headroom,
+        # limiting parallelism to the paired jobs available in this race.
+        remaining = max(0., self.budget-self.spent) if self.budget is not None else math.inf
+        retained, dropped = [], []
+        for contrast in phase["contrasts"]:
+            cost = 1.2 * self._cost_pair(phase, contrast) * contrast["target_pairs"]
+            contrast["estimated_seconds"] = cost
+            proposed_cost = sum(c["estimated_seconds"] for c in [*retained, contrast]) / min(request["workers"], 2*(len(retained)+1))
+            if proposed_cost <= remaining:
+                retained.append(contrast)
+            else:
+                dropped.append({**contrast, "reason": "insufficient_budget"})
+        phase["contrasts"] = retained
+        phase["discarded_comparisons"] = dropped
+        if dropped:
+            self.progress(f"{phase['name']}: insufficient budget for {len(dropped)} challengers; retaining {len(retained)} with full evidence.")
         phase.update(planned_pairs=max((c["target_pairs"] for c in phase["contrasts"]), default=0),
                      planned_games=sum(2*c["target_pairs"] for c in phase["contrasts"]),
-                     estimated_seconds=sum(c["target_pairs"] * self._cost_pair(phase, c) for c in phase["contrasts"]),
+                     estimated_seconds=sum(c["estimated_seconds"] for c in phase["contrasts"]) / max(1, min(request["workers"], 2*len(phase["contrasts"]))),
                      allocation_mode="fixed_games")
 
     def _announce_plan(self):
-        self.progress("Enabled stages: " + ", ".join(n for n in PHASES if _phase_enabled(n, self.state["request"])))
+        self.progress("Execution: " + ("LOCAL RETUNE" if self.state["request"].get("tune") else "FULL STUDY") + "; enabled stages: " + ", ".join(n for n in self.phase_names if n in self.state["request"]["tuner_specs"] or _phase_enabled(n, self.state["request"])))
         pw_requested = self.state["request"].get("pw_search", False)
         self.progress("PW search: " + ("enabled" if pw_requested and self.state["request"].get("pw_supported") else "unavailable for this game" if pw_requested else "disabled (enable with --pw-search)"))
         requested = self.state["request"]["rave_search"]
         supported = "uct_rave" in self.state["request"]["selection_policies"]
         self.progress("RAVE search: " + ("enabled" if requested and supported else "unavailable for this game" if requested else "disabled (enable with --rave-search)"))
-        self.progress(("Baseline fixed-iteration comparisons" if self.state["calibration"].get("fixed_iterations") else "Equal-time comparisons") + "; fixed games per comparison; time estimates never remove requested comparisons.")
+        if self.state["request"]["max_pairs"] < 4 or any(g < 8 for g in self.state["request"]["stage_games"].values()):
+            self.progress("Minimum evidence raises comparisons below 8 games to 4 paired seeds (8 games).")
+        self.progress(("Baseline fixed-iteration comparisons" if self.state["calibration"].get("fixed_iterations") else "Equal-time comparisons") + "; fixed games per comparison; budget screening reduces candidates, never evidence per comparison.")
 
     def run(self):
         try:
             if self.resume:
                 self._recover()
-            if all(self.state["phases"].get(name, {}).get("status") == "complete" for name in PHASES):
+            if all(self.state["phases"].get(name, {}).get("status") == "complete" for name in self.phase_names):
                 self.state["status"] = "complete"
                 self.state.pop("last_error", None)
                 return self.state
@@ -821,7 +890,7 @@ class StudyRunner:
             self._announce_plan()
             self.state.pop("last_error", None)
             self.state["status"] = "running"
-            for index, name in enumerate(PHASES):
+            for index, name in enumerate(self.phase_names):
                 phase = self.state["phases"].get(name)
                 if phase and phase["status"] == "complete":
                     continue
@@ -834,7 +903,7 @@ class StudyRunner:
                     self.save()
                 if not phase["contrasts"] or not phase["planned_pairs"]:
                     phase["status"] = "complete"
-                    phase["completion_reason"] = "no_changed_parameters" if not phase["contrasts"] else "no_comparisons"
+                    phase["completion_reason"] = "insufficient_budget" if phase.get("discarded_comparisons") else phase.get("skip_reason", "no_changed_parameters")
                     self.save()
                     continue
                 phase["status"] = "running"
@@ -851,9 +920,14 @@ class StudyRunner:
                     raise RuntimeError(f"{name}: fixed comparison games remain incomplete")
                 phase["status"] = "complete"
                 phase["completion_reason"] = "fixed_games_finished"
+                phase["winner"] = next(iter(_group_leaders(phase).values()))
+                control = phase["contrasts"][0]["a"]
+                phase["outcome"] = "IMPROVED" if phase["winner"] != control else "INCONCLUSIVE"
                 self.save()
-            complete = all(self.state["phases"].get(n, {}).get("status") == "complete" for n in PHASES)
+            complete = all(self.state["phases"].get(n, {}).get("status") == "complete" for n in self.phase_names)
             self.state["status"] = "complete" if complete else "budget_exhausted"
+            if complete and any(p.get("discarded_comparisons") for p in self.state["phases"].values()):
+                self.state["budget_limited"] = True
         except BaseException as error:
             self.state["status"] = "interrupted"
             self.state["last_error"] = str(error) or type(error).__name__
@@ -862,6 +936,9 @@ class StudyRunner:
             self.save()
             self.export_candidates()
             write_study_report(self.output, self.state)
+            if self.state.get("local_retune"):
+                self.progress(self.state["local_retune"]["message"])
+                self.progress("Changed fields: " + json.dumps(self.state["local_retune"]["changed_fields"], sort_keys=True))
         return self.state
 
     def export_candidates(self):
