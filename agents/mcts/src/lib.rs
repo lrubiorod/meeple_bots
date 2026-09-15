@@ -67,10 +67,11 @@ impl<P> MctsConfig<P> {
         if !self.exploration.is_finite() || self.exploration < 0.0 {
             return Err("MCTS exploration must be finite and non-negative");
         }
-        if let SelectionPolicy::UctRave { rave_equivalence } = self.selection_policy {
-            if rave_equivalence == 0 {
-                return Err("rave_equivalence must be greater than zero");
-            }
+        if let SelectionPolicy::UctRave {
+            rave_equivalence: 0,
+        } = self.selection_policy
+        {
+            return Err("rave_equivalence must be greater than zero");
         }
         Ok(())
     }
