@@ -122,6 +122,7 @@ class StudyTests(unittest.TestCase):
     def state_for_plan(self, heuristic=None, rave=True):
         return {'request': {'version': 11, 'game': 'boop', 'mode': 'full_depth' if heuristic is None else 'heuristic_cutoff',
                             'heuristic': heuristic, 'target_match_time': 60, 'rave_search': rave,
+                            'selection_search': True, 'mechanism_search': True, 'depth_search': True,
                             'selection_policies': ['uct', 'ucb1_tuned'] + (['uct_rave'] if rave else [])},
                 'calibration': {'decision_seconds': .01, 'horizon': {'depth': 100},
                                 'cutoff_depths': cutoff_depths(100)}, 'phases': {}}
@@ -161,17 +162,15 @@ class StudyTests(unittest.TestCase):
             self.assertTrue(all(1 <= x < horizon for x in values))
             self.assertLessEqual(len(values), 4)
 
-    def test_depths_survive_exploration_selectors_and_rave_before_selection(self):
+    def test_depth_stage_is_incremental_and_partial_evidence_keeps_incumbent(self):
         state = self.populate(self.state_for_plan(0), 0)
-        for name in ('exploration', 'selectors', 'rave'):
-            self.assertEqual(len(state['phases'][name]['groups']), 2)
-        self.assertEqual(len(state['phases']['family_selection']['agents']), 2)
-        self.assertGreater(PHASES.index('family_selection'), PHASES.index('rave'))
         screen = state['phases']['depth_screen']
         for c in screen['contrasts']:
+            c['target_pairs'] = 4
             c['result']['seed_pairs'] = 2
-        phase = _build_phase('exploration', state, generic_baseline('boop'), None)
-        self.assertEqual(len(phase['groups']), 4)  # minimal evidence cannot prune depths
+        phase = _build_phase('exploration', state, replace(generic_baseline('boop'), cutoff_evaluator=GameHeuristic(0)), None)
+        self.assertEqual(len(phase['groups']), 1)
+        self.assertEqual(phase['agents']['incumbent']['rollout_depth'], screen['agents']['initial']['rollout_depth'])
 
     def test_rave_capability_and_matrix(self):
         for enabled in (False, True):
@@ -182,7 +181,7 @@ class StudyTests(unittest.TestCase):
             mechanism = state['phases']['mechanisms']
             self.assertEqual({(v['tree_reuse'], v['transpositions']) for v in mechanism['agents'].values()},
                              {(False, False), (True, False), (False, True), (True, True)})
-            self.assertEqual(len(mechanism['contrasts']), 6)
+            self.assertEqual(len(mechanism['contrasts']), 3)
             self.assertEqual(len({v['selection_policy'] for v in mechanism['agents'].values()}), 1)
 
     def test_default_target_and_custom_cli(self):
@@ -195,7 +194,7 @@ class StudyTests(unittest.TestCase):
         self.assertEqual(duration_seconds(args.target_match_time), 120)
         with TemporaryDirectory() as tmp:
             for heuristic in (None, 1):
-                runner = StudyRunner('splendor', MctsAgent(heuristic=0), output=Path(tmp)/str(heuristic), budget=60,
+                runner = StudyRunner('splendor', output=Path(tmp)/str(heuristic), budget=60,
                                      heuristic=heuristic, progress=lambda _: None)
                 self.assertEqual(runner.state['request']['mode'], 'full_depth' if heuristic is None else 'heuristic_cutoff')
                 self.assertNotIn('uct_rave', runner.state['request']['selection_policies'])
@@ -213,7 +212,7 @@ class StudyTests(unittest.TestCase):
         return SimpleNamespace(maximum_decision_horizon=None, position_timings=timings)
 
     def calibrated_fake(self, tmp, **kwargs):
-        runner = StudyRunner('boop', generic_baseline('boop'), output=Path(tmp), budget=1000, progress=lambda _: None, **kwargs)
+        runner = StudyRunner('boop', output=Path(tmp), budget=1000, progress=lambda _: None, **kwargs)
         rows = [{'result': {'plies': 80, 'chance_events': [None]*500}} for _ in range(2)]
         with patch.object(runner, '_pair', return_value=rows), patch('meeple_bots.studies.benchmark_mcts_agent', side_effect=self.fake_benchmark):
             runner.calibrate()
@@ -251,7 +250,7 @@ class StudyTests(unittest.TestCase):
             self.assertTrue(all(t.cutoff_simulations == 0 for t in bench.position_timings))
             self.assertTrue(bench.position_timings[0].root_visits)
         with TemporaryDirectory() as tmp:
-            runner = StudyRunner('connect6', generic_baseline('connect6'), output=Path(tmp), budget=60,
+            runner = StudyRunner('connect6', output=Path(tmp), budget=60,
                                  game_params={'board_size': 11}, target_match_time=.001, progress=lambda _: None)
             with patch.object(runner, '_pair', return_value=[{'result': {'plies': 40}}]*2):
                 runner.calibrate()
@@ -288,7 +287,7 @@ class StudyTests(unittest.TestCase):
             runner = StudyRunner('tic-tac-toe', generic_baseline('tic-tac-toe'), **options)
             state = runner.run()
             self.assertEqual(state['status'], 'complete')
-            self.assertIn('best_full_depth_agent', state['candidate_profiles'])
+            self.assertIn('best_agent', state['candidate_profiles'])
             report = json.loads((Path(tmp)/'summary.json').read_text())
             self.assertEqual(report['calibration']['target_match_time'], 60)
             self.assertEqual(report['calibration']['decision_seconds'], .00001)
@@ -351,7 +350,7 @@ class StudyTests(unittest.TestCase):
 
     def test_heuristic_study_transport_keeps_chance_traces_and_no_cross_family(self):
         with TemporaryDirectory() as tmp:
-            runner = StudyRunner('splendor', generic_baseline('splendor'), heuristic=1, output=Path(tmp), budget=60,
+            runner = StudyRunner('splendor', heuristic=1, depth_search=True, output=Path(tmp), budget=60,
                                  target_match_time=.001, max_pairs=2, max_plies=3000, progress=lambda _: None)
             runner.state['calibration'] = {'decision_seconds': .00001, 'horizon': {'depth': 32},
                                            'cutoff_depths': [4, 8], 'mean_plies': 80}
@@ -467,13 +466,172 @@ class StudyTests(unittest.TestCase):
             seeds = [runner._trace_config(runner.state['phases'][name], 0).seed
                      for name in ('rave_extend_1', 'rave_extend_2', 'rave_extend_3', 'rave_extend_4', 'rave_extend_5', 'rave_exploration', 'rave_compare')]
             self.assertEqual(len(set(seeds)), 7)
-            resumed = StudyRunner('boop', generic_baseline('boop'), output=Path(tmp), budget=1000, resume=True, rave_search=True, progress=lambda _: None)
+            resumed = StudyRunner('boop', output=Path(tmp), budget=1000, resume=True, rave_search=True, progress=lambda _: None)
             self.assertEqual(resumed.state['phases']['rave_extend_1'], phase)
             self.assertEqual(resumed.state['rave_budget'], runner.state['rave_budget'])
 
+    def test_incremental_baseline_is_preserved_and_disabled_stages_are_free(self):
+        from meeple_bots.studies import _phase_enabled
+        base = MctsAgent(time_budget=.01, rollout_depth=169, exploration=.125,
+                         selection_policy='uct_rave', rave_equivalence=20000,
+                         tree_reuse=True, transpositions=True)
+        with TemporaryDirectory() as tmp:
+            runner = StudyRunner('connect6', base, output=Path(tmp), budget=60,
+                                 game_params={'board_size': 13}, progress=lambda _: None)
+            self.assertEqual(runner.base, base)
+            rows = [{'result': {'plies': 80}}]*2
+            with patch.object(runner, '_pair', return_value=rows), patch('meeple_bots.studies.benchmark_mcts_agent', side_effect=self.fake_benchmark):
+                runner.calibrate()
+            self.assertEqual(runner.state['calibration']['horizon']['kind'], 'baseline')
+            for name in PHASES:
+                phase = _build_phase(name, runner.state, base, None)
+                runner._plan_phase(phase, PHASES.index(name))
+                runner.state['phases'][name] = phase
+                if name not in ('refinement', 'confirmation'):
+                    self.assertFalse(phase['contrasts'])
+                    self.assertEqual(phase['allocated_seconds'], 0)
+                    self.assertEqual(phase['planned_pairs'], 0)
+                    self.assertTrue(all(agent_from_values(v) == base for v in phase['agents'].values()))
+                else:
+                    self.assertTrue(_phase_enabled(name, runner.state['request']))
+            self.assertTrue(runner.state['phases']['refinement']['contrasts'])
+
+    def test_incremental_native_pipeline_all_stages_export_and_resume(self):
+        with TemporaryDirectory() as tmp:
+            base = MctsAgent(iterations=4, rollout_depth=9)
+            opts = dict(output=Path(tmp), budget=60, all_search=True, max_pairs=2,
+                        confirmation_pairs=2, max_plies=9, progress=lambda _: None)
+            runner = StudyRunner('tic-tac-toe', base, **opts)
+            state = runner.run()
+            self.assertEqual(state['status'], 'complete')
+            self.assertEqual(state['phases']['confirmation']['status'], 'complete')
+            self.assertTrue((Path(tmp)/'candidates/best_agent.toml').exists())
+            for phase in state['phases'].values():
+                for agent in phase['agents'].values():
+                    self.assertEqual(agent['iterations'], 4)
+                    self.assertNotIn('time_budget', agent)
+            with patch('meeple_bots.studies.run_matches', side_effect=AssertionError('unexpected rerun')):
+                resumed = StudyRunner('tic-tac-toe', base, resume=True, **opts).run()
+            self.assertEqual(resumed['status'], 'complete')
+            report = (Path(tmp)/'report.html').read_text()
+            self.assertIn('Incremental stages', report)
+            self.assertIn('fixed_iterations', report)
+
+    def test_incremental_fixed_iterations_and_explicit_time_override(self):
+        base = MctsAgent(iterations=77, rollout_depth=16, heuristic=1)
+        for override in (None, .02):
+            with TemporaryDirectory() as tmp:
+                runner = StudyRunner('splendor', base, output=Path(tmp), budget=60,
+                                     decision_seconds=override, progress=lambda _: None)
+                with patch.object(runner, '_pair', return_value=[{'result': {'plies': 80}}]*2), patch('meeple_bots.studies.benchmark_mcts_agent', side_effect=self.fake_benchmark):
+                    runner.calibrate()
+                phase = _build_phase('depth_screen', runner.state, base, None)
+                got = agent_from_values(phase['agents']['initial'])
+                expected = base if override is None else replace(base, iterations=None, time_budget=override)
+                self.assertEqual(got, expected)
+                self.assertEqual(runner.state['request']['heuristic'], 1)
+                with self.assertRaisesRegex(ValueError, 'conflicts'):
+                    StudyRunner('splendor', base, output=Path(tmp)/'conflict', budget=60, heuristic=0)
+
+    def test_incremental_only_pw_copies_current_and_confirmation_uses_initial(self):
+        base = MctsAgent(time_budget=.01, rollout_depth=169, exploration=.125,
+                         selection_policy='uct_rave', rave_equivalence=20000, tree_reuse=True, transpositions=True)
+        state = self.state_for_plan()
+        state['request'].update(baseline_supplied=True, selection_search=False, mechanism_search=False,
+                                depth_search=False, rave_search=False, pw_search=True, pw_supported=True)
+        state['calibration']['horizon']['depth'] = 169
+        for name in PHASES:
+            phase = _build_phase(name, state, base, None)
+            for c in phase['contrasts']:
+                c['result'] = {'seed_pairs': 4, 'score_b': .6}
+            state['phases'][name] = phase
+            if name not in ('refinement', 'confirmation') and not name.startswith('pw_'):
+                self.assertFalse(phase['contrasts'])
+                self.assertEqual(agent_from_values(next(iter(phase['agents'].values()))), base)
+        final = state['phases']['confirmation']
+        self.assertEqual(agent_from_values(final['agents']['runner-up']), base)
+        self.assertTrue(final['agents']['finalist']['progressive_widening'])
+        compare = state['phases']['pw_compare']
+        compare['contrasts'][0]['result']['score_b'] = .4
+        refined = _build_phase('refinement', state, base, None)
+        self.assertEqual(agent_from_values(refined['agents']['incumbent']), base)
+
+    def test_all_search_enables_supported_stages_and_generated_baseline(self):
+        with TemporaryDirectory() as tmp:
+            runner = StudyRunner('connect6', output=Path(tmp), budget=60, all_search=True,
+                                 game_params={'board_size': 11}, progress=lambda _: None)
+            self.assertFalse(runner.state['request']['baseline_supplied'])
+            for key in ('selection_search', 'rave_search', 'mechanism_search', 'pw_search', 'depth_search'):
+                self.assertTrue(runner.state['request'][key])
+            args = build_parser().parse_args(['study', '--game', 'connect6', '--budget', '4h', '--all-search'])
+            self.assertTrue(args.all_search)
+
+    def test_pw_opt_in_and_calibrate_before_cross_comparison(self):
+        args = ['study', '--game', 'connect6', '--budget', '4h']
+        self.assertFalse(build_parser().parse_args(args).pw_search)
+        self.assertTrue(build_parser().parse_args(args + ['--pw-search']).pw_search)
+        for rave in (False, True):
+            state = self.state_for_plan(rave=rave)
+            state['request'].update(pw_search=True, pw_supported=True)
+            self.populate(state)
+            original = next(iter(state['phases']['pw_compare']['agents'].values()))
+            for stage in ('pw_k', 'pw_alpha', 'pw_refine'):
+                phase = state['phases'][stage]
+                self.assertTrue(phase['contrasts'])
+                for values in phase['agents'].values():
+                    self.assertTrue(values['progressive_widening'])
+                    for key in original:
+                        if not key.startswith('progressive_widening'):
+                            self.assertEqual(values[key], original[key])
+            comparison = state['phases']['pw_compare']
+            self.assertEqual(len(comparison['contrasts']), 1)
+            self.assertFalse(comparison['agents']['incumbent'].get('progressive_widening', False))
+            self.assertTrue(comparison['agents']['calibrated-pw']['progressive_widening'])
+            self.assertGreater(PHASES.index('pw_compare'), PHASES.index('pw_refine'))
+
+    def test_pw_incomplete_and_unsupported_keep_incumbent(self):
+        for enabled, supported in [(False, True), (True, False), (True, True)]:
+            state = self.state_for_plan()
+            state['request'].update(pw_search=enabled, pw_supported=supported)
+            self.populate(state)
+            if enabled and supported:
+                state['phases']['pw_k']['contrasts'][0]['result']['seed_pairs'] = 1
+                for name in ('pw_alpha', 'pw_refine', 'pw_compare'):
+                    state['phases'][name] = _build_phase(name, state, generic_baseline('boop'), None)
+            comparison = state['phases']['pw_compare']
+            self.assertFalse(comparison['contrasts'])
+            self.assertFalse(any(v.get('progressive_widening', False) for v in comparison['agents'].values()))
+
+    def test_pw_pool_reserves_followups_and_resume_preserves_plan(self):
+        with TemporaryDirectory() as tmp:
+            runner = self.calibrated_fake(tmp, pw_search=True)
+            state = self.state_for_plan()
+            state['request'].update(pw_search=True, pw_supported=True)
+            runner.state['phases'] = self.populate(state)['phases']
+            phase = _build_phase('pw_k', runner.state, runner.base, None)
+            runner._plan_phase(phase, PHASES.index('pw_k'))
+            self.assertGreater(phase['reserved_followup_seconds'], 0)
+            self.assertLessEqual(phase['estimated_seconds'], phase['allocated_seconds'])
+            runner.state['phases']['pw_k'] = phase
+            runner.save()
+            resumed = StudyRunner('boop', output=Path(tmp), budget=1000,
+                                  resume=True, pw_search=True, progress=lambda _: None)
+            self.assertEqual(resumed.state['pw_budget'], runner.state['pw_budget'])
+            self.assertEqual(resumed.state['phases']['pw_k'], phase)
+            with self.assertRaisesRegex(ValueError, 'configuration or engine changed'):
+                StudyRunner('boop', output=Path(tmp), budget=1000,
+                            resume=True, pw_search=False, progress=lambda _: None)
+            phase['planned_pairs'] = 2
+            seeds = []
+            for name in ('pw_k', 'pw_alpha', 'pw_refine', 'pw_compare', 'confirmation'):
+                item = runner.state['phases'][name]
+                item.setdefault('planned_pairs', 2)
+                seeds.append(runner._trace_config(item, 0).seed)
+            self.assertEqual(len(seeds), len(set(seeds)))
+
     def test_high_rave_winner_refines_above_original_grid(self):
         state = self.populate(self.state_for_plan())
-        for values in state['phases']['mechanisms']['agents'].values():
+        for values in state['phases']['pw_compare']['agents'].values():
             values.update(selection_policy='uct_rave', rave_equivalence=20000)
         phase = _build_phase('refinement', state, generic_baseline('boop'), None)
         ks = {phase['agents'][c['b']]['rave_equivalence'] for c in phase['contrasts'] if c['factor'] == 'rave_equivalence'}
@@ -504,7 +662,7 @@ class StudyTests(unittest.TestCase):
                     self.assertEqual(phase['planned_pairs'], 0)
             runner.save()
             with self.assertRaisesRegex(ValueError, 'configuration or engine changed'):
-                StudyRunner('boop', generic_baseline('boop'), output=Path(tmp), budget=1000,
+                StudyRunner('boop', output=Path(tmp), budget=1000,
                             resume=True, rave_search=True, progress=lambda _: None)
 
     def test_shared_rave_pool_covers_initial_screen_and_keeps_unspent_balance(self):

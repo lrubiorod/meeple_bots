@@ -524,7 +524,9 @@ may leave legal actions unexpanded: active does not necessarily equal legal.
 
 The same fields work in Python `MctsAgent`, profiles, inline profiles and tournament
 grids; they are preserved in study candidate serialization and extraction's
-`agents.csv`. The study does not automatically tune PW. Compare identical agents
+`agents.csv`. Incremental studies tune PW only when `--pw-search` (or
+`--all-search`) is requested; `--baseline` preserves the starting agent. See
+[study stages](../python/studies.md#incremental-mcts-study). Compare identical agents
 with `progressive_widening = [false, true]` and the same `time_budget` in a tournament.
 A CLI example is:
 

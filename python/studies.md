@@ -499,227 +499,139 @@ without that field mean `uct`; the original configuration remains preserved in `
 UCB1-Tuned studies should change only `selection_policy`, keeping budgets, rollouts, evaluators,
 reuse and transpositions equal. The `exploration` setting only affects UCT.
 
-## Automatic MCTS diagnosis
+## Incremental MCTS study
 
-`study` optimizes **one MCTS family at a time**. Omitting `--heuristic` selects
-uninformed full-depth optimization. Specifying `--heuristic h0` (or `h1`, or a
-registered integer index) fixes that cutoff evaluator for the entire study.
-There is no automatic full-depth-versus-cutoff competition. Compare the exported
-winners yourself using the normal tournament workflow.
+`study` improves one incumbent incrementally. With `--baseline`, the supplied
+profile is the initial incumbent: its selector, evaluator, rollout, depth,
+exploration, RAVE, PW, reuse and transpositions are preserved. Without a baseline,
+calibration creates a neutral full-depth agent, or a cutoff agent using the
+explicit `--heuristic hN`. A heuristic conflicting with a supplied baseline is an
+error; the study never silently changes the evaluator.
 
-```bash
-# Uninformed Connect6, with the rule-proven 121-decision maximum.
-python -m meeple_bots study --game connect6 --game-param board_size=11 \
-  --budget 4h --target-match-time 60s \
-  --output results/studies/connect6-11-full
+### Optional stages
 
-# Optimize only Splendor H1 with cutoff; H0 would be a separate study.
-python -m meeple_bots study --game splendor --heuristic h1 \
-  --budget 4h --target-match-time 60s \
-  --output results/studies/splendor-h1
+All search stages are opt-in. `--all-search` enables all supported stages:
 
-# Resume the same protocol/configuration/build with a larger TOTAL budget.
-python -m meeple_bots study --game splendor --heuristic h1 \
-  --budget 6h --target-match-time 60s \
-  --output results/studies/splendor-h1 --resume
-```
-
-RAVE search is **disabled by default**, in both study modes. Add `--rave-search`
-to enable its progressive calibration and comparison with the previous selector:
-
-```bash
-python -m meeple_bots study --game connect6 --game-param board_size=13 \
-  --budget 4h --target-match-time 60s --rave-search \
-  --output results/studies/connect6-13-full-rave
-```
-
-Without the flag, RAVE stages have zero allocation and run no matches; their
-budget is redistributed across the active phases. Checkpoints/reports retain
-empty stage entries to make the omission explicit and keep seed namespaces stable.
-Unsupported games skip RAVE even when requested, with a console notice. The option
-is frozen in the checkpoint; changing it requires a new output directory.
-An explicitly supplied RAVE reference also requires `--rave-search`.
-
-Connect6 currently has no game heuristic: its normal study works, while requesting
-an unavailable heuristic produces an explicit error. Game parameters are retained
-in checkpoints, all recreated match instances, worker transport and trace headers.
-
-### Time budget and search work
-
-`--budget` is the total study allowance, including calibration. Independently,
-`--target-match-time` (default **60s**, accepting the same s/m/h syntax) controls
-the approximate computational cost of a candidate match:
-
-```
-time per decision = target match time / (estimated game decisions * 1.2)
-```
-
-The initial paired pilot estimates game length in **player decisions**; Chance
-events are recorded separately and never inflate this denominator. For example,
-80 estimated decisions and a 60-second target give 0.625 seconds per decision.
-This is an estimate, not a match timeout. Stronger agents may play longer or
-shorter matches than the pilot. An individual simulation can exceed its deadline.
-
-All competitive screens, selector comparisons (including RAVE), the mechanism
-matrix, refinement and confirmation use this **same wall-clock budget per decision**.
-Iteration count is measured work, not the criterion used to choose the winner.
-The operating point is the measured median iterations available at that time;
-there is no compulsory equal-iteration tournament or branching-times-constant
-formula selecting the final budget. Equal-iteration experiments remain available
-as separate tournaments to investigate sample efficiency.
-
-Calibration runs isolated early/middle/late probes and records actual elapsed
-time, completed iterations, throughput, median iterations, legal branching and,
-when supplied by native root diagnostics, action coverage and visits (median/p10).
-Candidate matches also report median iterations and observed throughput, latency
-and terminal simulation fraction. Positions are sampled using reproducible random
-play and are not guaranteed representative of all strong-agent positions.
-
-**Search adequacy** is explicitly a heuristic diagnostic, not a confidence
-probability. Its coarse categories use median iterations divided by representative
-median legal branching:
-
-| Approximate iterations / legal action | Category |
+| Flag | Stage |
 | --- | --- |
-| < 1 | VERY LOW |
-| 1–<10 | LOW |
-| 10–<100 | MEDIUM |
-| >= 100 | HIGH |
+| `--depth-search` | Compare heuristic cutoff depths against the current depth. |
+| `--selection-search` | Compare UCT exploration candidates against the incumbent, then UCB1-Tuned against the winner. |
+| `--rave-search` | Calibrate a RAVE copy before comparing it with the incumbent. |
+| `--mechanism-search` | Test all four reuse/transposition combinations, each alternative against the incumbent. |
+| `--pw-search` | Calibrate k/alpha on a PW copy before comparing it with the incumbent. |
 
-The thresholds are descriptive, not guarantees of search quality. Root coverage
-and visit distributions provide context. For LOW/VERY LOW the study warns and
-shows approximate 3x/10x larger match targets using linear throughput scaling.
-It **continues with the requested target**, without silently increasing time.
-Candidate adequacy uses the calibration branching as a reference, so it remains
-an approximation across changing positions. Competitive confidence is reported
-separately using actual paired games and intervals.
+Order: depth, selection, RAVE, mechanisms, PW, **refinement, confirmation**.
+Disabled stages carry the incumbent forward with no matches or allocation.
+RAVE and PW flags enable tuning, not permission to retain those mechanisms in
+an existing baseline. Unsupported stochastic backends skip these stages explicitly.
 
-### Pipeline
+Each optional stage starts from the best candidate retained so far. A challenger
+can replace the incumbent only after completing its planned comparison (minimum
+two paired seeds), with a score above parity. Ties and incomplete comparisons
+retain the incumbent. These promotions are exploratory, not significance claims.
 
-1. **Structural calibration and horizon.** A short paired pilot and isolated
-   native probes measure decision length, branching, search costs and terminal
-   reach. The optional Rust `Game::maximum_decision_horizon()` supplies a
-   rule-proven bound: Connect6 uses `N*N`, Connect Four 42 and Tic-Tac-Toe 9.
-   Other games may return `None`. Without a hard bound, depths grow geometrically
-   from 64, using two seeded sets of representative searches, until every sampled
-   position has at least 99% terminal simulations. The probe is capped by the
-   calibration allocation (8% of study budget) and `--max-plies`; failure to verify
-   terminal reach is labelled **practical_unverified**, never proven full-depth.
-   Hard bounds are used regardless of this empirical threshold.
-2. **Depth screen (heuristic mode only).** Generate approximately 10%, 25%, 50%
-   and 75% of the reference horizon, round/deduplicate and restrict to
-   `1 <= depth < horizon`. A medium depth is the common control. Preserve two
-   promising depths after initial coverage of at least four paired seeds per
-   contrast. If coverage is insufficient, preserve all depths for tuning rather
-   than treating them as disproven. A one-decision horizon has no distinct cutoff.
-3. **UCT exploration per surviving depth.** Compare the starting UCT against
-   C=0.25, 0.5, 1, 1.4 and 2 (deduplicating the starting C). Uniform rollout,
-   no reuse/transpositions, no MAST or Progressive Bias. The time operating point
-   stays fixed; depth-specific match measurements expose different iteration costs.
-4. **Selectors.** Compare each depth's calibrated UCT with UCB1-Tuned.
-5. **Optional progressive RAVE calibration (`--rave-search`).** Only when explicitly
-   requested and the native catalog advertises UCT-RAVE,
-   start with k=1000/3000/10000, using 3000 as the common control and the
-   calibrated UCT C. After a completed screen (at least two paired seeds per
-   contrast), always check geometric midpoints around the selected k: a winner
-   at 3000 tests 1732 and 5477. A promising winner at 10000 tests 5477 and 20000.
-   Subsequent rounds refine around an improving challenger (observed score >=55%);
-   an interior winner uses the nearest previously tested neighbors, while a
-   promising upper-bound winner also doubles k. A lower-bound winner can test k/2.
-   Already tested/duplicate values are excluded; integer values stay positive.
-   There are at most five adaptive rounds, with at most two new values each.
-   The 55% rule allocates exploratory work, not statistical significance or a
-   guarantee of finding the optimal range. Without an improving challenger,
-   stop with `no_clear_improvement_not_proven_plateau`; missing/incomplete evidence
-   is explicitly reported and cannot trigger another round.
-   Next compare the selected RAVE with C/2 and 2*C. Only after this bounded
-   calibration is complete does `rave_compare` pit the calibrated RAVE against
-   the previous best UCT/UCB1-Tuned. RAVE-versus-RAVE scores never select the
-   winner of the selector comparison. If calibration cannot finish, retain the
-   previous selector and report RAVE as uncalibrated, not disproven.
-   All eight RAVE stages share one pool with a 25% resource priority, booked
-   once on entry. There are no per-round percentage quotas. Every stage reserves
-   minimum coverage for the remaining exploration/final comparison (the initial
-   screen also protects its mandatory geometric refinement). It funds at least
-   two paired seeds for every contrast before adding extra pairs; if full coverage
-   cannot fit, the stage is explicitly untested rather than partly calibrated.
-   Calibration rounds cap samples at four pairs per contrast (or --max-pairs if
-   smaller); the final selector comparison can use the full --max-pairs cap.
-   New plans use recent measured match costs with 20% headroom instead of retaining
-   an inflated pilot length forever. Pair counts are frozen before each stage's
-   matches. Unspent pool funds remain available to subsequent RAVE stages, then
-   return to the rest of the study. Overall confirmation retains its 30% priority.
-   The pool and plans survive resume; an already booked pool is not enlarged by
-   increasing the total budget on resume. Each
-   stage freezes its plan and uses a separate seed namespace, including on resume.
-   Stochastic Splendor skips these stages because it does not advertise RAVE.
-6. **Tuned depth selection.** Only now compare the surviving depths with their
-   tuned parameters/selectors. In normal mode there is only one full-depth family.
-7. **Mechanisms.** Test all four reuse/transposition combinations with the selected
-   configuration fixed. A six-contrast round robin covers interactions rather than
-   independently making two greedy boolean decisions.
-8. **Small refinement.** Check neighboring exploration, neighboring k when RAVE
-   won, and neighboring cutoff depths in heuristic mode. Full depth never changes
-   here. This is a local check, not a full Cartesian search.
-9. **Confirmation.** Freeze the nominee and a runner-up from the *same family*,
-   then use a fresh seed namespace with swapped seats. Confirmation reports whether
-   the nominee's advantage is supported; it does not reselect a winner after
-   seeing held-out outcomes. A nomination can remain provisional or fail confirmation.
+Refinement always checks a small neighborhood of the current winner's applicable
+parameters: exploration, RAVE k, PW k and heuristic cutoff depth. It can refine
+parameters even when their larger search stage was not requested. Confirmation
+always follows, using fresh seeds against the **initial incumbent** if the nominee
+changed, otherwise a distinct refinement alternative where one exists. If there
+is no distinct alternative, it reports no changed parameters; it does not invent
+evidence. Finite budget exhaustion is reported explicitly and can leave confirmation
+unmeasured. A nominee is fixed before confirmation; an inconclusive result remains
+provisional and does not establish equivalence.
 
-`rollout_depth` always counts player decisions and is a soft limit: finish the
-current physical turn before evaluating, resolve mandatory Chance, and stop
-immediately at terminal. Calibration/search do not change the independent game,
-chance and agent RNG semantics.
+### Examples
 
-### Allocation, evidence and outputs
+```bash
+# Initial full study; calibration generates the initial agent.
+python -m meeple_bots study --game connect6 --game-param board_size=13 \
+  --all-search --budget 4h --target-match-time 60s \
+  --output results/studies/connect6-13-initial
 
-Phase resource priorities are recalculated from remaining time; unused allocation
-flows forward. Confirmation initially receives a 30% priority, with its own
-`--confirmation-pairs` cap (default 32). Screening uses `--max-pairs` (default 8).
-Resource-limited comparisons can be omitted before play and are explicitly labelled
-`phase_budget_not_evaluated`. Within per-depth tuning the planner interleaves depth
-groups so one depth cannot consume all of another's allocation. After initial
-coverage, optional rounds yield to later phases. A small total budget may leave
-untested parameters or no independent confirmation. Completion is not evidence of
-statistical significance; large targets require a larger total budget for useful
-competitive evidence.
+# Add only PW calibration to an existing baseline (plus mandatory refinement/confirmation).
+python -m meeple_bots study --game connect6 --game-param board_size=13 \
+  --baseline configs/mcts/connect6-baseline.toml --pw-search --budget 1h \
+  --output results/studies/connect6-13-incremental-pw
 
-All competitive comparisons are timing-sensitive and run sequentially to avoid
-CPU contention. `--workers` remains accepted for transport compatibility; it does
-not parallelize these equal-time comparisons. Paired seeds and balanced seats
-are retained; distinct phases have disjoint seed namespaces. Confirmation intervals
-use the existing conservative 95% paired-seed Hoeffding bound. Adaptive screening
-rankings are exploratory, and no multiple-comparison correction is claimed.
+# Later, use the exported candidate as the next baseline.
+python -m meeple_bots study --game connect6 --game-param board_size=13 \
+  --baseline results/studies/connect6-13-incremental-pw/candidates/best_agent.toml \
+  --selection-search --mechanism-search --budget 2h \
+  --output results/studies/connect6-13-incremental-mechanisms
 
-The output directory contains standard per-contrast traces, frozen `study.json`,
-`summary.json`, `report.html`, stage candidates, and one of:
+# New heuristic family: calibrate a generic H1 candidate, then all supported stages.
+python -m meeple_bots study --game splendor --heuristic h1 \
+  --all-search --budget 4h --output results/studies/splendor-h1-incremental
+```
 
-- `candidates/best_full_depth_agent.toml`
-- `candidates/best_heuristic_cutoff_agent.toml`
+### Initialization, budgets and measurements
 
-These profiles use `time_budget = <derived seconds>`, the selected horizon,
-selector/exploration, optional `rave_equivalence`, fixed evaluator, uniform rollout
-and selected mechanisms. They load through the existing agent/TOML API. The report
-separates calibration/search adequacy, actual costs, discarded/untested candidates,
-observed head-to-head changes and independent confirmation. A +10 percentage-point
-score advantage over parity is **not** a 20% increase in intrinsic playing strength.
-Generated profiles never replace shared baselines automatically.
+Without a supplied baseline, calibration uses a game-provided hard decision
+horizon when available (Connect6 NxN: N*N). Otherwise it increases the rollout
+safety depth until representative terminal reach is at least 99%, or reports
+`practical_unverified` when limits prevent verification. A heuristic baseline
+starts at a middle cutoff; depth search samples approximately 10/25/50/75% of
+the reference horizon. Chance does not count as a player decision, and rollouts
+still complete physical turns at cutoff.
 
-### Migration from mixed-family studies
+With a supplied baseline, calibration measures cost and adequacy but **does not
+replace its horizon** or restart horizon discovery. Optional depth search uses
+shallower fractions of its current depth; final local refinement can also try a
+nearby deeper cutoff. A supplied neutral cutoff is not claimed to be proven
+full-depth merely because the evaluator is neutral.
 
-Protocol 16 introduces a larger shared RAVE budget for the optional progressive calibration pipeline and replaces the old full-versus-neutral/H0/H1 admission pipeline. Old
-checkpoints are rejected without modification: use a new output directory rather
-than mixing old matches with the new methodology. Resuming protocol 16 retains
-frozen plans and flushed games; `--budget` is the new total allowance. Changes to
-parameters, target time, evaluator or executable code require a new directory.
-A Git commit alone still does not invalidate a compatible checkpoint.
+Search budgets follow these rules:
 
-`--baseline` remains accepted as a starting profile; its exploration is the initial
-C, but its cutoff evaluator does **not** implicitly select the study mode. Study
-initialization resets optional mechanisms, rollout and selector for calibration.
-`--reference` is allowed only within the same evaluator/horizon family, as auxiliary
-held-out evidence; external references do not select the nominee. Cross-family
-comparisons belong in a separate tournament. `--decision-time` remains an explicit
-seconds-per-decision override and is labelled as such in the report; normally use
-`--target-match-time`. `--screening-time` now errors with migration guidance because
-a cheaper screening budget would change the main comparison question.
+- Supplied `time_budget`: preserve seconds per decision.
+- Supplied `iterations`: preserve the iteration budget for every comparison.
+- `--decision-time SECONDS`: explicitly override either with equal-time search.
+- No baseline: derive seconds per decision from `--target-match-time` (default
+  60s) / (estimated player decisions * 1.2).
+
+`--budget` is the total study budget. `--target-match-time` does not override a
+supplied baseline budget. Measured elapsed time, iterations/sec, iterations per
+decision and root coverage remain diagnostics; search adequacy is distinct from
+competitive confidence. LOW/VERY LOW adequacy warns without changing the request.
+Larger target recommendations are suppressed when the baseline or an explicit
+decision override controls compute. Equal-time matches use isolated execution;
+fixed-iteration comparisons may use configured workers.
+
+### RAVE and PW calibration
+
+RAVE starts from the current selector's exploration. It uses the current RAVE k
+if present, otherwise 3000, with two coarse neighbors. Up to five adaptive rounds
+check geometric gaps or expand improving boundaries, followed by local exploration
+calibration. Only then does the calibrated copy face the incumbent. Stopping for
+lack of improvement is not proof of a plateau.
+
+PW starts with the incumbent's k/alpha (defaults 1.5/0.5). It tests k multiplied
+by 1/3 and 8/3, then alpha shifted by +/-0.25, then four joint neighbors (k times
+0.5/2, alpha +/-0.125, bounded to [0.05,1]). Only fully completed calibration
+allows the final PW-vs-incumbent comparison. Existing PW in the input is retained:
+this also permits refining an already widened baseline.
+
+Both searches use separate shared pools. Relative priorities are 0.25 for RAVE,
+0.20 for PW and 0.30 for confirmation, normalized over enabled stages. Mandatory
+follow-up comparisons reserve two seed pairs before optional extra samples;
+calibration caps at four pairs per contrast. Their final comparisons use
+`--max-pairs`. Unused allocations flow forward. Calibration is bounded, not an
+exhaustive or convergence-guaranteed parameter optimization.
+
+### Results and resume
+
+`candidates/best_agent.toml` is the exported nominee. Generated families also keep
+`best_full_depth_agent.toml` or `best_heuristic_cutoff_agent.toml` aliases. Reports
+record requested stages, comparisons, discarded candidates, measured work,
+shared allocations and independent confirmation uncertainty. `baseline.toml`
+records the supplied/generated starting profile; the initial depth-screen candidate
+records any calibrated horizon or explicit budget override.
+
+The initial incumbent always remains a confirmation comparator when the final
+nominee differs. `--reference` optionally adds another held-out profile from the
+same evaluator family under the study's comparison budget.
+
+Protocol **18** changes initialization and stage semantics: older studies require
+a new output directory. Resume requires the same configuration/flags and compatible
+code/native build; git commits alone do not invalidate it. Increase `--budget` to
+the new **total**, e.g. 2h to 2h30m adds 30 minutes. Frozen plans and shared pools
+are retained; resume does not rerun completed stages or automatically expand them.

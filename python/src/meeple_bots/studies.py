@@ -44,11 +44,11 @@ from .study_analysis import summarize_contrast, write_study_report, study_diagno
 GAMES = {"connect6": Connect6, "boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
          "tic-tac-toe": TicTacToe, "splendor": Splendor}
 PHASES = ("depth_screen", "exploration", "selectors", "rave", "rave_extend_1", "rave_extend_2", "rave_extend_3", "rave_extend_4", "rave_extend_5",
-          "rave_exploration", "rave_compare", "family_selection",
-          "mechanisms", "refinement", "confirmation")
-# Relative resource priorities; unspent allocations flow forward. Confirmation owns 30%.
-# RAVE owns a single 25% pool, booked at entry rather than split among stages.
-PHASE_WEIGHTS = (.08, .12, .07, .25, 0, 0, 0, 0, 0, 0, 0, .03, .08, .07, .30)
+          "rave_exploration", "rave_compare",
+          "mechanisms", "pw_k", "pw_alpha", "pw_refine", "pw_compare", "refinement", "confirmation")
+# Relative resource priorities; disabled stages get zero, unspent allocations flow forward.
+# Optional searches use shared pools booked at entry, preserving confirmation priority.
+PHASE_WEIGHTS = (.08, .12, .07, .25, 0, 0, 0, 0, 0, 0, 0, .08, .20, 0, 0, 0, .07, .30)
 RACING_PHASES = set(PHASES) - {"confirmation"}
 # Disjoint, fixed seed namespaces, including calibration. Never adapt seeds to results.
 SEED_STRIDE = 100_000
@@ -132,6 +132,26 @@ def generic_baseline(game: str) -> MctsAgent:
                      tree_reuse=False, transpositions=False)
 
 
+def _study_budget(agent: MctsAgent, calibration: dict) -> MctsAgent:
+    if calibration.get("fixed_iterations") is not None:
+        return replace(agent, iterations=calibration["fixed_iterations"], time_budget=None)
+    return replace(agent, iterations=None, time_budget=calibration["decision_seconds"])
+
+
+def _phase_enabled(name: str, request: dict) -> bool:
+    if name == "depth_screen":
+        return request.get("depth_search", False) and request["mode"] == "heuristic_cutoff"
+    if name in ("exploration", "selectors"):
+        return request.get("selection_search", False)
+    if name.startswith("rave"):
+        return request.get("rave_search", False) and "uct_rave" in request["selection_policies"]
+    if name == "mechanisms":
+        return request.get("mechanism_search", False)
+    if name.startswith("pw_"):
+        return request.get("pw_search", False) and request.get("pw_supported", False)
+    return name in ("refinement", "confirmation")
+
+
 def _timed(agent: MctsAgent, seconds: float) -> MctsAgent:
     return replace(agent, iterations=None, time_budget=seconds, root_diagnostics=False)
 
@@ -168,7 +188,8 @@ def _rank(phase: dict) -> list[str]:
         if contrast.get("purpose") == "attribution":
             continue
         result = contrast.get("result", {})
-        if result.get("score_b") is not None:
+        complete = result.get("seed_pairs", 0) >= max(2, contrast.get("target_pairs", 2))
+        if result.get("score_b") is not None and (not phase.get("incremental") or complete):
             scores[contrast["a"]].append(1 - result["score_b"])
             scores[contrast["b"]].append(result["score_b"])
     # In a common-control screen every challenger is scored against the same parent.
@@ -199,16 +220,18 @@ def _group_leaders(phase: dict) -> dict[str, str]:
 
 
 def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent | None) -> dict:
-    """Frozen sequential screens within ONE evaluator family; all matches use equal time."""
+    """Frozen incremental comparisons within one evaluator family and search budget."""
     cal, phases, request = state["calibration"], state["phases"], state["request"]
-    seconds, horizon = cal["decision_seconds"], cal["horizon"]["depth"]
-    start = replace(_timed(base, seconds), rollout_depth=horizon, tree_reuse=False, transpositions=False,
-                    selection_policy="uct", rollout_policy=UniformRandom(), progressive_bias=None)
+    horizon = cal["horizon"]["depth"]
+    start = _study_budget(base, cal)
+    if not request.get("baseline_supplied", False):
+        depth = cal["cutoff_depths"][len(cal["cutoff_depths"])//2] if request["mode"] == "heuristic_cutoff" else horizon
+        start = replace(start, rollout_depth=depth)
     agents, contrasts, groups, priority = {}, [], {}, {}
     decisions = {}
 
     def add(label, agent, group="main"):
-        agents[label] = profile_values(_timed(agent, seconds))
+        agents[label] = profile_values(_study_budget(agent, cal))
         groups.setdefault(group, []).append(label)
         priority[label] = [len(agents)]
         return label
@@ -223,42 +246,41 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
             result[group] = agent_from_values(phases[previous]["agents"][leader])
         return result
 
+    def finish():
+        return {"name": name, "agents": agents, "groups": groups, "contrasts": contrasts,
+                "incremental": True, "tie_priority": priority,
+                "rave_decisions": decisions if name.startswith("rave") else {},
+                "pw_decisions": decisions if name.startswith("pw_") else {}, "status": "pending"}
+
+    if name != "depth_screen" and not _phase_enabled(name, request):
+        previous = PHASES[PHASES.index(name)-1]
+        for group, parent in carry(previous).items():
+            add("incumbent", parent, group)
+        decisions["main"] = "disabled" if not request.get("rave_search" if name.startswith("rave") else "pw_search", False) else "unavailable"
+        return finish()
+
     if name == "depth_screen":
-        depths = cal["cutoff_depths"] if request["mode"] == "heuristic_cutoff" else [horizon]
-        for depth in depths:
-            add(f"depth-{depth}", replace(start, rollout_depth=depth))
-        names = list(agents)
-        if len(names) > 1:
-            control = names[len(names)//2]
-            for candidate in names:
-                if candidate != control:
-                    compare(control, candidate, "rollout_depth")
+        control = add("initial", start)
+        if _phase_enabled(name, request):
+            for depth in cal["cutoff_depths"]:
+                compare(control, add(f"d{depth}", replace(start, rollout_depth=depth)), "rollout_depth")
     elif name == "exploration":
-        screen = phases["depth_screen"]
-        coverage = all(c.get("result", {}).get("seed_pairs", 0) >= 4 for c in screen["contrasts"])
-        ordered = _rank(screen) or list(screen["agents"])
-        shortlist = ordered[:2] if coverage else list(screen["agents"])
-        # No early depth elimination on one minimal batch; scarce budgets keep
-        # the depths rather than pretending that unmeasured depths lost.
-        for winner in shortlist:
-            parent = agent_from_values(screen["agents"][winner])
-            group = f"d{parent.rollout_depth}"
-            control = add(f"{group}-uct-start", parent, group)
-            for c in sorted({.25, .5, 1., 1.4, 2., parent.exploration}):
-                if c != parent.exploration:
-                    candidate = add(f"{group}-uct-c{c:g}", replace(parent, exploration=c), group)
-                    compare(control, candidate, "exploration")
+        parent = next(iter(carry("depth_screen").values()))
+        control = add("incumbent", parent)
+        for c in sorted({.25, .5, 1., 1.4, 2., parent.exploration}):
+            candidate = add(f"uct-c{c:g}", replace(parent, selection_policy="uct", exploration=c))
+            compare(control, candidate, "exploration_and_selector")
     elif name == "selectors":
-        for group, parent in carry("exploration").items():
-            control = add(f"{group}-uct", parent, group)
-            if "ucb1_tuned" in request["selection_policies"]:
-                candidate = add(f"{group}-tuned", replace(parent, selection_policy="ucb1_tuned"), group)
-                compare(control, candidate, "selection_policy")
+        parent = next(iter(carry("exploration").values()))
+        control = add("incumbent", parent)
+        if "ucb1_tuned" in request["selection_policies"]:
+            compare(control, add("tuned", replace(parent, selection_policy="ucb1_tuned")), "selection_policy")
     elif name == "rave":
-        for group, parent in carry("exploration").items():
+        for group, parent in carry("selectors").items():
             if request.get("rave_search", False) and "uct_rave" in request["selection_policies"]:
-                control = add(f"{group}-rave-k3000", replace(parent, selection_policy="uct_rave", rave_equivalence=3000), group)
-                for k in (1000, 10000):
+                initial_k = parent.rave_equivalence if parent.selection_policy == "uct_rave" else 3000
+                control = add(f"{group}-rave-k{initial_k}", replace(parent, selection_policy="uct_rave", rave_equivalence=initial_k), group)
+                for k in sorted({max(1, initial_k // 3), min(2**32-1, round(initial_k * 10 / 3))}):
                     candidate = add(f"{group}-rave-k{k}", replace(parent, selection_policy="uct_rave", rave_equivalence=k), group)
                     compare(control, candidate, "rave_equivalence")
             else:
@@ -329,24 +351,48 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
                 decisions[group] = "bounded_calibration_complete"
             else:
                 decisions[group] = "rave_unavailable_or_calibration_incomplete"
-    elif name == "family_selection":
-        for group, parent in carry("rave_compare").items():
-            add(f"tuned-{group}", parent)
-        names = list(agents)
-        for i, a in enumerate(names):
-            for b in names[i+1:]:
-                compare(a, b, "tuned_depth")
     elif name == "mechanisms":
-        parent = next(iter(carry("family_selection").values()))
+        parent = next(iter(carry("rave_compare").values()))
+        control = add("incumbent", parent)
         for reuse, trans in product((False, True), repeat=2):
-            add(f"r{int(reuse)}-t{int(trans)}", replace(parent, tree_reuse=reuse, transpositions=trans))
-        names = list(agents)
-        # Full 2x2 round robin: the joint cell also competes against each single mechanism.
-        for i, a in enumerate(names):
-            for b in names[i+1:]:
-                compare(a, b, "mechanisms")
+            candidate = replace(parent, tree_reuse=reuse, transpositions=trans)
+            if candidate != parent:
+                compare(control, add(f"r{int(reuse)}-t{int(trans)}", candidate), "mechanisms")
+    elif name in ("pw_k", "pw_alpha", "pw_refine", "pw_compare"):
+        original = next(iter(carry("mechanisms").values()))
+        enabled = request.get("pw_search", False) and request.get("pw_supported", False)
+        previous = {"pw_alpha": "pw_k", "pw_refine": "pw_alpha", "pw_compare": "pw_refine"}.get(name)
+        ready = enabled
+        if previous:
+            prior = phases[previous]
+            ready = ready and bool(prior["contrasts"]) and all(
+                c.get("result", {}).get("seed_pairs", 0) >= max(2, c.get("target_pairs", 2))
+                for c in prior["contrasts"])
+        if not ready:
+            add("incumbent", original)
+            decisions["main"] = "disabled" if not request.get("pw_search") else "unavailable" if not enabled else "calibration_incomplete"
+        elif name == "pw_compare":
+            control = add("incumbent", original)
+            compare(control, add("calibrated-pw", next(iter(carry(previous).values()))), "calibrated_pw_vs_incumbent")
+            decisions["main"] = "bounded_calibration_complete"
+        else:
+            parent = replace(original, progressive_widening=True) if name == "pw_k" else next(iter(carry(previous).values()))
+            control = add("pw-incumbent", parent)
+            if name == "pw_k":
+                proposals = [(parent.progressive_widening_k * factor, parent.progressive_widening_alpha) for factor in (1/3, 8/3)]
+            elif name == "pw_alpha":
+                proposals = [(parent.progressive_widening_k, min(1., max(.05, parent.progressive_widening_alpha + delta))) for delta in (-.25, .25)]
+            else:
+                # A small joint neighborhood tests interaction without a large grid.
+                proposals = [(parent.progressive_widening_k * factor,
+                              min(1., max(.05, parent.progressive_widening_alpha + delta)))
+                             for factor, delta in product((.5, 2.), (-.125, .125))]
+            for k, alpha in proposals:
+                compare(control, add(f"pw-k{k:g}-a{alpha:g}", replace(parent,
+                        progressive_widening_k=k, progressive_widening_alpha=alpha)), name)
+            decisions["main"] = "calibrating_pw_only"
     elif name == "refinement":
-        parent = next(iter(carry("mechanisms").values()))
+        parent = next(iter(carry("pw_compare").values()))
         control = add("incumbent", parent)
         if parent.selection_policy in ("uct", "uct_rave"):
             for multiplier in (.7, 1.4):
@@ -355,8 +401,12 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
         if parent.selection_policy == "uct_rave":
             for k in (max(1, parent.rave_equivalence // 2), parent.rave_equivalence * 2):
                 compare(control, add(f"refine-k{k}", replace(parent, rave_equivalence=k)), "rave_equivalence")
+        if parent.progressive_widening:
+            for factor in (.75, 1.5):
+                compare(control, add(f"refine-pw-k{factor:g}", replace(parent, progressive_widening_k=parent.progressive_widening_k * factor)), "progressive_widening_k")
         if request["mode"] == "heuristic_cutoff":
-            for depth in sorted({max(1, min(horizon-1, round(parent.rollout_depth * f))) for f in (.75, 1.25)}):
+            maximum = request.get("max_plies", 10000) if request.get("baseline_supplied") else horizon-1
+            for depth in sorted({max(1, min(maximum, round(parent.rollout_depth * f))) for f in (.75, 1.25)}):
                 if depth != parent.rollout_depth:
                     compare(control, add(f"refine-d{depth}", replace(parent, rollout_depth=depth)), "rollout_depth")
     elif name == "confirmation":
@@ -365,8 +415,8 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
         winner = agent_from_values(prior["agents"][ranked[0]])
         # Lock the nominee before fresh seeds; confirmation cannot select a new winner by noise.
         add("finalist", winner)
-        alternatives = [agent_from_values(prior["agents"][n]) for n in ranked[1:]]
-        alternatives.append(agent_from_values(next(iter(phases["depth_screen"]["agents"].values()))))
+        alternatives = [agent_from_values(next(iter(phases["depth_screen"]["agents"].values())))]
+        alternatives.extend(agent_from_values(prior["agents"][n]) for n in ranked[1:])
         challenger = next((a for a in alternatives if profile_values(a) != profile_values(winner)), None)
         if challenger:
             compare(add("runner-up", challenger), "finalist", "confirmation", primary=True)
@@ -374,16 +424,16 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
             compare(add("reference", reference), "finalist", "reference", primary=not contrasts)
     else:
         raise ValueError(f"unknown study phase: {name}")
-    return {"name": name, "agents": agents, "groups": groups, "contrasts": contrasts,
-            "tie_priority": priority, "rave_decisions": decisions, "status": "pending"}
+    return finish()
 
 
 class StudyRunner:
-    def __init__(self, game: str, baseline: MctsAgent, *, output: Path, budget: float,
+    def __init__(self, game: str, baseline: MctsAgent | None = None, *, output: Path, budget: float,
                  reference: MctsAgent | None = None, seed: int = 42, max_pairs: int = 8,
                  confirmation_pairs: int = 32, auxiliary_pairs: int = 4,
                  decision_seconds: float | None = None, screening_seconds: float | None = None, max_plies: int = 10000,
-                 heuristic: int | None = None, target_match_time: float = 60.0, rave_search: bool = False,
+                 heuristic: int | None = None, target_match_time: float = 60.0, rave_search: bool = False, pw_search: bool = False,
+                 selection_search: bool = False, mechanism_search: bool = False, depth_search: bool = False, all_search: bool = False,
                  workers: WorkerSetting = 1, resume: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
         if game not in GAMES:
             raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
@@ -409,26 +459,35 @@ class StudyRunner:
             raise ValueError("--screening-time was removed: all candidates use the same derived decision budget")
         if heuristic is not None and (type(heuristic) is not int or heuristic not in heuristic_indices(game)):
             raise ValueError(f"unknown cutoff heuristic H{heuristic} for {game}")
-        evaluator = NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic)
-        baseline = replace(baseline, heuristic=None, cutoff_evaluator=evaluator,
-                           selection_policy="uct", rollout_policy=UniformRandom(), progressive_bias=None,
-                           tree_reuse=False, transpositions=False)
-        if reference and (reference.cutoff_evaluator != evaluator or reference.rollout_policy != UniformRandom()
-                          or reference.progressive_bias is not None):
-            raise ValueError("reference must belong to the same evaluator family with uniform rollout and no bias; compare families in a separate tournament")
+        supplied = baseline is not None
+        if baseline is None:
+            baseline = replace(generic_baseline(game), cutoff_evaluator=NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic))
+        elif heuristic is not None and baseline.cutoff_evaluator != GameHeuristic(heuristic):
+            raise ValueError("--heuristic conflicts with the supplied baseline evaluator")
+        evaluator = baseline.cutoff_evaluator
+        heuristic = evaluator.index if isinstance(evaluator, GameHeuristic) else None
+        if reference and reference.cutoff_evaluator != evaluator:
+            raise ValueError("reference must belong to the same evaluator family; compare families in a separate tournament")
         selectors = game_search_capabilities(game)["selection_policies"]
-        if reference and reference.selection_policy not in selectors:
-            raise ValueError("reference selection policy is unavailable for this game")
-        if type(rave_search) is not bool:
-            raise ValueError("rave_search must be a boolean")
-        if reference and reference.selection_policy == "uct_rave" and not rave_search:
-            raise ValueError("a RAVE reference requires --rave-search")
+        for label, agent in (("baseline", baseline), ("reference", reference)):
+            if agent and agent.selection_policy not in selectors:
+                raise ValueError(f"{label} selection policy is unavailable for this game")
+        for name, value in dict(rave_search=rave_search, pw_search=pw_search, selection_search=selection_search,
+                                mechanism_search=mechanism_search, depth_search=depth_search, all_search=all_search).items():
+            if type(value) is not bool:
+                raise ValueError(f"{name} must be a boolean")
+        rave_search, pw_search, selection_search, mechanism_search, depth_search = [
+            all_search or value for value in (rave_search, pw_search, selection_search, mechanism_search, depth_search)]
+        # Current catalog exposes UCT-RAVE exactly for deterministic search backends.
+        pw_supported = "uct_rave" in selectors
+        if not pw_supported and any(a and a.progressive_widening for a in (baseline, reference)):
+            raise ValueError("PW requires a deterministic backend")
         worker_count = resolve_workers(workers)
         self.game = create_game(game, game_params)
         self.base, self.reference = baseline, reference
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
-        request = {"version": 16, "rave_search": rave_search, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
+        request = {"version": 18, "baseline_supplied": supplied, "selection_search": selection_search, "mechanism_search": mechanism_search, "depth_search": depth_search, "pw_search": pw_search, "pw_supported": pw_supported, "rave_search": rave_search, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
                    "heuristic": heuristic, "target_match_time": target_match_time, "safety_margin": 1.2,
                    "selection_policies": selectors, "game": game, **({"game_params": game_parameters(self.game)} if game_parameters(self.game) else {}), "baseline": profile_values(baseline),
                    "reference": profile_values(reference) if reference else None,
@@ -440,7 +499,7 @@ class StudyRunner:
             if not resume:
                 raise FileExistsError(f"study exists: {self.path}; use --resume")
             self.state = json.loads(self.path.read_text())
-            if self.state["request"].get("version") != 16:
+            if self.state["request"].get("version") != 18:
                 raise ValueError("old study protocol cannot resume with single-family tuning; use a new output directory")
             # Git revision is provenance, not an execution compatibility key.
             # Keep the original revision in the saved request.
@@ -551,6 +610,8 @@ class StudyRunner:
             return
         request = self.state["request"]
         label = "Full-depth optimization" if request["mode"] == "full_depth" else f"Heuristic cutoff optimization (H{request['heuristic']})"
+        if request["baseline_supplied"]:
+            label = "Incremental optimization of supplied baseline"
         self.progress(f"Study mode: {label}. Target match time: {request['target_match_time']:g}s.")
         work = self.state.setdefault("calibration_progress", {})
         pilot_agent = replace(_iterations(self.base, 32), rollout_depth=64)
@@ -563,7 +624,10 @@ class StudyRunner:
             work["pilot"] = pilot
             self.save()
         length = max(1, work["mean_plies"])
-        target = request["decision_seconds"] or request["target_match_time"] / (length * request["safety_margin"])
+        target = request["decision_seconds"] or (self.base.time_budget if request["baseline_supplied"] else None) or request["target_match_time"] / (length * request["safety_margin"])
+        fixed_iterations = self.base.iterations if request["baseline_supplied"] and request["decision_seconds"] is None else None
+        if request["baseline_supplied"]:
+            work["horizon"] = {"depth": self.base.rollout_depth, "kind": "baseline", "samples": []}
         samples = work.setdefault("horizon_samples", [])
         depth = samples[-1]["depth"] if samples else min(64, request["max_plies"])
         neutral = replace(self.base, heuristic=None, cutoff_evaluator=NeutralEvaluator())
@@ -596,26 +660,28 @@ class StudyRunner:
             depth = min(depth * 2, request["max_plies"])
         horizon = work["horizon"]
         depths = cutoff_depths(horizon["depth"]) if request["mode"] == "heuristic_cutoff" else []
-        if request["mode"] == "heuristic_cutoff" and not depths:
+        if request["mode"] == "heuristic_cutoff" and not depths and not request["baseline_supplied"]:
             raise ValueError("the reference horizon leaves no distinct heuristic cutoff depth")
-        if self.reference:
+        if self.reference and not request["baseline_supplied"]:
             if (request["mode"] == "full_depth" and self.reference.rollout_depth != horizon["depth"]) or (
                     request["mode"] == "heuristic_cutoff" and self.reference.rollout_depth >= horizon["depth"]):
                 raise ValueError("reference horizon belongs to another family; compare it in a separate tournament")
-        operating_depth = depths[len(depths)//2] if depths else horizon["depth"]
+        operating_depth = self.base.rollout_depth if request["baseline_supplied"] else depths[len(depths)//2] if depths else horizon["depth"]
         if "position_timings" not in work:
-            probe = replace(_timed(self.base, target), rollout_depth=operating_depth, root_diagnostics=True)
+            probe = replace(self.base if fixed_iterations else _timed(self.base, target), rollout_depth=operating_depth, root_diagnostics=True)
             bench = benchmark_mcts_agent(self.game, probe, round(length), request["seed"] + 47)
             work["position_timings"] = [asdict(t) for t in bench.position_timings]
             self.save()
         adequacy = search_adequacy(work["position_timings"], request["target_match_time"])
-        if request["decision_seconds"] is not None:
+        if request["decision_seconds"] is not None or request["baseline_supplied"]:
             # Changing the match target cannot affect an explicit per-decision override.
             adequacy["suggested_targets"] = []
+        if fixed_iterations:
+            target = mean(t["milliseconds"] for t in work["position_timings"]) / 1000
         center = max(1, round(adequacy["median_iterations_per_decision"]))
         cal = {"mean_plies": length, "estimated_game_decisions": length, "target_match_time": request["target_match_time"],
                "safety_margin": request["safety_margin"], "safety_adjusted_decisions": length * request["safety_margin"],
-               "decision_seconds": target, "decision_time_source": "explicit_override" if request["decision_seconds"] else "target_match_time",
+               "decision_seconds": target, "fixed_iterations": fixed_iterations, "decision_time_source": "explicit_override" if request["decision_seconds"] else "baseline" if request["baseline_supplied"] else "target_match_time",
                "estimated_match_seconds": length * target, "horizon": horizon, "cutoff_depths": depths,
                "center_iterations": center, "operating_point": {"iterations": center, "depth": operating_depth,
                    "interpretation": "Measured work at the requested time; diagnostic only, never a winner-selection budget."},
@@ -640,7 +706,7 @@ class StudyRunner:
     def _estimated_round_seconds(self, phase: dict) -> float:
         cal = self.state["calibration"]
         return cal["mean_plies"] * sum(
-            phase["agents"][c[role]]["time_budget"]
+            (phase["agents"][c[role]].get("time_budget") or phase["agents"][c[role]]["iterations"] * cal["seconds_per_iteration"])
             for c in phase["contrasts"] for role in ("a", "b"))
 
     def _recover(self):
@@ -674,6 +740,8 @@ class StudyRunner:
         elapsed = sum(result.get(t, {}).get("total_seconds", 0) for t in ("timing_a", "timing_b"))
         if result.get("seed_pairs", 0) and elapsed:
             return elapsed / result["seed_pairs"]
+        if self.state["calibration"].get("fixed_iterations"):
+            return self._estimated_round_seconds({**phase, "contrasts": [contrast]})
         # Recent completed candidate games replace the weak pilot's length estimate.
         # Normalize by decision budgets; retain 20% headroom for different opponents.
         for previous in reversed(list(self.state["phases"].values())):
@@ -691,20 +759,24 @@ class StudyRunner:
                 return 1.2 * median(lengths) * sum(phase["agents"][contrast[role]]["time_budget"] for role in ("a", "b"))
         return self._estimated_round_seconds({**phase, "contrasts": [contrast]})
 
-    def _plan_rave(self, phase, weights):
-        pool = self.state.get("rave_budget")
+    def _plan_optional_search(self, phase, weights):
+        is_pw = phase["name"].startswith("pw_")
+        family = "pw" if is_pw else "rave"
+        pool = self.state.get(f"{family}_budget")
         if pool is None:
-            entry = PHASES.index("rave")
+            entry = PHASES.index("pw_k" if is_pw else "rave")
             allocation = max(0, self.budget - self.spent) * weights[entry] / sum(weights[entry:])
-            pool = self.state["rave_budget"] = {
+            pool = self.state[f"{family}_budget"] = {
                 "allocated_seconds": allocation, "started_spent": self.spent,
-                "interpretation": "Shared by all RAVE stages; future mandatory comparisons are reserved before optional rounds."}
-            self.progress(f"RAVE shared budget: {allocation/60:.1f}min; minimum coverage first, then adaptive rounds.")
+                "interpretation": f"Shared by all {family.upper()} stages; future mandatory comparisons are reserved before optional rounds."}
+            self.progress(f"{family.upper()} shared budget: {allocation/60:.1f}min; minimum coverage first, then adaptive rounds.")
         spent = max(0, self.spent - pool["started_spent"])
         remaining = min(max(0, pool["allocated_seconds"] - spent), max(0, self.budget - self.spent))
         # Keep two seed pairs for each exploration contrast and final comparison;
         # the initial screen also protects the obligatory first geometric refinement.
         future_pairs = 10 if phase["name"] == "rave" else 2 if phase["name"] == "rave_exploration" else 0 if phase["name"] == "rave_compare" else 6
+        if is_pw:
+            future_pairs = {"pw_k": 14, "pw_alpha": 10, "pw_refine": 2, "pw_compare": 0}[phase["name"]]
         reserve = 0.0
         for members in phase["groups"].values():
             control = members[0]
@@ -720,7 +792,7 @@ class StudyRunner:
         counts = [2 if minimum <= available + 1e-9 else 0 for _ in contrasts]
         left = available - sum(n*c for n,c in zip(counts, costs))
         cap = self.state["request"]["max_pairs"]
-        if phase["name"] != "rave_compare":
+        if phase["name"] not in ("rave_compare", "pw_compare"):
             cap = min(cap, 4)  # Cheap sequential calibration; preserve optional exploration.
         if counts and all(counts):
             for _ in range(2, cap):
@@ -731,17 +803,18 @@ class StudyRunner:
         for contrast, count in zip(contrasts, counts):
             contrast.update(target_pairs=count, workers=1, timing_mode="isolated")
             if not count:
-                contrast.update(screening_status="not_prioritized", stop_reason="shared_rave_budget_insufficient_coverage")
+                contrast.update(screening_status="not_prioritized", stop_reason=f"shared_{family}_budget_insufficient_coverage")
         phase["planned_pairs"] = max(counts, default=0)
         phase["estimated_seconds"] = sum(n*c for n,c in zip(counts, costs))
         pool["spent_seconds_at_last_plan"] = spent
 
     def _plan_phase(self, phase, index):
         enabled = self.state["request"]["rave_search"] and "uct_rave" in self.state["request"]["selection_policies"]
-        weights = [weight if enabled or not name.startswith("rave") else 0
+        pw_enabled = self.state["request"].get("pw_search", False) and self.state["request"].get("pw_supported", False)
+        weights = [weight if _phase_enabled(name, self.state["request"]) else 0
                    for name, weight in zip(PHASES, PHASE_WEIGHTS)]
-        if enabled and phase["name"].startswith("rave"):
-            self._plan_rave(phase, weights)
+        if (enabled and phase["name"].startswith("rave")) or (pw_enabled and phase["name"].startswith("pw_")):
+            self._plan_optional_search(phase, weights)
             return
         available = max(0, self.budget - self.spent) * weights[index] / sum(weights[index:])
         request = self.state["request"]
@@ -781,10 +854,13 @@ class StudyRunner:
         return
 
     def _announce_plan(self):
+        self.progress("Enabled stages: " + ", ".join(n for n in PHASES if _phase_enabled(n, self.state["request"])))
+        pw_requested = self.state["request"].get("pw_search", False)
+        self.progress("PW search: " + ("enabled" if pw_requested and self.state["request"].get("pw_supported") else "unavailable for this game" if pw_requested else "disabled (enable with --pw-search)"))
         requested = self.state["request"]["rave_search"]
         supported = "uct_rave" in self.state["request"]["selection_policies"]
         self.progress("RAVE search: " + ("enabled" if requested and supported else "unavailable for this game" if requested else "disabled (enable with --rave-search)"))
-        self.progress("Equal-time comparisons; unused phase budget rolls forward; confirmation has a reserved allocation.")
+        self.progress(("Baseline fixed-iteration comparisons" if self.state["calibration"].get("fixed_iterations") else "Equal-time comparisons") + "; unused phase budget rolls forward; refinement and confirmation always remain in the pipeline.")
 
     def run(self):
         try:
@@ -859,8 +935,10 @@ class StudyRunner:
                     profiles[f"{phase['name']}-{leader}"] = phase["agents"][leader]
         confirmation = self.state["phases"].get("confirmation", {})
         if "finalist" in confirmation.get("agents", {}):
-            label = "best_full_depth_agent" if self.state["request"]["mode"] == "full_depth" else "best_heuristic_cutoff_agent"
-            profiles[label] = confirmation["agents"]["finalist"]
+            if not self.state["request"]["baseline_supplied"]:
+                label = "best_full_depth_agent" if self.state["request"]["mode"] == "full_depth" else "best_heuristic_cutoff_agent"
+                profiles[label] = confirmation["agents"]["finalist"]
+            profiles["best_agent"] = confirmation["agents"]["finalist"]
         directory = self.output / "candidates"
         for name, values in profiles.items():
             export_profile(directory / f"{name}.toml", name, agent_from_values(values))
@@ -872,6 +950,6 @@ def run_study(game: str, *, output: Path, budget: float, baseline: Path | None =
               reference: Path | None = None, **kwargs) -> dict:
     if game not in GAMES:
         raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
-    base = _load_mcts_profile(baseline).agent if baseline else generic_baseline(game)
+    base = _load_mcts_profile(baseline).agent if baseline else None
     ref = _load_mcts_profile(reference).agent if reference else None
     return StudyRunner(game, base, output=output, budget=budget, reference=ref, **kwargs).run()
