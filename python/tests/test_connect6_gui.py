@@ -6,6 +6,10 @@ import time
 import unittest
 import shutil
 import subprocess
+from unittest.mock import patch
+from meeple_bots.gui import baselines
+from meeple_bots.gui.player import parse_gui_player
+from meeple_bots.games.connect6.gui.controller import Connect6Gui
 
 from meeple_bots.games.connect6.gui import Connect6Application
 from meeple_bots.extraction import extract_tournament
@@ -79,6 +83,11 @@ global.fetch=async()=>({ok:true,json:async()=>({})});
         # Disable the initial asynchronous poll; exercise rendering and submission directly.
         script = script.rsplit('    poll();', 1)[0]
         checks = r"""
+for(const i of [0,1]) {
+ if(document.querySelector(`#progressive-widening-${i}`).checked !== baseline.progressive_widening)throw Error('PW baseline toggle missing');
+ if(Number(document.querySelector(`#pw-k-${i}`).value) !== baseline.progressive_widening_k)throw Error('PW baseline k missing');
+ if(Number(document.querySelector(`#pw-alpha-${i}`).value) !== baseline.progressive_widening_alpha)throw Error('PW baseline alpha missing');
+}
 state={board_size:6,board:Array(36).fill(null),status:'waiting_human',active_player:1,
  placements_remaining:2,legal_actions:[0,1],moves:[],session_id:'session'};
 render(); const first=board.children[0]; render();
@@ -99,6 +108,17 @@ for(const i of [0,1]) {
   document.querySelector(`#selection-policy-${i}`).value=policy;updateAgentFields();
   if(!document.querySelector(`#rave-label-${i}`).classList.contains('hidden')||'rave_equivalence' in playerConfig(i))throw Error('irrelevant RAVE field');
  }
+ for(const enabled of [true,false]) {
+  document.querySelector(`#progressive-widening-${i}`).checked=enabled;
+  document.querySelector(`#pw-k-${i}`).value='2.5';
+  document.querySelector(`#pw-alpha-${i}`).value='0.75';
+  updateAgentFields();
+  for(const field of ['k','alpha']) {
+   if(document.querySelector(`#pw-${field}-label-${i}`).classList.contains('hidden')===enabled)throw Error('incorrect PW visibility');
+  }
+  const pw=playerConfig(i);
+  if(pw.progressive_widening!==enabled || pw.progressive_widening_k!==2.5 || pw.progressive_widening_alpha!==0.75)throw Error('incorrect PW payload');
+ }
  for(const kind of ['human','random']) {
   document.querySelector(`#player-${i}`).value=kind;updateAgentFields();
   if(!document.querySelector(`#mcts-${i}`).classList.contains('hidden')||Object.keys(playerConfig(i)).length!==1)throw Error('MCTS fields on non-MCTS player');
@@ -109,6 +129,32 @@ for(const i of [0,1]) {
         result=subprocess.run([shutil.which('node'), '-e', harness+script+checks], capture_output=True, text=True)
         self.assertEqual(result.returncode,0,result.stderr)
 
+    def test_pw_baseline_reaches_agent_and_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'connect6-baseline.toml'
+            path.write_text('iterations=8\nrollout_depth=36\nprogressive_widening=true\nprogressive_widening_k=2.5\nprogressive_widening_alpha=0.75\n')
+            with patch.object(baselines, '_baseline_path', return_value=path):
+                defaults = baselines._load_gui_baseline(path.name)
+            player = parse_gui_player({'kind': 'mcts'}, 'first', default_rollout_depth=36, default_mcts=defaults)
+            gui = Connect6Gui(board_size=6)
+            self.addCleanup(gui.cancel)
+            agent = gui._agent(player, gui._cancelled)
+            self.assertTrue(agent.progressive_widening)
+            self.assertEqual(agent.progressive_widening_k, 2.5)
+            self.assertEqual(agent.progressive_widening_alpha, .75)
+            player = parse_gui_player({'kind': 'mcts', 'progressive_widening': False}, 'first', default_rollout_depth=36, default_mcts=defaults)
+            self.assertFalse(gui._agent(player, gui._cancelled).progressive_widening)
+
+    def test_invalid_pw_does_not_replace_running_game(self):
+        app = Connect6Application()
+        self.addCleanup(app.cancel)
+        state = self.start(app)
+        for key, value in (('progressive_widening_k', 0), ('progressive_widening_alpha', 0),
+                           ('progressive_widening_alpha', 1.1), ('progressive_widening', 'true')):
+            with self.assertRaises((ValueError, TypeError)):
+                app.start(dict(board_size=6, first={'kind': 'mcts', 'progressive_widening': True, key: value}, second={'kind': 'human'}))
+            self.assertEqual(app.snapshot()['session_id'], state['session_id'])
+
     def test_automated_modes_trace_and_extraction(self):
         for selector in ('uct','ucb1_tuned','uct_rave'):
             with self.subTest(selector=selector), tempfile.TemporaryDirectory() as tmp:
@@ -116,7 +162,8 @@ for(const i of [0,1]) {
                 try:
                     app.start(dict(board_size=6, seed=42,minimum_move_seconds=0,save_trace=True,
                                    first=dict(kind='mcts',iterations=8,rollout_depth=36,
-                                              selection_policy=selector,rave_equivalence=20000,transpositions=True,tree_reuse=True),
+                                              selection_policy=selector,rave_equivalence=20000,transpositions=True,tree_reuse=True,
+                                              progressive_widening=True,progressive_widening_k=2.5,progressive_widening_alpha=.75),
                                    second=dict(kind='random')))
                     state=self.wait(app,lambda s:s['status']=='finished')
                     self.assertIsNone(state['trace_error'])
@@ -125,6 +172,9 @@ for(const i of [0,1]) {
                     path=Path(state['trace_path'])
                     header=json.loads(path.read_text().splitlines()[0])
                     self.assertEqual(header['game_params'],{'board_size':6})
+                    for key, value in dict(progressive_widening=True, progressive_widening_k=2.5, progressive_widening_alpha=.75).items():
+                        self.assertEqual(state['players'][0][key], value)
+                        self.assertEqual(header['agents'][0][key], value)
                     self.assertTrue(extract_tournament(path,Path(tmp)/'data')['complete'])
                 finally: app.cancel()
 

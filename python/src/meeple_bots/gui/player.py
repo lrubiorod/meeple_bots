@@ -27,6 +27,9 @@ class GuiPlayer:
     transpositions: bool = False
     selection_policy: str = "uct"
     rave_equivalence: int = 1000
+    progressive_widening: bool = False
+    progressive_widening_k: float = 1.5
+    progressive_widening_alpha: float = 0.5
 
     def __post_init__(self) -> None:
         if self.kind not in ("human", "random", "mcts"):
@@ -42,6 +45,10 @@ class GuiPlayer:
                 transpositions=self.transpositions,
                 selection_policy=self.selection_policy,
                 rave_equivalence=self.rave_equivalence,
+                progressive_widening=self.progressive_widening,
+                progressive_widening_k=self.progressive_widening_k,
+                progressive_widening_alpha=self.progressive_widening_alpha,
+
             )
 
     def as_dict(self) -> dict[str, object]:
@@ -57,6 +64,10 @@ class GuiPlayer:
             "tree_reuse": self.tree_reuse,
             "transpositions": self.transpositions,
             "selection_policy": self.selection_policy,
+            "progressive_widening": self.progressive_widening,
+            "progressive_widening_k": self.progressive_widening_k,
+            "progressive_widening_alpha": self.progressive_widening_alpha,
+
             **({"rave_equivalence": self.rave_equivalence} if self.selection_policy == "uct_rave" else {}),
         }
 
@@ -147,4 +158,8 @@ def parse_gui_player(
         transpositions=raw.get("transpositions", False),
         selection_policy=raw.get("selection_policy", "uct"),
         rave_equivalence=raw.get("rave_equivalence", 1000),
+        progressive_widening=raw.get("progressive_widening", False),
+        progressive_widening_k=raw.get("progressive_widening_k", 1.5),
+        progressive_widening_alpha=raw.get("progressive_widening_alpha", 0.5),
+
     )

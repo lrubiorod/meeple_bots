@@ -70,3 +70,8 @@ select 13 explicitly to use its intended board size. Configure iterations/time, 
 exploration, depth, tree reuse and transpositions independently for each player.
 The interface includes move history, last-move marking, pacing, seeded restarts
 and optional extractable traces under `results/gui/connect6` retaining board size.
+
+MCTS controls include Progressive Widening (PW) for either player, with editable
+`k > 0` and `0 < alpha <= 1`. The k/alpha inputs appear only when PW is enabled;
+all MCTS controls are hidden for human/random players. PW defaults load from
+`configs/mcts/connect6-baseline.toml`, and saved traces retain the chosen values.

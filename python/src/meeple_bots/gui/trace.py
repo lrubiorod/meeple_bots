@@ -107,6 +107,10 @@ def _agent_dict(name: str, player: GuiPlayer) -> dict[str, object]:
         "rollout_depth": player.rollout_depth,
         "exploration": player.exploration,
         "selection_policy": player.selection_policy,
+        "progressive_widening": player.progressive_widening,
+        "progressive_widening_k": player.progressive_widening_k,
+        "progressive_widening_alpha": player.progressive_widening_alpha,
+
         **({"rave_equivalence": player.rave_equivalence} if player.selection_policy == "uct_rave" else {}),
         "heuristic": player.heuristic,
         "cutoff_evaluator": evaluator,
