@@ -448,12 +448,15 @@ def write_family_study_report(output, state):
              f'<h1>{escape(state["request"]["game"])} — {escape(state["request"]["mode"])}</h1>',
              f'<p>Status: {escape(state["status"])}. Used {state["spent_seconds"]:.1f}/{state["budget_seconds"]:.1f}s.</p>',
              '<p><a href="summary.json">Summary and frozen comparisons</a> · <a href="study.json">Checkpoint</a></p>',
+             f'<p>RAVE search requested: {state["request"].get("rave_search", False)}; supported: {"uct_rave" in state["request"].get("selection_policies", [])}.</p>',
              '<h2>Calibration and search adequacy</h2>',
              _table(['Measurement', 'Value'], [(k, json.dumps(cal.get(k))) for k in
                     ('target_match_time', 'estimated_game_decisions', 'safety_margin', 'decision_seconds', 'decision_time_source', 'cutoff_depths')])]
     parts.append(_table(['Sampled player decisions', 'Search ms', 'Iterations', 'Legal actions', 'Terminal / cutoff simulations'],
                         [(t['sampled_ply'], t['milliseconds'], t['iterations'], t['legal_actions'],
                           f"{t.get('terminal_simulations')} / {t.get('cutoff_simulations')}") for t in cal.get('position_timings', [])]))
+    if state.get('rave_budget'):
+        parts.append('<h2>Shared RAVE budget</h2><pre>' + escape(json.dumps(state['rave_budget'], indent=2)) + '</pre>')
     horizon = cal.get("horizon", {})
     parts.append(_table(['Horizon kind', 'Decision depth', 'Measured terminal fraction'], [(horizon.get('kind'), horizon.get('depth'), horizon.get('terminal_fraction'))]))
     parts.append('<pre>' + escape(json.dumps(cal.get('search_adequacy', {}), indent=2)) + '</pre>')
@@ -461,6 +464,8 @@ def write_family_study_report(output, state):
     parts.append('<h2>Independent competitive evidence</h2><pre>' + escape(json.dumps(summary['final_selection'], indent=2)) + '</pre>')
     for name, phase in state['phases'].items():
         parts.append(f'<h2>{escape(name)} — {escape(phase["status"])}</h2>')
+        if phase.get('rave_decisions'):
+            parts.append(_table(['Depth family', 'RAVE calibration decision'], phase['rave_decisions'].items()))
         parts.append(_table(['A', 'B', 'Changed factor', 'Pairs', 'B score', '95% CI', 'Disposition'], [
             (c['a'], c['b'], c['factor'], (r := c.get('result', {})).get('seed_pairs', 0), r.get('score_b'),
              r.get('ci95_b'), c.get('stop_reason', r.get('verdict', 'pending'))) for c in phase['contrasts']]))

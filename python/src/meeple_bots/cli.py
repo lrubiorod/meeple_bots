@@ -378,6 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--baseline", type=Path, help="starting MCTS profile; mode is controlled by --heuristic, not by this profile")
     study.add_argument("--heuristic", type=lambda v: int(v.lower().removeprefix("h")), help="fixed cutoff heuristic index, e.g. h1; omitted: uninformed full-depth optimization")
     study.add_argument("--target-match-time", default="60s", help="approximate compute per match, e.g. 60s or 2m; independent of --budget")
+    study.add_argument("--rave-search", action="store_true", help="enable progressive RAVE calibration and comparison when supported; disabled by default")
     study.add_argument("--reference", type=Path, help="held-out calibrated profile, used only in confirmation")
     study.add_argument("--budget", required=True, help="total study time, e.g. 20m or 2h; includes calibration")
     study.add_argument("--output", type=Path, help="study directory; default: results/studies/GAME-study")
@@ -413,7 +414,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output = args.output or Path("results/studies") / f"{args.game}-study"
             result = run_study(args.game, output=output, budget=duration_seconds(args.budget),
                                baseline=args.baseline, reference=args.reference, seed=args.seed,
-                               heuristic=args.heuristic, target_match_time=duration_seconds(args.target_match_time),
+                               heuristic=args.heuristic, rave_search=args.rave_search, target_match_time=duration_seconds(args.target_match_time),
                                max_pairs=args.max_pairs, confirmation_pairs=args.confirmation_pairs, decision_seconds=args.decision_time,
                                screening_seconds=args.screening_time, auxiliary_pairs=args.auxiliary_pairs,
                                max_plies=args.max_plies, workers=args.workers, resume=args.resume, game_params=args.game_params,

@@ -524,6 +524,22 @@ python -m meeple_bots study --game splendor --heuristic h1 \
   --output results/studies/splendor-h1 --resume
 ```
 
+RAVE search is **disabled by default**, in both study modes. Add `--rave-search`
+to enable its progressive calibration and comparison with the previous selector:
+
+```bash
+python -m meeple_bots study --game connect6 --game-param board_size=13 \
+  --budget 4h --target-match-time 60s --rave-search \
+  --output results/studies/connect6-13-full-rave
+```
+
+Without the flag, RAVE stages have zero allocation and run no matches; their
+budget is redistributed across the active phases. Checkpoints/reports retain
+empty stage entries to make the omission explicit and keep seed namespaces stable.
+Unsupported games skip RAVE even when requested, with a console notice. The option
+is frozen in the checkpoint; changing it requires a new output directory.
+An explicitly supplied RAVE reference also requires `--rave-search`.
+
 Connect6 currently has no game heuristic: its normal study works, while requesting
 an unavailable heuristic produces an explicit error. Game parameters are retained
 in checkpoints, all recreated match instances, worker transport and trace headers.
@@ -601,13 +617,42 @@ separately using actual paired games and intervals.
    no reuse/transpositions, no MAST or Progressive Bias. The time operating point
    stays fixed; depth-specific match measurements expose different iteration costs.
 4. **Selectors.** Compare each depth's calibrated UCT with UCB1-Tuned.
-5. **RAVE.** When the native catalog advertises UCT-RAVE, test k=100/1000/3000/10000/20000,
-   starting from that depth's calibrated UCT exploration, against its best selector.
-   Budget-limited plans prioritize 1000 and 20000 before filling the remaining
-   grid, so the high-k region is not always omitted. Local refinement can extend
-   beyond the initial range: a winner at 20000 tests 10000 and 40000.
-   Stochastic Splendor does not advertise RAVE and skips this sweep. No new search
-   algorithm is introduced.
+5. **Optional progressive RAVE calibration (`--rave-search`).** Only when explicitly
+   requested and the native catalog advertises UCT-RAVE,
+   start with k=1000/3000/10000, using 3000 as the common control and the
+   calibrated UCT C. After a completed screen (at least two paired seeds per
+   contrast), always check geometric midpoints around the selected k: a winner
+   at 3000 tests 1732 and 5477. A promising winner at 10000 tests 5477 and 20000.
+   Subsequent rounds refine around an improving challenger (observed score >=55%);
+   an interior winner uses the nearest previously tested neighbors, while a
+   promising upper-bound winner also doubles k. A lower-bound winner can test k/2.
+   Already tested/duplicate values are excluded; integer values stay positive.
+   There are at most five adaptive rounds, with at most two new values each.
+   The 55% rule allocates exploratory work, not statistical significance or a
+   guarantee of finding the optimal range. Without an improving challenger,
+   stop with `no_clear_improvement_not_proven_plateau`; missing/incomplete evidence
+   is explicitly reported and cannot trigger another round.
+   Next compare the selected RAVE with C/2 and 2*C. Only after this bounded
+   calibration is complete does `rave_compare` pit the calibrated RAVE against
+   the previous best UCT/UCB1-Tuned. RAVE-versus-RAVE scores never select the
+   winner of the selector comparison. If calibration cannot finish, retain the
+   previous selector and report RAVE as uncalibrated, not disproven.
+   All eight RAVE stages share one pool with a 25% resource priority, booked
+   once on entry. There are no per-round percentage quotas. Every stage reserves
+   minimum coverage for the remaining exploration/final comparison (the initial
+   screen also protects its mandatory geometric refinement). It funds at least
+   two paired seeds for every contrast before adding extra pairs; if full coverage
+   cannot fit, the stage is explicitly untested rather than partly calibrated.
+   Calibration rounds cap samples at four pairs per contrast (or --max-pairs if
+   smaller); the final selector comparison can use the full --max-pairs cap.
+   New plans use recent measured match costs with 20% headroom instead of retaining
+   an inflated pilot length forever. Pair counts are frozen before each stage's
+   matches. Unspent pool funds remain available to subsequent RAVE stages, then
+   return to the rest of the study. Overall confirmation retains its 30% priority.
+   The pool and plans survive resume; an already booked pool is not enlarged by
+   increasing the total budget on resume. Each
+   stage freezes its plan and uses a separate seed namespace, including on resume.
+   Stochastic Splendor skips these stages because it does not advertise RAVE.
 6. **Tuned depth selection.** Only now compare the surviving depths with their
    tuned parameters/selectors. In normal mode there is only one full-depth family.
 7. **Mechanisms.** Test all four reuse/transposition combinations with the selected
@@ -662,9 +707,9 @@ Generated profiles never replace shared baselines automatically.
 
 ### Migration from mixed-family studies
 
-Protocol 11 replaces the old full-versus-neutral/H0/H1 admission pipeline. Old
+Protocol 16 introduces a larger shared RAVE budget for the optional progressive calibration pipeline and replaces the old full-versus-neutral/H0/H1 admission pipeline. Old
 checkpoints are rejected without modification: use a new output directory rather
-than mixing old matches with the new methodology. Resuming protocol 11 retains
+than mixing old matches with the new methodology. Resuming protocol 16 retains
 frozen plans and flushed games; `--budget` is the new total allowance. Changes to
 parameters, target time, evaluator or executable code require a new directory.
 A Git commit alone still does not invalidate a compatible checkpoint.

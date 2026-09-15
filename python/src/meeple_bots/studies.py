@@ -43,10 +43,12 @@ from .study_analysis import summarize_contrast, write_study_report, study_diagno
 
 GAMES = {"connect6": Connect6, "boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
          "tic-tac-toe": TicTacToe, "splendor": Splendor}
-PHASES = ("depth_screen", "exploration", "selectors", "rave", "family_selection",
+PHASES = ("depth_screen", "exploration", "selectors", "rave", "rave_extend_1", "rave_extend_2", "rave_extend_3", "rave_extend_4", "rave_extend_5",
+          "rave_exploration", "rave_compare", "family_selection",
           "mechanisms", "refinement", "confirmation")
 # Relative resource priorities; unspent allocations flow forward. Confirmation owns 30%.
-PHASE_WEIGHTS = (.10, .14, .08, .12, .04, .12, .10, .30)
+# RAVE owns a single 25% pool, booked at entry rather than split among stages.
+PHASE_WEIGHTS = (.08, .12, .07, .25, 0, 0, 0, 0, 0, 0, 0, .03, .08, .07, .30)
 RACING_PHASES = set(PHASES) - {"confirmation"}
 # Disjoint, fixed seed namespaces, including calibration. Never adapt seeds to results.
 SEED_STRIDE = 100_000
@@ -198,6 +200,7 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
     start = replace(_timed(base, seconds), rollout_depth=horizon, tree_reuse=False, transpositions=False,
                     selection_policy="uct", rollout_policy=UniformRandom(), progressive_bias=None)
     agents, contrasts, groups, priority = {}, [], {}, {}
+    decisions = {}
 
     def add(label, agent, group="main"):
         agents[label] = profile_values(_timed(agent, seconds))
@@ -247,17 +250,82 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
                 candidate = add(f"{group}-tuned", replace(parent, selection_policy="ucb1_tuned"), group)
                 compare(control, candidate, "selection_policy")
     elif name == "rave":
-        ucts = carry("exploration")
+        for group, parent in carry("exploration").items():
+            if request.get("rave_search", False) and "uct_rave" in request["selection_policies"]:
+                control = add(f"{group}-rave-k3000", replace(parent, selection_policy="uct_rave", rave_equivalence=3000), group)
+                for k in (1000, 10000):
+                    candidate = add(f"{group}-rave-k{k}", replace(parent, selection_policy="uct_rave", rave_equivalence=k), group)
+                    compare(control, candidate, "rave_equivalence")
+            else:
+                add(f"{group}-selector", carry("selectors")[group], group)
+                decisions[group] = "unavailable" if request.get("rave_search") else "disabled"
+    elif name.startswith("rave_extend_"):
+        previous = PHASES[PHASES.index(name)-1]
+        prior = phases[previous]
+        for group, parent in carry(previous).items():
+            control = add(f"{group}-incumbent", parent, group)
+            evidence = [c for c in prior["contrasts"] if c["b"] in prior["groups"][group]]
+            if not evidence:
+                decisions[group] = prior.get("rave_decisions", {}).get(group, "unavailable")
+                continue
+            complete = all(c.get("result", {}).get("seed_pairs", 0) >= max(2, c.get("target_pairs", 2)) for c in evidence)
+            if not complete:
+                decisions[group] = "insufficient_budget_or_evidence"
+                continue
+            # The first refinement always checks gaps. Later rounds require an
+            # improving challenger, independently of the previous non-RAVE selector.
+            improved = any(prior["agents"][c["b"]]["rave_equivalence"] == parent.rave_equivalence
+                           and c["result"].get("score_b", 0) >= .55 for c in evidence)
+            if previous != "rave" and not improved:
+                decisions[group] = "no_clear_improvement_not_proven_plateau"
+                continue
+            tested = {v["rave_equivalence"] for stage in PHASES[PHASES.index("rave"):PHASES.index(name)]
+                      for member in phases[stage]["groups"][group]
+                      if (v := phases[stage]["agents"][member])["selection_policy"] == "uct_rave"}
+            k = parent.rave_equivalence
+            below = max((v for v in tested if v < k), default=None)
+            above = min((v for v in tested if v > k), default=None)
+            proposed = []
+            if above is None and improved:
+                proposed.append(min(2**32 - 1, k * 2))
+            if below is None:
+                proposed.append(max(1, k // 2))
+            if below is not None:
+                proposed.append(round(math.sqrt(below * k)))
+            if above is not None:
+                proposed.append(round(math.sqrt(k * above)))
+            for candidate_k in dict.fromkeys(proposed):
+                if candidate_k not in tested:
+                    compare(control, add(f"{group}-rave-k{candidate_k}", replace(parent, rave_equivalence=candidate_k), group), "rave_equivalence")
+            decisions[group] = "refining_geometric_neighbors" if any(c["a"] == control for c in contrasts) else "no_untested_neighbors"
+    elif name == "rave_exploration":
+        prior = phases["rave_extend_5"]
+        for group, parent in carry("rave_extend_5").items():
+            control = add(f"{group}-rave", parent, group)
+            evidence = [c for c in prior["contrasts"] if c["b"] in prior["groups"][group]]
+            ready = all(c.get("result", {}).get("seed_pairs", 0) >= max(2, c.get("target_pairs", 2)) for c in evidence)
+            reason = prior.get("rave_decisions", {}).get(group, "unavailable")
+            if not ready or reason in ("insufficient_budget_or_evidence", "unavailable", "disabled"):
+                decisions[group] = "insufficient_budget_or_evidence" if not ready else reason
+                continue
+            decisions[group] = "extension_limit" if evidence else reason
+            for factor in (.5, 2.):
+                value = max(.01, parent.exploration * factor)
+                compare(control, add(f"{group}-rave-c{value:g}", replace(parent, exploration=value), group), "exploration")
+    elif name == "rave_compare":
+        prior = phases["rave_exploration"]
         for group, parent in carry("selectors").items():
             control = add(f"{group}-selector", parent, group)
-            if "uct_rave" in request["selection_policies"]:
-                # Cover medium and high AMAF persistence before filling the grid:
-                # budget-limited plans must not omit the entire high-k region.
-                for k in (1000, 20000, 100, 3000, 10000):
-                    candidate = add(f"{group}-rave-k{k}", replace(ucts[group], selection_policy="uct_rave", rave_equivalence=k), group)
-                    compare(control, candidate, "rave")
+            evidence = [c for c in prior["contrasts"] if c["b"] in prior["groups"][group]]
+            ready = bool(evidence) and all(c.get("result", {}).get("seed_pairs", 0) >= max(2, c.get("target_pairs", 2)) for c in evidence)
+            if ready:
+                candidate = add(f"{group}-calibrated-rave", carry("rave_exploration")[group], group)
+                compare(control, candidate, "calibrated_rave_vs_selector")
+                decisions[group] = "bounded_calibration_complete"
+            else:
+                decisions[group] = "rave_unavailable_or_calibration_incomplete"
     elif name == "family_selection":
-        for group, parent in carry("rave").items():
+        for group, parent in carry("rave_compare").items():
             add(f"tuned-{group}", parent)
         names = list(agents)
         for i, a in enumerate(names):
@@ -302,7 +370,7 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
     else:
         raise ValueError(f"unknown study phase: {name}")
     return {"name": name, "agents": agents, "groups": groups, "contrasts": contrasts,
-            "tie_priority": priority, "status": "pending"}
+            "tie_priority": priority, "rave_decisions": decisions, "status": "pending"}
 
 
 class StudyRunner:
@@ -310,7 +378,7 @@ class StudyRunner:
                  reference: MctsAgent | None = None, seed: int = 42, max_pairs: int = 8,
                  confirmation_pairs: int = 32, auxiliary_pairs: int = 4,
                  decision_seconds: float | None = None, screening_seconds: float | None = None, max_plies: int = 10000,
-                 heuristic: int | None = None, target_match_time: float = 60.0,
+                 heuristic: int | None = None, target_match_time: float = 60.0, rave_search: bool = False,
                  workers: WorkerSetting = 1, resume: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
         if game not in GAMES:
             raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
@@ -346,12 +414,16 @@ class StudyRunner:
         selectors = game_search_capabilities(game)["selection_policies"]
         if reference and reference.selection_policy not in selectors:
             raise ValueError("reference selection policy is unavailable for this game")
+        if type(rave_search) is not bool:
+            raise ValueError("rave_search must be a boolean")
+        if reference and reference.selection_policy == "uct_rave" and not rave_search:
+            raise ValueError("a RAVE reference requires --rave-search")
         worker_count = resolve_workers(workers)
         self.game = create_game(game, game_params)
         self.base, self.reference = baseline, reference
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
-        request = {"version": 11, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
+        request = {"version": 16, "rave_search": rave_search, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
                    "heuristic": heuristic, "target_match_time": target_match_time, "safety_margin": 1.2,
                    "selection_policies": selectors, "game": game, **({"game_params": game_parameters(self.game)} if game_parameters(self.game) else {}), "baseline": profile_values(baseline),
                    "reference": profile_values(reference) if reference else None,
@@ -363,7 +435,7 @@ class StudyRunner:
             if not resume:
                 raise FileExistsError(f"study exists: {self.path}; use --resume")
             self.state = json.loads(self.path.read_text())
-            if self.state["request"].get("version") != 11:
+            if self.state["request"].get("version") != 16:
                 raise ValueError("old study protocol cannot resume with single-family tuning; use a new output directory")
             # Git revision is provenance, not an execution compatibility key.
             # Keep the original revision in the saved request.
@@ -594,22 +666,89 @@ class StudyRunner:
 
     def _cost_pair(self, phase, contrast):
         result = contrast.get("result", {})
-        if result.get("seed_pairs", 0):
-            return sum(result.get(t, {}).get("total_seconds", 0) for t in ("timing_a", "timing_b")) / result["seed_pairs"]
+        elapsed = sum(result.get(t, {}).get("total_seconds", 0) for t in ("timing_a", "timing_b"))
+        if result.get("seed_pairs", 0) and elapsed:
+            return elapsed / result["seed_pairs"]
+        # Recent completed candidate games replace the weak pilot's length estimate.
+        # Normalize by decision budgets; retain 20% headroom for different opponents.
+        for previous in reversed(list(self.state["phases"].values())):
+            if previous.get("status") != "complete":
+                continue
+            lengths = []
+            for c in previous["contrasts"]:
+                r = c.get("result", {})
+                seconds = sum(r.get(t, {}).get("total_seconds", 0) for t in ("timing_a", "timing_b"))
+                if r.get("seed_pairs", 0) >= 2 and seconds:
+                    budgets = sum(previous["agents"][c[role]].get("time_budget", 0) for role in ("a", "b"))
+                    if budgets:
+                        lengths.append(seconds / r["seed_pairs"] / budgets)
+            if lengths:
+                return 1.2 * median(lengths) * sum(phase["agents"][contrast[role]]["time_budget"] for role in ("a", "b"))
         return self._estimated_round_seconds({**phase, "contrasts": [contrast]})
 
+    def _plan_rave(self, phase, weights):
+        pool = self.state.get("rave_budget")
+        if pool is None:
+            entry = PHASES.index("rave")
+            allocation = max(0, self.budget - self.spent) * weights[entry] / sum(weights[entry:])
+            pool = self.state["rave_budget"] = {
+                "allocated_seconds": allocation, "started_spent": self.spent,
+                "interpretation": "Shared by all RAVE stages; future mandatory comparisons are reserved before optional rounds."}
+            self.progress(f"RAVE shared budget: {allocation/60:.1f}min; minimum coverage first, then adaptive rounds.")
+        spent = max(0, self.spent - pool["started_spent"])
+        remaining = min(max(0, pool["allocated_seconds"] - spent), max(0, self.budget - self.spent))
+        # Keep two seed pairs for each exploration contrast and final comparison;
+        # the initial screen also protects the obligatory first geometric refinement.
+        future_pairs = 10 if phase["name"] == "rave" else 2 if phase["name"] == "rave_exploration" else 0 if phase["name"] == "rave_compare" else 6
+        reserve = 0.0
+        for members in phase["groups"].values():
+            control = members[0]
+            reserve += future_pairs * self._cost_pair(phase, {"a": control, "b": control})
+        available = max(0, remaining - reserve)
+        phase.update(allocated_seconds=available, started_spent=self.spent,
+                     shared_budget_remaining_seconds=remaining, reserved_followup_seconds=reserve)
+        contrasts = phase["contrasts"]
+        costs = [max(.001, self._cost_pair(phase, c)) for c in contrasts]
+        minimum = 2 * sum(costs)
+        # All initial/gap/exploration comparisons need coverage before any receives
+        # extra samples. Never strand calibration by funding only one contrast.
+        counts = [2 if minimum <= available + 1e-9 else 0 for _ in contrasts]
+        left = available - sum(n*c for n,c in zip(counts, costs))
+        cap = self.state["request"]["max_pairs"]
+        if phase["name"] != "rave_compare":
+            cap = min(cap, 4)  # Cheap sequential calibration; preserve optional exploration.
+        if counts and all(counts):
+            for _ in range(2, cap):
+                for i, cost in enumerate(costs):
+                    if left + 1e-9 >= cost:
+                        counts[i] += 1
+                        left -= cost
+        for contrast, count in zip(contrasts, counts):
+            contrast.update(target_pairs=count, workers=1, timing_mode="isolated")
+            if not count:
+                contrast.update(screening_status="not_prioritized", stop_reason="shared_rave_budget_insufficient_coverage")
+        phase["planned_pairs"] = max(counts, default=0)
+        phase["estimated_seconds"] = sum(n*c for n,c in zip(counts, costs))
+        pool["spent_seconds_at_last_plan"] = spent
+
     def _plan_phase(self, phase, index):
-        available = max(0, self.budget - self.spent) * PHASE_WEIGHTS[index] / sum(PHASE_WEIGHTS[index:])
+        enabled = self.state["request"]["rave_search"] and "uct_rave" in self.state["request"]["selection_policies"]
+        weights = [weight if enabled or not name.startswith("rave") else 0
+                   for name, weight in zip(PHASES, PHASE_WEIGHTS)]
+        if enabled and phase["name"].startswith("rave"):
+            self._plan_rave(phase, weights)
+            return
+        available = max(0, self.budget - self.spent) * weights[index] / sum(weights[index:])
         request = self.state["request"]
         phase.update(allocated_seconds=available, started_spent=self.spent)
-        estimate = self._estimated_round_seconds(phase)
+        estimate = sum(self._cost_pair(phase, c) for c in phase["contrasts"])
         cap = request["max_pairs"]
         pairs = min(cap, max(2, int(available / max(.001, estimate))))
         remaining = available
         # Round-robin groups when resources are scarce: one depth cannot consume
         # another depth's entire tuning allocation merely by insertion order.
         ordered = list(enumerate(phase["contrasts"]))
-        if phase["name"] in ("exploration", "selectors", "rave"):
+        if phase["name"] in ("exploration", "selectors") or phase["name"].startswith("rave"):
             group_of = {n: g for g, members in phase["groups"].items() for n in members}
             buckets = {}
             for item in ordered:
@@ -637,6 +776,9 @@ class StudyRunner:
         return
 
     def _announce_plan(self):
+        requested = self.state["request"]["rave_search"]
+        supported = "uct_rave" in self.state["request"]["selection_policies"]
+        self.progress("RAVE search: " + ("enabled" if requested and supported else "unavailable for this game" if requested else "disabled (enable with --rave-search)"))
         self.progress("Equal-time comparisons; unused phase budget rolls forward; confirmation has a reserved allocation.")
 
     def run(self):

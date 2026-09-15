@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, PropertyMock
 from types import SimpleNamespace
 
 from meeple_bots import (MctsAgent, NeutralEvaluator, GameHeuristic, ConditionalRollout,
@@ -121,7 +121,7 @@ class StudyTests(unittest.TestCase):
 
     def state_for_plan(self, heuristic=None, rave=True):
         return {'request': {'version': 11, 'game': 'boop', 'mode': 'full_depth' if heuristic is None else 'heuristic_cutoff',
-                            'heuristic': heuristic, 'target_match_time': 60,
+                            'heuristic': heuristic, 'target_match_time': 60, 'rave_search': rave,
                             'selection_policies': ['uct', 'ucb1_tuned'] + (['uct_rave'] if rave else [])},
                 'calibration': {'decision_seconds': .01, 'horizon': {'depth': 100},
                                 'cutoff_depths': cutoff_depths(100)}, 'phases': {}}
@@ -131,7 +131,7 @@ class StudyTests(unittest.TestCase):
         for name in PHASES:
             phase = _build_phase(name, state, base, None)
             for c in phase['contrasts']:
-                c['result'] = {'score_b': .6, 'seed_pairs': 4}
+                c['result'] = {'score_b': .7 if name == 'rave' and phase['agents'][c['b']].get('rave_equivalence') == 10000 else .6, 'seed_pairs': 4}
             phase['status'] = 'complete'
             state['phases'][name] = phase
         return state
@@ -178,7 +178,7 @@ class StudyTests(unittest.TestCase):
             state = self.populate(self.state_for_plan(rave=enabled))
             rave = state['phases']['rave']
             samples = [v for v in rave['agents'].values() if v['selection_policy'] == 'uct_rave']
-            self.assertEqual({v['rave_equivalence'] for v in samples}, {100, 1000, 3000, 10000, 20000} if enabled else set())
+            self.assertEqual({v['rave_equivalence'] for v in samples}, {1000, 3000, 10000} if enabled else set())
             mechanism = state['phases']['mechanisms']
             self.assertEqual({(v['tree_reuse'], v['transpositions']) for v in mechanism['agents'].values()},
                              {(False, False), (True, False), (False, True), (True, True)})
@@ -284,7 +284,7 @@ class StudyTests(unittest.TestCase):
     def test_complete_small_study_fresh_confirmation_extract_and_resume(self):
         with TemporaryDirectory() as tmp:
             options = dict(output=Path(tmp), budget=60, decision_seconds=.00001, max_pairs=2, confirmation_pairs=2,
-                           max_plies=9, workers=2, progress=lambda _: None)
+                           max_plies=9, workers=2, rave_search=True, progress=lambda _: None)
             runner = StudyRunner('tic-tac-toe', generic_baseline('tic-tac-toe'), **options)
             state = runner.run()
             self.assertEqual(state['status'], 'complete')
@@ -392,17 +392,84 @@ class StudyTests(unittest.TestCase):
                             reference=MctsAgent(selection_policy='uct_rave'))
             self.assertFalse(output.exists())
 
-    def test_budget_limited_rave_screen_covers_medium_and_high_equivalence(self):
+    def test_rave_progression_and_selector_comparison_order(self):
+        state = self.populate(self.state_for_plan())
+        for name, k in [('rave', 10000), ('rave_extend_1', 20000), ('rave_extend_2', 40000), ('rave_extend_3', 80000), ('rave_extend_4', 160000), ('rave_extend_5', 320000)]:
+            phase = state['phases'][name]
+            self.assertEqual(len(phase['contrasts']), 2)
+            self.assertIn(k, [phase['agents'][c['b']]['rave_equivalence'] for c in phase['contrasts']])
+            self.assertTrue(all(v['selection_policy'] == 'uct_rave' for v in phase['agents'].values()))
+        tuned = state['phases']['rave_exploration']
+        self.assertEqual(len(tuned['contrasts']), 2)
+        self.assertTrue(all(v['selection_policy'] == 'uct_rave' for v in tuned['agents'].values()))
+        comparison = state['phases']['rave_compare']
+        self.assertEqual(len(comparison['contrasts']), 1)
+        c = comparison['contrasts'][0]
+        self.assertEqual(comparison['agents'][c['a']]['selection_policy'], 'ucb1_tuned')
+        self.assertEqual(comparison['agents'][c['b']]['selection_policy'], 'uct_rave')
+        self.assertEqual(comparison['agents'][c['b']]['rave_equivalence'], 320000)
+        self.assertGreater(PHASES.index('rave_compare'), PHASES.index('rave_exploration'))
+
+    def test_rave_stops_expansion_without_claiming_plateau(self):
+        for score in (.4, .5, .54):
+            state = self.populate(self.state_for_plan())
+            for c in state['phases']['rave_extend_1']['contrasts']:
+                c['result']['score_b'] = score
+            for name in ('rave_extend_2', 'rave_extend_3', 'rave_extend_4', 'rave_extend_5', 'rave_exploration'):
+                phase = _build_phase(name, state, generic_baseline('boop'), None)
+                state['phases'][name] = phase
+                if name != 'rave_exploration':
+                    self.assertFalse(phase['contrasts'])
+                    self.assertEqual(set(phase['rave_decisions'].values()), {'no_clear_improvement_not_proven_plateau'})
+            self.assertEqual(len(phase['contrasts']), 2)
+
+    def test_rave_checks_geometric_gaps_and_tracks_interior_winner(self):
+        state = self.populate(self.state_for_plan())
+        for c in state['phases']['rave']['contrasts']:
+            c['result']['score_b'] = .4
+        phase = _build_phase('rave_extend_1', state, generic_baseline('boop'), None)
+        self.assertEqual({v['rave_equivalence'] for v in phase['agents'].values()}, {1732, 3000, 5477})
+        for c in phase['contrasts']:
+            c['result'] = {'score_b': .7 if phase['agents'][c['b']]['rave_equivalence'] == 5477 else .4, 'seed_pairs': 4}
+        state['phases']['rave_extend_1'] = phase
+        second = _build_phase('rave_extend_2', state, generic_baseline('boop'), None)
+        ks = {v['rave_equivalence'] for v in second['agents'].values()}
+        self.assertEqual(ks, {4054, 5477, 7401})
+        self.assertTrue(all(k < 10000 for k in ks))
+
+    def test_high_rave_boundary_also_checks_lower_gap(self):
+        state = self.populate(self.state_for_plan())
+        phase = state['phases']['rave_extend_1']
+        self.assertEqual({v['rave_equivalence'] for v in phase['agents'].values()}, {5477, 10000, 20000})
+
+    def test_incomplete_rave_calibration_never_competes_with_selector(self):
+        state = self.populate(self.state_for_plan())
+        state['phases']['rave']['contrasts'][0]['result'] = {}
+        for name in ('rave_extend_1', 'rave_extend_2', 'rave_extend_3', 'rave_extend_4', 'rave_extend_5', 'rave_exploration', 'rave_compare'):
+            phase = _build_phase(name, state, generic_baseline('boop'), None)
+            state['phases'][name] = phase
+            self.assertFalse(phase['contrasts'])
+        self.assertTrue(all(v['selection_policy'] != 'uct_rave' for v in phase['agents'].values()))
+
+    def test_progressive_rave_keeps_allocation_and_frozen_resume(self):
         with TemporaryDirectory() as tmp:
-            runner = self.calibrated_fake(tmp)
-            runner.budget = 2700
+            runner = self.calibrated_fake(tmp, rave_search=True)
             planned = self.populate(self.state_for_plan())
             runner.state['phases'] = planned['phases']
-            phase = _build_phase('rave', runner.state, runner.base, None)
-            runner._plan_phase(phase, PHASES.index('rave'))
-            tested = [phase['agents'][c['b']]['rave_equivalence'] for c in phase['contrasts'] if c['target_pairs']]
-            self.assertEqual(tested, [1000, 20000])
+            phase = _build_phase('rave_extend_1', runner.state, runner.base, None)
+            runner._plan_phase(phase, PHASES.index('rave_extend_1'))
+            runner.state['phases']['rave_extend_1'] = phase
+            runner.save()
             self.assertLessEqual(phase['estimated_seconds'], phase['allocated_seconds'])
+            for planned_phase in runner.state['phases'].values():
+                planned_phase.setdefault('planned_pairs', 2)
+            runner.save()
+            seeds = [runner._trace_config(runner.state['phases'][name], 0).seed
+                     for name in ('rave_extend_1', 'rave_extend_2', 'rave_extend_3', 'rave_extend_4', 'rave_extend_5', 'rave_exploration', 'rave_compare')]
+            self.assertEqual(len(set(seeds)), 7)
+            resumed = StudyRunner('boop', generic_baseline('boop'), output=Path(tmp), budget=1000, resume=True, rave_search=True, progress=lambda _: None)
+            self.assertEqual(resumed.state['phases']['rave_extend_1'], phase)
+            self.assertEqual(resumed.state['rave_budget'], runner.state['rave_budget'])
 
     def test_high_rave_winner_refines_above_original_grid(self):
         state = self.populate(self.state_for_plan())
@@ -411,6 +478,84 @@ class StudyTests(unittest.TestCase):
         phase = _build_phase('refinement', state, generic_baseline('boop'), None)
         ks = {phase['agents'][c['b']]['rave_equivalence'] for c in phase['contrasts'] if c['factor'] == 'rave_equivalence'}
         self.assertEqual(ks, {10000, 40000})
+
+    def test_rave_search_is_explicit_cli_opt_in(self):
+        args = ['study', '--game', 'connect6', '--budget', '4h']
+        self.assertFalse(build_parser().parse_args(args).rave_search)
+        self.assertTrue(build_parser().parse_args(args + ['--rave-search']).rave_search)
+        state = self.state_for_plan()
+        state['request']['rave_search'] = False
+        self.populate(state)
+        for name, phase in state['phases'].items():
+            self.assertTrue(all(v['selection_policy'] != 'uct_rave' for v in phase['agents'].values()))
+            if name.startswith('rave'):
+                self.assertFalse(phase['contrasts'])
+
+    def test_disabled_rave_has_no_allocation_and_resume_rejects_option_change(self):
+        with TemporaryDirectory() as tmp:
+            runner = self.calibrated_fake(tmp)
+            state = self.state_for_plan()
+            state['request']['rave_search'] = False
+            runner.state['phases'] = self.populate(state)['phases']
+            for name, phase in runner.state['phases'].items():
+                runner._plan_phase(phase, PHASES.index(name))
+                if name.startswith('rave'):
+                    self.assertEqual(phase['allocated_seconds'], 0)
+                    self.assertEqual(phase['planned_pairs'], 0)
+            runner.save()
+            with self.assertRaisesRegex(ValueError, 'configuration or engine changed'):
+                StudyRunner('boop', generic_baseline('boop'), output=Path(tmp), budget=1000,
+                            resume=True, rave_search=True, progress=lambda _: None)
+
+    def test_shared_rave_pool_covers_initial_screen_and_keeps_unspent_balance(self):
+        with TemporaryDirectory() as tmp, patch.object(StudyRunner, 'spent', new_callable=PropertyMock, return_value=0) as clock:
+            runner = self.calibrated_fake(tmp, rave_search=True)
+            runner.budget = 14400
+            runner.state['calibration'].update(mean_plies=91.5, decision_seconds=60/109.8)
+            runner.state['phases'] = self.populate(self.state_for_plan())['phases']
+            # No competitive timings yet: reproduce the original conservative 100s/pair estimate.
+            phase = _build_phase('rave', runner.state, runner.base, None)
+            runner._plan_phase(phase, PHASES.index('rave'))
+            self.assertTrue(all(c['target_pairs'] >= 2 for c in phase['contrasts']))
+            pool = runner.state['rave_budget']['allocated_seconds']
+            self.assertGreater(pool, 14400*.25)
+            self.assertGreaterEqual(phase['reserved_followup_seconds'], 999)
+            self.assertLessEqual(phase['estimated_seconds'] + phase['reserved_followup_seconds'], pool)
+            phase['status'] = 'complete'
+            for c in phase['contrasts']:
+                c['result'] = {'seed_pairs': c['target_pairs'], 'score_b': .7,
+                               'timing_a': {'total_seconds': 15*c['target_pairs']},
+                               'timing_b': {'total_seconds': 15*c['target_pairs']}}
+            runner.state['phases'] = {'rave': phase}
+            clock.return_value = 240
+            extension = _build_phase('rave_extend_1', runner.state, runner.base, None)
+            runner._plan_phase(extension, PHASES.index('rave_extend_1'))
+            self.assertEqual(runner.state['rave_budget']['allocated_seconds'], pool)
+            self.assertAlmostEqual(extension['shared_budget_remaining_seconds'], pool-240)
+            self.assertAlmostEqual(runner._cost_pair(extension, extension['contrasts'][0]), 36)
+            self.assertAlmostEqual(extension['reserved_followup_seconds'], 216)
+            self.assertTrue(all(c['target_pairs'] >= 2 for c in extension['contrasts']))
+            # Final comparison receives the remaining pool, with no upstream subquota.
+            final = {**extension, 'name': 'rave_compare'}
+            runner._plan_phase(final, PHASES.index('rave_compare'))
+            self.assertEqual(final['reserved_followup_seconds'], 0)
+            self.assertAlmostEqual(final['allocated_seconds'], pool-240)
+
+    def test_shared_rave_budget_requires_complete_coverage_before_extra_pairs(self):
+        with TemporaryDirectory() as tmp, patch.object(StudyRunner, 'spent', new_callable=PropertyMock, return_value=0):
+            runner = self.calibrated_fake(tmp, rave_search=True)
+            runner.state['phases'] = self.populate(self.state_for_plan())['phases']
+            runner.budget = 2000
+            # 100s per pair. Reserve 1000s follow-up; initial coverage requires 400s.
+            runner.state['rave_budget'] = {'allocated_seconds': 1399, 'started_spent': 0}
+            phase = _build_phase('rave', runner.state, runner.base, None)
+            runner._plan_phase(phase, PHASES.index('rave'))
+            self.assertEqual([c['target_pairs'] for c in phase['contrasts']], [0, 0])
+            runner.state['rave_budget']['allocated_seconds'] = 1400
+            phase = _build_phase('rave', runner.state, runner.base, None)
+            runner._plan_phase(phase, PHASES.index('rave'))
+            self.assertEqual([c['target_pairs'] for c in phase['contrasts']], [2, 2])
+
 
 
 if __name__ == '__main__':
