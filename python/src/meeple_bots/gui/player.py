@@ -30,6 +30,7 @@ class GuiPlayer:
     progressive_widening: bool = False
     progressive_widening_k: float = 1.5
     progressive_widening_alpha: float = 0.5
+    progressive_widening_expansion: str = "random"
 
     def __post_init__(self) -> None:
         if self.kind not in ("human", "random", "mcts"):
@@ -48,6 +49,7 @@ class GuiPlayer:
                 progressive_widening=self.progressive_widening,
                 progressive_widening_k=self.progressive_widening_k,
                 progressive_widening_alpha=self.progressive_widening_alpha,
+                progressive_widening_expansion=self.progressive_widening_expansion,
 
             )
 
@@ -67,6 +69,7 @@ class GuiPlayer:
             "progressive_widening": self.progressive_widening,
             "progressive_widening_k": self.progressive_widening_k,
             "progressive_widening_alpha": self.progressive_widening_alpha,
+            "progressive_widening_expansion": self.progressive_widening_expansion,
 
             **({"rave_equivalence": self.rave_equivalence} if self.selection_policy == "uct_rave" else {}),
         }
@@ -161,5 +164,6 @@ def parse_gui_player(
         progressive_widening=raw.get("progressive_widening", False),
         progressive_widening_k=raw.get("progressive_widening_k", 1.5),
         progressive_widening_alpha=raw.get("progressive_widening_alpha", 0.5),
+        progressive_widening_expansion=raw.get("progressive_widening_expansion", "random"),
 
     )

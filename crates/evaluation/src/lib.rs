@@ -74,6 +74,7 @@ pub struct SampledDecisionTiming {
     pub legal_actions: usize,
     pub terminal_simulations: Option<u64>,
     pub cutoff_simulations: Option<u64>,
+    pub widening_expansions: Option<(u64, u64, u64, u64)>,
     pub root_expansion: Option<(usize, usize, usize)>,
     pub root_visits: Vec<u32>,
 }
@@ -289,6 +290,7 @@ where
             terminal_simulations: stats.terminal_simulations,
             cutoff_simulations: stats.cutoff_simulations,
             root_expansion: stats.root_expansion,
+            widening_expansions: stats.widening_expansions,
             root_visits: stats.root_actions.iter().map(|a| a.visits).collect(),
             milliseconds,
             iterations: stats

@@ -4,7 +4,7 @@
 mod turn_boundary_tests;
 
 mod widening;
-pub use widening::ProgressiveWidening;
+pub use widening::{ProgressiveWidening, WideningExpansionPolicy, WideningStats};
 
 mod rave;
 pub use rave::DEFAULT_RAVE_EQUIVALENCE;
@@ -54,6 +54,12 @@ pub struct MctsConfig<P = RolloutPolicyConfig<NeutralEvaluator>> {
 }
 
 impl<P> MctsConfig<P> {
+    fn collects_amaf(&self) -> bool {
+        matches!(self.selection_policy, SelectionPolicy::UctRave { .. })
+            || self
+                .progressive_widening
+                .is_some_and(|pw| pw.expansion == WideningExpansionPolicy::Rave)
+    }
     pub fn validate(&self) -> Result<(), &'static str> {
         if let Some(pw) = self.progressive_widening {
             pw.validate()?;
@@ -85,6 +91,7 @@ impl Default for SearchBudget {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MctsSearchStats {
     pub root_expansion: (usize, usize, usize),
+    pub widening: WideningStats,
     pub iterations: u64,
     pub terminal_simulations: u64,
     pub cutoff_simulations: u64,
@@ -908,6 +915,12 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 search_nodes: Some(stats.nodes),
                 terminal_simulations: Some(stats.terminal_simulations),
                 cutoff_simulations: Some(stats.cutoff_simulations),
+                widening_expansions: Some((
+                    stats.widening.expansions_total,
+                    stats.widening.expansions_random,
+                    stats.widening.expansions_rave_guided,
+                    stats.widening.rave_fallbacks_no_amaf,
+                )),
                 root_expansion: Some(stats.root_expansion),
                 root_actions: self.last_root_actions.clone(),
                 tree_reuse: None,
@@ -944,13 +957,9 @@ impl<C, P, B> MctsAgent<C, P, B> {
             ));
         }
 
-        if matches!(
-            self.config.selection_policy,
-            SelectionPolicy::UctRave { .. }
-        ) && rave_ops.is_none()
-        {
+        if self.config.collects_amaf() && rave_ops.is_none() {
             return Err(AgentError::message(
-                "UCT-RAVE requires the typed TreeReuseMctsAgent or TranspositionMctsAgent adapter (reuse may be disabled)",
+                "AMAF requires the typed TreeReuseMctsAgent or TranspositionMctsAgent adapter (reuse may be disabled)",
             ));
         }
         let root = Node::new(None, 0.0, game.legal_actions(root_state));
@@ -1023,6 +1032,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
         let search_started = Instant::now();
         let mut rollout_memory = RolloutMemory::default();
         let mut rave = RaveTrace::new(rave_ops);
+        let mut widening_stats = WideningStats::default();
         let mut completed_iterations = 0_u64;
         let mut terminal_simulations = 0_u64;
         let mut path = Vec::new();
@@ -1073,9 +1083,15 @@ impl<C, P, B> MctsAgent<C, P, B> {
                         && self
                             .selection_bias
                             .applies(game, &state, active_player, root_player);
-                    let unexpanded_slot = rng
-                        .index(nodes[node_index].unexpanded.len())
-                        .expect("non-empty actions");
+                    let unexpanded_slot = widening::choose_action(
+                        self.config.progressive_widening,
+                        &nodes[node_index].unexpanded,
+                        &nodes[node_index].amaf,
+                        &rave,
+                        active_player == root_player,
+                        rng,
+                        &mut widening_stats,
+                    );
                     let unexpanded = nodes[node_index].unexpanded.swap_remove(unexpanded_slot);
                     let root_action_index = (node_index == 0)
                         .then(|| {
@@ -1252,6 +1268,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 .map_or(legal, |pw| pw.limit(nodes[0].visits, legal)),
         );
         self.last_search_stats = Some(MctsSearchStats {
+            widening: widening_stats,
             root_expansion,
             iterations: completed_iterations,
             terminal_simulations,
@@ -1295,13 +1312,8 @@ impl<C, P, B> MctsAgent<C, P, B> {
 
         let search_started = Instant::now();
         let mut rollout_memory = RolloutMemory::default();
-        let mut rave = RaveTrace::new(
-            matches!(
-                self.config.selection_policy,
-                SelectionPolicy::UctRave { .. }
-            )
-            .then(ActionOps::typed),
-        );
+        let mut rave = RaveTrace::new(self.config.collects_amaf().then(ActionOps::typed));
+        let mut widening_stats = WideningStats::default();
         let mut completed_iterations = 0_u64;
         let mut terminal_simulations = 0_u64;
         let mut path_nodes = Vec::new();
@@ -1354,9 +1366,15 @@ impl<C, P, B> MctsAgent<C, P, B> {
                         && self
                             .selection_bias
                             .applies(game, &state, active_player, root_player);
-                    let unexpanded_slot = rng
-                        .index(graph.nodes[node_index].unexpanded.len())
-                        .expect("non-empty actions");
+                    let unexpanded_slot = widening::choose_action(
+                        self.config.progressive_widening,
+                        &graph.nodes[node_index].unexpanded,
+                        &graph.nodes[node_index].amaf,
+                        &rave,
+                        active_player == root_player,
+                        rng,
+                        &mut widening_stats,
+                    );
                     let action = graph.nodes[node_index]
                         .unexpanded
                         .swap_remove(unexpanded_slot);
@@ -1553,6 +1571,7 @@ impl<C, P, B> MctsAgent<C, P, B> {
                 .map_or(legal, |pw| pw.limit(graph.nodes[0].visits, legal)),
         );
         self.last_search_stats = Some(MctsSearchStats {
+            widening: widening_stats,
             root_expansion,
             iterations: completed_iterations,
             terminal_simulations,
@@ -1748,10 +1767,7 @@ where
         rng: &mut R,
     ) -> Result<G::Action, AgentError> {
         if !self.enabled {
-            if matches!(
-                self.inner.config.selection_policy,
-                SelectionPolicy::UctRave { .. }
-            ) {
+            if self.inner.config.collects_amaf() {
                 self.inner.decision_budget.begin(self.inner.config.budget);
                 let result = self
                     .inner
@@ -1836,11 +1852,7 @@ where
                 &mut tree.nodes,
                 root_action_indices,
                 fresh_tree,
-                matches!(
-                    self.inner.config.selection_policy,
-                    SelectionPolicy::UctRave { .. }
-                )
-                .then(ActionOps::typed),
+                self.inner.config.collects_amaf().then(ActionOps::typed),
                 rng,
             );
             let selected_index = match selected {
@@ -4578,7 +4590,11 @@ mod tests {
         let game = DiamondGame;
         let state = game.initial_state();
         let config = MctsConfig {
-            progressive_widening: Some(ProgressiveWidening { k: 1., alpha: 0.5 }),
+            progressive_widening: Some(ProgressiveWidening {
+                k: 1.,
+                alpha: 0.5,
+                ..Default::default()
+            }),
             budget: SearchBudget::Iterations(NonZeroU32::new(20).unwrap()),
             exploration: 1.4,
             selection_policy: SelectionPolicy::Uct,

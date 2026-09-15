@@ -104,6 +104,7 @@ class SampledDecisionTiming:
     cutoff_simulations: int | None = None
     root_visits: tuple[int, ...] = ()
     root_expansion: tuple[int, int, int] | None = None
+    widening_expansions: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1067,6 +1068,7 @@ def benchmark_mcts_agent(
         progressive_widening=agent.progressive_widening,
         progressive_widening_k=agent.progressive_widening_k,
         progressive_widening_alpha=agent.progressive_widening_alpha,
+        progressive_widening_expansion=agent.progressive_widening_expansion,
     )
     return MctsAgentBenchmark(
         game=game,
@@ -1088,6 +1090,7 @@ def benchmark_mcts_agent(
                 terminal_simulations=timing["terminal_simulations"],
                 cutoff_simulations=timing["cutoff_simulations"],
                 root_visits=tuple(timing["root_visits"]),
+                widening_expansions=tuple(timing["widening_expansions"]) if timing["widening_expansions"] is not None else None,
                 root_expansion=tuple(timing["root_expansion"]) if timing["root_expansion"] is not None else None,
             )
             for timing in raw["position_timings"]
@@ -1261,6 +1264,7 @@ def _native_agent(agent: Agent, game: Game):
             progressive_widening=agent.progressive_widening,
             progressive_widening_k=agent.progressive_widening_k,
             progressive_widening_alpha=agent.progressive_widening_alpha,
+            progressive_widening_expansion=agent.progressive_widening_expansion,
         )
     return _native.AgentConfig.human(
         _human_selector(agent, game),

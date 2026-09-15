@@ -494,8 +494,8 @@ This follows the power-law admission convention used in
 this implementation explicitly chooses floor rounding and a one-child minimum.
 
 If pending actions remain and the active count is below the limit, expand exactly
-one uniformly random pending action using the agent RNG. Otherwise select among
-active children. There is no heuristic or AMAF ordering of pending actions.
+one pending action using the expansion policy (uniform random by default).
+Otherwise select among active children.
 For example, with `k=1, alpha=0.5`, the visit with `N=4` can open the second action;
 with `N=3` the search must revisit the first. The visit with `N=25` can open the
 fifth. No new turn/depth semantics are introduced.
@@ -537,5 +537,46 @@ meeple-bots match --game connect6 --game-param board_size=13 \
   --mcts-progressive-widening-alpha 0.5
 ```
 
-Stochastic games reject PW explicitly. Stochastic/chance widening, RAVE-guided
-admission and heuristic-guided admission are deliberately left for later.
+Stochastic games reject PW explicitly. Stochastic/chance widening and
+heuristic-guided admission are deliberately left for later.
+
+#### RAVE-guided admission
+
+```toml
+progressive_widening = true
+progressive_widening_k = 1.5
+progressive_widening_alpha = 0.5
+progressive_widening_expansion = "rave" # default: "random"
+```
+
+PW still decides **when** another action can enter, with the same limit and
+rounding. `rave` decides **which** pending action enters: maximize
+`Q_AMAF = amaf_total_utility / amaf_visits` from the active player's perspective
+(the root-oriented stored utility is negated at opponent nodes). Only node-local,
+still-unexpanded legal actions with AMAF samples are considered. Unsampled
+moves are ignored even when all sampled means are negative; they have no fake
+zero prior. Exact best-mean ties use the agent RNG uniformly. If no pending
+action has samples, fall back to the existing uniform random admission.
+
+This differs from UCT-RAVE **selection**, which blends normal Q and AMAF Q among
+already admitted actions. Admission uses neither that blend nor an exploration
+bonus. AMAF collection is also enabled for guided admission with plain UCT or
+UCB1-Tuned; their selection scores remain unchanged. No new rollout, backup,
+root-choice or turn-boundary semantics are introduced. Existing reuse and graph
+compaction preserve the state-local AMAF/pending records used by this policy.
+In Rust the typed tree/graph adapter supplies action identity, as with UCT-RAVE.
+
+`rave` expansion requires PW enabled; Python/native config validation rejects
+`progressive_widening=false` combined with `expansion="rave"`. With PW absent,
+Rust never runs the admission policy. CLI: `--mcts-progressive-widening-expansion
+rave` together with `--mcts-progressive-widening`.
+
+Rust `MctsSearchStats.widening` counts admissions during the current search:
+`expansions_total`, `expansions_random`, `expansions_rave_guided`, and
+`rave_fallbacks_no_amaf` (fallbacks are included in random). Generic decision
+stats and Python benchmark position timings expose the same counters as
+`widening_expansions = (total, random, rave_guided, no_amaf_fallbacks)`.
+These distinguish configured guidance from actual use of sampled AMAF evidence.
+Profiles, study candidates and extracted agent configuration retain the policy.
+Study PW tuning preserves it; it does not automatically compare expansion
+policies or assume random PW's optimal k/alpha transfer to guided PW.

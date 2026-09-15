@@ -94,7 +94,7 @@ def profile_values(agent: MctsAgent) -> dict:
                   rollout_policy=policy_values(agent.rollout_policy), tree_reuse=agent.tree_reuse,
                   transpositions=agent.transpositions, root_diagnostics=agent.root_diagnostics)
     if agent.progressive_widening:
-        values.update(progressive_widening=agent.progressive_widening, progressive_widening_k=agent.progressive_widening_k, progressive_widening_alpha=agent.progressive_widening_alpha)
+        values.update(progressive_widening=agent.progressive_widening, progressive_widening_k=agent.progressive_widening_k, progressive_widening_alpha=agent.progressive_widening_alpha, progressive_widening_expansion=agent.progressive_widening_expansion)
     if agent.selection_policy == "uct_rave":
         values["rave_equivalence"] = agent.rave_equivalence
     if agent.progressive_bias is not None:
@@ -113,6 +113,7 @@ def agent_from_values(values: dict) -> MctsAgent:
                      progressive_widening=values.get("progressive_widening", False),
                      progressive_widening_k=values.get("progressive_widening_k", 1.5),
                      progressive_widening_alpha=values.get("progressive_widening_alpha", 0.5),
+                     progressive_widening_expansion=values.get("progressive_widening_expansion", "random"),
                      cutoff_evaluator=_configured_cutoff_evaluator(values, "study"),
                      rollout_policy=_configured_rollout_policy(values, "study"),
                      progressive_bias=_configured_progressive_bias(values, "study"),

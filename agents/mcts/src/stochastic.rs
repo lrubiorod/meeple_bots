@@ -375,6 +375,7 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
             .unwrap()
             .0;
         self.stats = AgentDecisionStats {
+            widening_expansions: None,
             root_expansion: None,
             search_iterations: Some(u64::from(iterations)),
             search_nodes: Some(nodes.len() as u64),

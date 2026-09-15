@@ -38,6 +38,37 @@ class ProgressiveWideningTests(unittest.TestCase):
             self.assertEqual(_load_mcts_profile(path).agent, agent)
         self.assertEqual(_parse_inline_mcts_profile('iterations=16,depth=3,progressive_widening=true,progressive_widening_k=1,progressive_widening_alpha=0.5').agent, agent)
 
+    def test_guided_config_roundtrip_and_native_diagnostics(self):
+        self.assertEqual(MctsAgent().progressive_widening_expansion, "random")
+        with self.assertRaisesRegex(ValueError, 'requires'):
+            MctsAgent(progressive_widening_expansion="rave")
+        with self.assertRaisesRegex(ValueError, 'random or rave'):
+            self.agent(progressive_widening_expansion="unknown")
+        agent = self.agent(progressive_widening_expansion="rave")
+        self.assertEqual(agent_from_values(profile_values(agent)), agent)
+        self.assertEqual(agent_dict('guided', agent)['progressive_widening_expansion'], 'rave')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'guided.toml'
+            path.write_text('iterations=16\nrollout_depth=3\nprogressive_widening=true\nprogressive_widening_k=1.0\nprogressive_widening_alpha=0.5\nprogressive_widening_expansion="rave"\n')
+            self.assertEqual(_load_mcts_profile(path).agent, agent)
+        self.assertEqual(_parse_inline_mcts_profile('iterations=16,depth=3,progressive_widening=true,progressive_widening_k=1,progressive_widening_alpha=0.5,progressive_widening_expansion=rave').agent, agent)
+        for policy in ('uct', 'ucb1_tuned', 'uct_rave'):
+            for reuse in (False, True):
+                for transpositions in (False, True):
+                    configured = replace(agent, selection_policy=policy, tree_reuse=reuse, transpositions=transpositions)
+                    report = benchmark_mcts_agent(Connect6(6), configured, median_depth=4, seed=42)
+                    totals = [t.widening_expansions for t in report.position_timings]
+                    self.assertTrue(any(t[2] > 0 for t in totals))
+                    for total, random, guided, fallback in totals:
+                        self.assertEqual(total, random + guided)
+                        self.assertEqual(random, fallback)
+                    first = Match(Connect6(6), configured, RandomAgent(), seed=42).run()
+                    second = Match(Connect6(6), configured, RandomAgent(), seed=42).run()
+                    self.assertEqual([m.action for m in first.moves], [m.action for m in second.moves])
+        agents = _load_tournament_agents(dict(name='pw', kind='mcts', iterations=4, rollout_depth=3,
+            progressive_widening=True, progressive_widening_expansion=['random', 'rave']), 0, Connect6(6))
+        self.assertEqual([a.agent.progressive_widening_expansion for a in agents], ['random', 'rave'])
+
     def test_selectors_backends_reproducibility_and_diagnostics(self):
         game = Connect6(6)
         for policy in ('uct', 'ucb1_tuned', 'uct_rave'):
@@ -64,7 +95,7 @@ class ProgressiveWideningTests(unittest.TestCase):
         with redirect_stdout(output):
             self.assertEqual(main(['match', '--game', 'connect6', '--game-param', 'board_size=6',
                 '--first', 'mcts', '--second', 'random', '--mcts-iterations', '4', '--mcts-rollout-depth', '3',
-                '--mcts-progressive-widening', '--mcts-progressive-widening-k', '1', '--json']), 0)
+                '--mcts-progressive-widening', '--mcts-progressive-widening-expansion', 'rave', '--mcts-progressive-widening-k', '1', '--json']), 0)
         self.assertIn('"progressive_widening": true', output.getvalue())
         agents = _load_tournament_agents(dict(name='pw', kind='mcts', iterations=4, rollout_depth=3,
             progressive_widening=[False, True], progressive_widening_k=1), 0, Connect6(6))

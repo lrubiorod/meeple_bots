@@ -181,6 +181,7 @@ class MctsAgent:
     progressive_widening: bool = False
     progressive_widening_k: float = 1.5
     progressive_widening_alpha: float = 0.5
+    progressive_widening_expansion: str = "random"
 
     def __post_init__(self) -> None:
         if self.selection_policy not in ("uct", "ucb1_tuned", "uct_rave"):
@@ -188,6 +189,10 @@ class MctsAgent:
         _positive_u32("rave_equivalence", self.rave_equivalence)
         if not isinstance(self.progressive_widening, bool):
             raise TypeError("progressive_widening must be a boolean")
+        if self.progressive_widening_expansion not in ("random", "rave"):
+            raise ValueError("progressive_widening_expansion must be random or rave")
+        if self.progressive_widening_expansion == "rave" and not self.progressive_widening:
+            raise ValueError("rave expansion requires progressive_widening=true")
         for key in ("progressive_widening_k", "progressive_widening_alpha"):
             value = getattr(self, key)
             if isinstance(value, bool) or not isinstance(value, (int, float)):

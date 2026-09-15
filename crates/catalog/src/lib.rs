@@ -36,7 +36,7 @@ use meeple_bots_evaluation::{
 };
 pub use meeple_bots_mcts_agent::{
     MctsConfig, ProgressiveWidening, RolloutPolicyConfig, SearchBudget, SelectionPolicy,
-    UniformRandom,
+    UniformRandom, WideningExpansionPolicy,
 };
 use meeple_bots_simulation::{
     BatchConfig, MatchError, MatchObserver, SplitMix64, TracedMatchResult, play_batch, play_match,

@@ -50,6 +50,7 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
         "progressive_widening",
         "progressive_widening_k",
         "progressive_widening_alpha",
+        "progressive_widening_expansion",
         "rollout_depth",
         "use_heuristic",
         "heuristic_index",
@@ -84,6 +85,7 @@ def _load_mcts_profile(path: Path) -> _MctsProfile:
             progressive_widening=values.get("progressive_widening", False),
             progressive_widening_k=values.get("progressive_widening_k", 1.5),
             progressive_widening_alpha=values.get("progressive_widening_alpha", 0.5),
+            progressive_widening_expansion=values.get("progressive_widening_expansion", "random"),
             exploration=values.get("exploration", sqrt_two()),
             rollout_depth=values["rollout_depth"],
             cutoff_evaluator=_configured_cutoff_evaluator(values, "MCTS profile"),
@@ -115,6 +117,7 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         "progressive_widening": "progressive_widening",
         "progressive_widening_k": "progressive_widening_k",
         "progressive_widening_alpha": "progressive_widening_alpha",
+        "progressive_widening_expansion": "progressive_widening_expansion",
         "h": "heuristic",
         "heuristic": "heuristic",
         "ce": "cutoff_evaluator",
@@ -269,6 +272,7 @@ def _parse_inline_mcts_profile(spec: str) -> _MctsProfile:
         progressive_widening=pw_text == "true",
         progressive_widening_k=float(values.get("progressive_widening_k", 1.5)),
         progressive_widening_alpha=float(values.get("progressive_widening_alpha", 0.5)),
+        progressive_widening_expansion=str(values.get("progressive_widening_expansion", "random")),
         rave_equivalence=_inline_agent_integer(str(values.get("rave_equivalence", 1000)), "rave_equivalence"),
         exploration=exploration,
         rollout_depth=rollout_depth,
@@ -320,6 +324,8 @@ def _inline_agent_name(agent: MctsAgent) -> str:
         parts.append(f"k{agent.rave_equivalence}")
     if agent.progressive_widening:
         parts.append(f"pw-k{agent.progressive_widening_k}-a{agent.progressive_widening_alpha}")
+        if agent.progressive_widening_expansion != "random":
+            parts.append(f"expand-{agent.progressive_widening_expansion}")
     if agent.exploration != sqrt_two():
         parts.append(f"c{agent.exploration}")
     rollout_heuristic = _evaluator_heuristic_index(

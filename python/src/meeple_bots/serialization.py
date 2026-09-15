@@ -200,7 +200,7 @@ def agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, object]:
         "exploration": agent.exploration,
         "selection_policy": agent.selection_policy,
         **({"rave_equivalence": agent.rave_equivalence} if agent.selection_policy == "uct_rave" else {}),
-        **({"progressive_widening": agent.progressive_widening, "progressive_widening_k": agent.progressive_widening_k, "progressive_widening_alpha": agent.progressive_widening_alpha} if getattr(agent, "progressive_widening", False) else {}),
+        **({"progressive_widening": agent.progressive_widening, "progressive_widening_k": agent.progressive_widening_k, "progressive_widening_alpha": agent.progressive_widening_alpha, "progressive_widening_expansion": agent.progressive_widening_expansion} if getattr(agent, "progressive_widening", False) else {}),
         "heuristic": agent.heuristic,
         "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator),
         "rollout_policy": _rollout_policy_name(agent),

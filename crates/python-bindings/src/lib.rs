@@ -98,6 +98,7 @@ impl PyAgentConfig {
         progressive_widening=false,
         progressive_widening_k=1.5,
         progressive_widening_alpha=0.5,
+        progressive_widening_expansion="random",
     ))]
     // Preserve the Python keyword-argument interface.
     #[allow(clippy::too_many_arguments)]
@@ -133,6 +134,7 @@ impl PyAgentConfig {
         progressive_widening: bool,
         progressive_widening_k: f64,
         progressive_widening_alpha: f64,
+        progressive_widening_expansion: &str,
     ) -> PyResult<Self> {
         if !exploration.is_finite() || exploration < 0.0 {
             return Err(PyValueError::new_err(
@@ -152,6 +154,7 @@ impl PyAgentConfig {
                         progressive_widening,
                         progressive_widening_k,
                         progressive_widening_alpha,
+                        progressive_widening_expansion,
                     )?,
                     selection_policy: parse_selection_policy(selection_policy, rave_equivalence)?,
                     budget: parse_search_budget(iterations, time_budget)?,
@@ -665,6 +668,7 @@ fn py_evaluate_game(
         progressive_widening=false,
         progressive_widening_k=1.5,
         progressive_widening_alpha=0.5,
+        progressive_widening_expansion="random",
 ))]
 // Preserve the Python keyword-argument interface.
 #[allow(clippy::too_many_arguments)]
@@ -705,6 +709,7 @@ fn py_benchmark_mcts_agent(
     progressive_widening: bool,
     progressive_widening_k: f64,
     progressive_widening_alpha: f64,
+    progressive_widening_expansion: &str,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_configured_game(game, game_params)?;
     if !exploration.is_finite() || exploration < 0.0 {
@@ -725,6 +730,7 @@ fn py_benchmark_mcts_agent(
                     progressive_widening,
                     progressive_widening_k,
                     progressive_widening_alpha,
+                    progressive_widening_expansion,
                 )?,
                 selection_policy: parse_selection_policy(selection_policy, rave_equivalence)?,
                 budget: parse_search_budget(iterations, time_budget)?,
@@ -783,6 +789,7 @@ fn py_benchmark_mcts_agent(
         item.set_item("terminal_simulations", timing.terminal_simulations)?;
         item.set_item("cutoff_simulations", timing.cutoff_simulations)?;
         item.set_item("root_expansion", timing.root_expansion)?;
+        item.set_item("widening_expansions", timing.widening_expansions)?;
         item.set_item("root_visits", timing.root_visits)?;
         position_timings.append(item)?;
     }
@@ -2574,8 +2581,27 @@ fn parse_progressive_widening(
     enabled: bool,
     k: f64,
     alpha: f64,
+    expansion: &str,
 ) -> PyResult<Option<meeple_bots_catalog::ProgressiveWidening>> {
-    let pw = meeple_bots_catalog::ProgressiveWidening { k, alpha };
+    let expansion = match expansion {
+        "random" => meeple_bots_catalog::WideningExpansionPolicy::Random,
+        "rave" if enabled => meeple_bots_catalog::WideningExpansionPolicy::Rave,
+        "rave" => {
+            return Err(PyValueError::new_err(
+                "rave expansion requires progressive_widening=true",
+            ));
+        }
+        _ => {
+            return Err(PyValueError::new_err(
+                "progressive_widening_expansion must be random or rave",
+            ));
+        }
+    };
+    let pw = meeple_bots_catalog::ProgressiveWidening {
+        k,
+        alpha,
+        expansion,
+    };
     pw.validate().map_err(PyValueError::new_err)?;
     Ok(enabled.then_some(pw))
 }

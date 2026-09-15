@@ -34,6 +34,7 @@ def _load_gui_baseline(filename: str) -> GuiPlayer:
         progressive_widening=agent.progressive_widening,
         progressive_widening_k=agent.progressive_widening_k,
         progressive_widening_alpha=agent.progressive_widening_alpha,
+        progressive_widening_expansion=agent.progressive_widening_expansion,
 
     )
     # Do not silently discard policies or evaluator parameters absent from the GUI.

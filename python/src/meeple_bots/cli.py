@@ -113,6 +113,7 @@ _TOURNAMENT_GRID_FIELDS = (
     (("progressive_widening",), "progressive_widening"),
     (("progressive_widening_k",), "progressive_widening_k"),
     (("progressive_widening_alpha",), "progressive_widening_alpha"),
+    (("progressive_widening_expansion",), "progressive_widening_expansion"),
     (("heuristic_index",), "h"),
     (("cutoff_evaluator", "index"), "h"),
     (("rollout_heuristic_index",), "rh"),
@@ -190,6 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     match.add_argument("--mcts-progressive-widening", action="store_true")
     match.add_argument("--mcts-progressive-widening-k", type=float, default=1.5)
     match.add_argument("--mcts-progressive-widening-alpha", type=float, default=0.5)
+    match.add_argument("--mcts-progressive-widening-expansion", choices=("random", "rave"), default="random")
     match.add_argument("--mcts-rave-equivalence", type=int, default=1000)
     match.add_argument("--mcts-selection-policy", choices=("uct", "ucb1_tuned", "uct_rave"), default="uct")
     match.add_argument("--mcts-exploration", type=float, default=sqrt_two())
@@ -714,6 +716,7 @@ def _load_tournament_agents(
         "progressive_widening",
         "progressive_widening_k",
         "progressive_widening_alpha",
+        "progressive_widening_expansion",
         "rollout_depth",
         "use_heuristic",
         "heuristic_index",
@@ -753,6 +756,7 @@ def _load_tournament_agents(
         "progressive_widening",
         "progressive_widening_k",
         "progressive_widening_alpha",
+        "progressive_widening_expansion",
         "rollout_depth",
         "use_heuristic",
         "heuristic_index",
@@ -926,6 +930,7 @@ def _build_tournament_mcts_agent(
         progressive_widening=values.get("progressive_widening", False),
         progressive_widening_k=values.get("progressive_widening_k", 1.5),
         progressive_widening_alpha=values.get("progressive_widening_alpha", 0.5),
+        progressive_widening_expansion=values.get("progressive_widening_expansion", "random"),
         exploration=values.get("exploration", sqrt_two()),
         rollout_depth=values["rollout_depth"],
         cutoff_evaluator=_configured_cutoff_evaluator(
@@ -1331,6 +1336,7 @@ def _mcts_configuration(args: argparse.Namespace) -> MctsAgent:
         progressive_widening=args.mcts_progressive_widening,
         progressive_widening_k=args.mcts_progressive_widening_k,
         progressive_widening_alpha=args.mcts_progressive_widening_alpha,
+        progressive_widening_expansion=args.mcts_progressive_widening_expansion,
         rollout_depth=(
             256 if args.mcts_rollout_depth is None else args.mcts_rollout_depth
         ),
@@ -1392,6 +1398,7 @@ def _agent(
             progressive_widening=mcts.progressive_widening,
             progressive_widening_k=mcts.progressive_widening_k,
             progressive_widening_alpha=mcts.progressive_widening_alpha,
+            progressive_widening_expansion=mcts.progressive_widening_expansion,
             rollout_depth=mcts.rollout_depth,
             cutoff_evaluator=(
                 NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic)
@@ -1416,7 +1423,7 @@ def _agent_dict(name: str, agent) -> dict[str, object]:
         "type": name,
         "selection_policy": agent.selection_policy if isinstance(agent, MctsAgent) else None,
         **({"rave_equivalence": agent.rave_equivalence} if isinstance(agent, MctsAgent) and agent.selection_policy == "uct_rave" else {}),
-        **({"progressive_widening": agent.progressive_widening, "progressive_widening_k": agent.progressive_widening_k, "progressive_widening_alpha": agent.progressive_widening_alpha} if getattr(agent, "progressive_widening", False) and isinstance(agent, MctsAgent) else {}),
+        **({"progressive_widening": agent.progressive_widening, "progressive_widening_k": agent.progressive_widening_k, "progressive_widening_alpha": agent.progressive_widening_alpha, "progressive_widening_expansion": agent.progressive_widening_expansion} if getattr(agent, "progressive_widening", False) and isinstance(agent, MctsAgent) else {}),
         "iterations": agent.iterations if isinstance(agent, MctsAgent) else None,
         "time_budget": agent.time_budget if isinstance(agent, MctsAgent) else None,
         "rollout_depth": agent.rollout_depth if isinstance(agent, MctsAgent) else None,
@@ -1747,7 +1754,7 @@ def _configured_benchmark_dicts(
                 "exploration": agent.exploration,
                 "selection_policy": agent.selection_policy,
                 **({"rave_equivalence": agent.rave_equivalence} if agent.selection_policy == "uct_rave" else {}),
-                **({"progressive_widening": agent.progressive_widening, "progressive_widening_k": agent.progressive_widening_k, "progressive_widening_alpha": agent.progressive_widening_alpha} if getattr(agent, "progressive_widening", False) else {}),
+                **({"progressive_widening": agent.progressive_widening, "progressive_widening_k": agent.progressive_widening_k, "progressive_widening_alpha": agent.progressive_widening_alpha, "progressive_widening_expansion": agent.progressive_widening_expansion} if getattr(agent, "progressive_widening", False) else {}),
                 "heuristic": agent.heuristic,
                 "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator),
                 "rollout_policy": _rollout_policy_name(agent),
