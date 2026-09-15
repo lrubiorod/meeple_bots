@@ -520,7 +520,7 @@ All search stages are opt-in. `--all-search` enables all supported stages:
 | `--mechanism-search` | Test all four reuse/transposition combinations, each alternative against the incumbent. |
 | `--pw-search` | Calibrate k/alpha on a PW copy before comparing it with the incumbent. |
 
-Order: depth, selection, RAVE, mechanisms, PW, **refinement, confirmation**.
+Order: depth, selection, RAVE, mechanisms, PW. The study ends at the last enabled stage.
 Disabled stages carry the incumbent forward with no matches or allocation.
 RAVE and PW flags enable tuning, not permission to retain those mechanisms in
 an existing baseline. Unsupported stochastic backends skip these stages explicitly.
@@ -530,38 +530,35 @@ can replace the incumbent only after completing its planned comparison (minimum
 two paired seeds), with a score above parity. Ties and incomplete comparisons
 retain the incumbent. These promotions are exploratory, not significance claims.
 
-Refinement always checks a small neighborhood of the current winner's applicable
-parameters: exploration, RAVE k, PW k and heuristic cutoff depth. It can refine
-parameters even when their larger search stage was not requested. Confirmation
-always follows, using fresh seeds against the **initial incumbent** if the nominee
-changed, otherwise a distinct refinement alternative where one exists. If there
-is no distinct alternative, it reports no changed parameters; it does not invent
-evidence. Finite budget exhaustion is reported explicitly and can leave confirmation
-unmeasured. A nominee is fixed before confirmation; an inconclusive result remains
-provisional and does not establish equivalence.
+There is **no final general refinement or independent confirmation**. In a PW-only
+study, the calibrated PW copy faces the original baseline and the winner is
+exported immediately. The joint k/alpha check remains part of PW calibration.
+Results are exploratory; use a separate tournament for independent verification.
+With no optional stages, the initial candidate is exported without competitive
+matches (calibration still measures cost).
 
 ### Examples
 
 ```bash
 # Initial full study; calibration generates the initial agent.
 python -m meeple_bots study --game connect6 --game-param board_size=13 \
-  --all-search --budget 4h --target-match-time 60s \
+  --all-search --games-per-comparison 50 --target-match-time 60s \
   --output results/studies/connect6-13-initial
 
-# Add only PW calibration to an existing baseline (plus mandatory refinement/confirmation).
+# Calibrate PW and compare it with the existing baseline, then stop.
 python -m meeple_bots study --game connect6 --game-param board_size=13 \
-  --baseline configs/mcts/connect6-baseline.toml --pw-search --budget 1h \
+  --baseline configs/mcts/connect6-baseline.toml --pw-search --games-per-comparison 50 \
   --output results/studies/connect6-13-incremental-pw
 
 # Later, use the exported candidate as the next baseline.
 python -m meeple_bots study --game connect6 --game-param board_size=13 \
   --baseline results/studies/connect6-13-incremental-pw/candidates/best_agent.toml \
-  --selection-search --mechanism-search --budget 2h \
+  --selection-search --mechanism-search --games-per-comparison 50 \
   --output results/studies/connect6-13-incremental-mechanisms
 
 # New heuristic family: calibrate a generic H1 candidate, then all supported stages.
 python -m meeple_bots study --game splendor --heuristic h1 \
-  --all-search --budget 4h --output results/studies/splendor-h1-incremental
+  --all-search --games-per-comparison 50 --output results/studies/splendor-h1-incremental
 ```
 
 ### Initialization, budgets and measurements
@@ -576,8 +573,7 @@ still complete physical turns at cutoff.
 
 With a supplied baseline, calibration measures cost and adequacy but **does not
 replace its horizon** or restart horizon discovery. Optional depth search uses
-shallower fractions of its current depth; final local refinement can also try a
-nearby deeper cutoff. A supplied neutral cutoff is not claimed to be proven
+shallower fractions of its current depth. A supplied neutral cutoff is not claimed to be proven
 full-depth merely because the evaluator is neutral.
 
 Search budgets follow these rules:
@@ -588,13 +584,17 @@ Search budgets follow these rules:
 - No baseline: derive seconds per decision from `--target-match-time` (default
   60s) / (estimated player decisions * 1.2).
 
-`--budget` is the total study budget. `--target-match-time` does not override a
+`--budget` is an optional elapsed pause limit, never a phase allocation. `--target-match-time` does not override a
 supplied baseline budget. Measured elapsed time, iterations/sec, iterations per
 decision and root coverage remain diagnostics; search adequacy is distinct from
 competitive confidence. LOW/VERY LOW adequacy warns without changing the request.
 Larger target recommendations are suppressed when the baseline or an explicit
-decision override controls compute. Equal-time matches use isolated execution;
-fixed-iteration comparisons may use configured workers.
+decision override controls compute. Study defaults to `--workers auto` (physical
+cores minus one, minimum one). All match comparisons, including equal-time and
+calibration pilot matches, use the configured worker limit. Actual concurrency
+is bounded by available jobs in each paired round. Position probes remain
+sequential. Parallel comparisons record `timing_mode="shared_cpu"`: throughput
+can be affected by CPU contention. Use `--workers 1` for isolated comparisons.
 
 ### RAVE and PW calibration
 
@@ -610,28 +610,66 @@ by 1/3 and 8/3, then alpha shifted by +/-0.25, then four joint neighbors (k time
 allows the final PW-vs-incumbent comparison. Existing PW in the input is retained:
 this also permits refining an already widened baseline.
 
-Both searches use separate shared pools. Relative priorities are 0.25 for RAVE,
-0.20 for PW and 0.30 for confirmation, normalized over enabled stages. Mandatory
-follow-up comparisons reserve two seed pairs before optional extra samples;
-calibration caps at four pairs per contrast. Their final comparisons use
-`--max-pairs`. Unused allocations flow forward. Calibration is bounded, not an
-exhaustive or convergence-guaranteed parameter optimization.
+### Fixed games per comparison
+
+Every enabled stage uses **50 games per comparison by default**, meaning 25
+paired seeds with swapped seats. This is not 50 games shared among candidates:
+comparing k=0.5 and k=4 against k=1.5 costs 100 games. An extra adaptive round
+with two new challengers costs another 100 games. Later joint checks and the incumbent
+comparison have their own full sample counts. No general refinement or confirmation follows.
+
+- `--games-per-comparison 50`: global default for every comparison.
+- `--stage-games pw=100 --stage-games selection=50`: exact per-comparison
+  overrides for those stages; repeatable. Supported names: `depth`, `selection`,
+  `rave`, `mechanisms`, `pw`.
+- Counts must be even, at least 4 games. Adaptive subrounds inherit their stage's
+  count. No phase shares a finite pool or skips matches because a cost estimate
+  exceeds an allocation.
+- Legacy `--max-pairs` remains an exact paired-seed count, **not a maximum**; stage overrides take precedence. Prefer
+  the new game-count options.
+
+Time per decision/iterations are unchanged. The study reports estimated duration
+and actual elapsed/search work, but duration estimates are informational. With
+no `--budget`, it runs the fixed schedule through the last enabled stage. With `--budget`,
+it pauses between match-pair batches after reaching the total elapsed limit;
+it never discards a pending stage to advance to another. Calibration and a batch
+already in progress can overshoot that limit. Ctrl+C also preserves progress.
+
+PW now calibrates k, then alpha, with up to **five additional rounds per axis**.
+The first additional round checks gaps around the coarse winner. Subsequent
+rounds continue only for a winning challenger scoring at least 55%, with mean
+paired-seed score minus one estimated standard error above 50%. This is an
+exploratory trend heuristic, not confirmation or a significance guarantee.
+Improving boundaries extend outward (alpha never exceeds 1); interior values
+receive geometric k or arithmetic alpha neighbors. Stopping without a clear
+trend is not proof of convergence. A four-neighbor joint check follows, then
+calibrated PW faces the incumbent with its complete fixed sample.
 
 ### Results and resume
 
 `candidates/best_agent.toml` is the exported nominee. Generated families also keep
 `best_full_depth_agent.toml` or `best_heuristic_cutoff_agent.toml` aliases. Reports
 record requested stages, comparisons, discarded candidates, measured work,
-shared allocations and independent confirmation uncertainty. `baseline.toml`
+fixed planned/completed games and exploratory comparison uncertainty. `baseline.toml`
 records the supplied/generated starting profile; the initial depth-screen candidate
 records any calibrated horizon or explicit budget override.
 
-The initial incumbent always remains a confirmation comparator when the final
-nominee differs. `--reference` optionally adds another held-out profile from the
-same evaluator family under the study's comparison budget.
+The exported profile is the last retained incumbent, including when interrupted:
+unfinished internal RAVE/PW calibration does not replace it. The report explicitly
+marks it `not_independently_confirmed`. `--reference`, `--confirmation-pairs` and
+`--auxiliary-pairs` have been removed; compare profiles in a separate tournament.
 
-Protocol **18** changes initialization and stage semantics: older studies require
-a new output directory. Resume requires the same configuration/flags and compatible
-code/native build; git commits alone do not invalidate it. Increase `--budget` to
-the new **total**, e.g. 2h to 2h30m adds 30 minutes. Frozen plans and shared pools
-are retained; resume does not rerun completed stages or automatically expand them.
+Protocol **20** removes final refinement and confirmation from fixed-game studies.
+Older studies require a new output directory. Resume requires identical game
+counts, flags and compatible code/native build; it completes exactly the missing
+matches without replaying completed seats. Git commits alone do not invalidate it.
+An optional `--budget` is cumulative: raise 2h to 2h30m to add 30 minutes, or omit
+it on resume to remove the time limit. Changing game counts requires a new study.
+
+```bash
+python -m meeple_bots study --game connect6 --game-param board_size=13 \
+  --baseline configs/mcts/connect6-baseline.toml --pw-search \
+  --games-per-comparison 50 \
+  --output results/studies/connect6-13-pw-fixed
+# Add --resume to the identical command after an interruption.
+```

@@ -390,16 +390,15 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--all-search", action="store_true", help="enable all supported optional search stages")
     study.add_argument("--pw-search", action="store_true", help="calibrate Progressive Widening before comparing it with the best deterministic candidate")
     study.add_argument("--rave-search", action="store_true", help="enable progressive RAVE calibration and comparison when supported; disabled by default")
-    study.add_argument("--reference", type=Path, help="held-out calibrated profile, used only in confirmation")
-    study.add_argument("--budget", required=True, help="total study time, e.g. 20m or 2h; includes calibration")
+    study.add_argument("--budget", help="optional total elapsed pause limit; resume continues pending fixed games")
+    study.add_argument("--games-per-comparison", type=int, default=50, help="fixed games per contrast; even, minimum 4; default 50")
+    study.add_argument("--stage-games", action="append", default=[], metavar="STAGE=GAMES", help="override fixed games for depth, selection, rave, mechanisms or pw")
     study.add_argument("--output", type=Path, help="study directory; default: results/studies/GAME-study")
     study.add_argument("--seed", type=int, default=42)
-    study.add_argument("--max-pairs", type=int, default=8, help="maximum paired seeds per contrast (minimum 2)")
-    study.add_argument("--confirmation-pairs", type=int, default=32, help="maximum paired seeds for the primary held-out final comparison; limited by allocated budget")
+    study.add_argument("--max-pairs", type=int, help="legacy alias: exact seed pairs per comparison, not a cap")
     study.add_argument("--decision-time", type=float, help="explicit seconds per decision override; otherwise preserve baseline budget or derive from --target-match-time")
     study.add_argument("--screening-time", type=float, help="removed: use --target-match-time for all comparisons")
-    study.add_argument("--auxiliary-pairs", type=int, default=4, help="maximum paired seeds for the optional held-out reference")
-    study.add_argument("--workers", type=_worker_setting, default=1, help="worker limit for transport; equal-time study comparisons run sequentially")
+    study.add_argument("--workers", type=_worker_setting, default="auto", help="parallel match workers, including equal-time comparisons (default: physical cores minus one)")
     study.add_argument("--max-plies", type=int, default=10000)
     study.add_argument("--resume", action="store_true", help="resume a frozen study; --budget may be increased")
     study.add_argument("--json", action="store_true")
@@ -423,12 +422,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "study":
             from .studies import duration_seconds, run_study
             output = args.output or Path("results/studies") / f"{args.game}-study"
-            result = run_study(args.game, output=output, budget=duration_seconds(args.budget),
-                               baseline=args.baseline, reference=args.reference, seed=args.seed,
+            stage_games = {}
+            for entry in args.stage_games:
+                stage, separator, count = entry.partition("=")
+                if not separator or stage in stage_games:
+                    raise ValueError("--stage-games requires unique STAGE=GAMES entries")
+                stage_games[stage] = int(count)
+            if args.max_pairs is not None and args.games_per_comparison != 50:
+                raise ValueError("use either --games-per-comparison or --max-pairs")
+            result = run_study(args.game, output=output, budget=duration_seconds(args.budget) if args.budget else None,
+                               baseline=args.baseline, seed=args.seed,
                                heuristic=args.heuristic, rave_search=args.rave_search, pw_search=args.pw_search,
                                selection_search=args.selection_search, mechanism_search=args.mechanism_search, depth_search=args.depth_search, all_search=args.all_search, target_match_time=duration_seconds(args.target_match_time),
-                               max_pairs=args.max_pairs, confirmation_pairs=args.confirmation_pairs, decision_seconds=args.decision_time,
-                               screening_seconds=args.screening_time, auxiliary_pairs=args.auxiliary_pairs,
+                               games_per_comparison=args.games_per_comparison, stage_games=stage_games,
+                               max_pairs=args.max_pairs, decision_seconds=args.decision_time,
+                               screening_seconds=args.screening_time,
                                max_plies=args.max_plies, workers=args.workers, resume=args.resume, game_params=args.game_params,
                                progress=lambda message: print(message, file=sys.stderr, flush=True))
             summary = {"status": result["status"], "spent_seconds": result["spent_seconds"],

@@ -280,7 +280,7 @@ def write_study_report(output: Path, state: dict):
     parts = ['<!doctype html><meta charset="utf-8"><title>MCTS diagnostic study</title>',
              '<style>body{font:16px system-ui;max-width:1250px;margin:2rem auto;padding:0 1rem;color:#183040}table{border-collapse:collapse;width:100%;margin:1rem 0}td,th{border:1px solid #ccd5dd;padding:.45rem;text-align:left}th{background:#eef3f6}svg{width:100%;max-width:760px}li{margin:.5rem 0}code{background:#eef3f6}</style>',
              f'<h1>{escape(summary["game"])} — MCTS diagnostic study</h1>',
-             f'<p>Status: <b>{escape(state["status"])}</b>. Budget used: {state["spent_seconds"]:.1f}/{state["budget_seconds"]:.1f}s.</p>',
+             f'<p>Status: <b>{escape(state["status"])}</b>. Budget used: {state["spent_seconds"]:.1f}/{state["budget_seconds"] if state["budget_seconds"] is not None else "unlimited"}s.</p>',
              '<p><a href="study.json">Frozen plans and provenance</a> · <a href="summary.json">Machine-readable results</a> · <a href="baseline.toml">Starting profile</a></p>',
              '<h2>Interpretation</h2><ul>' + ''.join(f'<li>{escape(c)}</li>' for c in caveats) + '</ul>']
     plan = summary.get("budget_plan")
@@ -419,6 +419,13 @@ def family_study_diagnostics(state):
                                   "iterations_per_second": timing["iterations_per_second"],
                                   "actual_elapsed_seconds": timing["total_seconds"], "mean_decision_seconds": timing["mean_seconds"],
                                   "terminal_fraction": timing["terminal_fraction"]})
+    if state["request"].get("version", 0) >= 20:
+        selected = state.get("selected_candidate", {})
+        return {"mode": state["request"]["mode"], "search_complete": state.get("status") == "complete",
+                "final_selection": {"candidate": selected.get("name"), "phase": selected.get("phase"),
+                                    "status": "provisional", "competitive_confidence": "not_independently_confirmed",
+                                    "interpretation": "Winner of the last completed enabled stage; no final refinement or independent confirmation."},
+                "improvement_comparisons": effects, "candidate_search_costs": costs}
     return {"mode": state["request"]["mode"], "search_complete": complete,
             "final_selection": {"candidate": candidate, "status": "confirmed" if complete and tested and verdict == "b_ahead" else "provisional",
                                 "competitive_confidence": verdict if complete and tested else "not_measured",
@@ -437,16 +444,16 @@ def write_family_study_report(output, state):
         "Rollout depth counts player decisions, excludes Chance, and completes the physical turn before cutoff. Terminal stops immediately.",
         "Search adequacy thresholds are heuristic diagnostics, separate from paired-seed competitive confidence.",
         "95% intervals use conservative paired-seed Hoeffding bounds. Screening is adaptive/exploratory, not independent confirmation; no multiple-comparison correction.",
-        "The final nominee is frozen before fresh confirmation seeds. Budget-limited/untested alternatives are not proven inferior.",
+        "The exported winner has exploratory evidence only; final refinement and independent confirmation are not run.",
         "Pilot length and random representative positions are preliminary estimates. Actual game costs can differ; target match time is not a match deadline.",
-        "Phase allocations roll forward; match pairs and individual searches can overshoot time budgets. Old study protocols require a new output directory.",
+        "Fixed games per comparison; time estimates never skip stages. Optional elapsed pause limits may overshoot by a match pair. Old study protocols require a new output directory.",
     ]
     (output / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
     cal = state.get("calibration") or {}
     parts = ['<!doctype html><meta charset="utf-8"><title>MCTS family study</title>',
              '<style>body{font:16px system-ui;max-width:1200px;margin:2rem auto}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:.5rem;text-align:left}</style>',
              f'<h1>{escape(state["request"]["game"])} — {escape(state["request"]["mode"])}</h1>',
-             f'<p>Status: {escape(state["status"])}. Used {state["spent_seconds"]:.1f}/{state["budget_seconds"]:.1f}s.</p>',
+             f'<p>Status: {escape(state["status"])}. Used {state["spent_seconds"]:.1f}/{state["budget_seconds"] if state["budget_seconds"] is not None else "unlimited"}s.</p>',
              '<p><a href="summary.json">Summary and frozen comparisons</a> · <a href="study.json">Checkpoint</a></p>',
              f'<p>RAVE search requested: {state["request"].get("rave_search", False)}; supported: {"uct_rave" in state["request"].get("selection_policies", [])}.</p>',
              '<h2>Calibration and search adequacy</h2>',
@@ -455,6 +462,7 @@ def write_family_study_report(output, state):
     parts.append(_table(['Sampled player decisions', 'Search ms', 'Iterations', 'Legal actions', 'Terminal / cutoff simulations'],
                         [(t['sampled_ply'], t['milliseconds'], t['iterations'], t['legal_actions'],
                           f"{t.get('terminal_simulations')} / {t.get('cutoff_simulations')}") for t in cal.get('position_timings', [])]))
+    parts.append('<h2>Fixed game budgets</h2><pre>' + escape(json.dumps({k: state['request'].get(k) for k in ('games_per_comparison', 'stage_games')}, indent=2)) + '</pre>')
     parts.append('<h2>Incremental stages</h2>' + _table(['Stage', 'Requested'], [(key, state['request'].get(key, False)) for key in ('selection_search', 'rave_search', 'mechanism_search', 'pw_search', 'depth_search')]))
     parts.append(f'<p>PW search requested: {state["request"].get("pw_search", False)}; supported: {state["request"].get("pw_supported", False)}.</p>')
     if state.get('pw_budget'):
@@ -465,9 +473,11 @@ def write_family_study_report(output, state):
     parts.append(_table(['Horizon kind', 'Decision depth', 'Measured terminal fraction'], [(horizon.get('kind'), horizon.get('depth'), horizon.get('terminal_fraction'))]))
     parts.append('<pre>' + escape(json.dumps(cal.get('search_adequacy', {}), indent=2)) + '</pre>')
     parts.extend('<p>Warning: ' + escape(w) + '</p>' for w in cal.get('warnings', []))
-    parts.append('<h2>Independent competitive evidence</h2><pre>' + escape(json.dumps(summary['final_selection'], indent=2)) + '</pre>')
+    parts.append('<h2>Selection evidence</h2><pre>' + escape(json.dumps(summary['final_selection'], indent=2)) + '</pre>')
     for name, phase in state['phases'].items():
         parts.append(f'<h2>{escape(name)} — {escape(phase["status"])}</h2>')
+        if 'planned_games' in phase:
+            parts.append(f'<p>Fixed planned games: {phase["planned_games"]}; estimated duration: {phase["estimated_seconds"]:.1f}s (not a limit).</p>')
         if phase.get('pw_decisions'):
             parts.append(_table(['Family', 'PW calibration decision'], phase['pw_decisions'].items()))
         if phase.get('rave_decisions'):
