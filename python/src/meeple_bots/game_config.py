@@ -27,9 +27,10 @@ def game_parameters(game) -> dict[str, int]:
 def create_game(name: str, parameters: dict[str, int] | None = None):
     from .api import Boop, ConnectFour, TicTacToe, SpiritsOfTheForest, Splendor
     from .connect6 import Connect6
+    from .lost_cities import LostCities
 
     factories = {
-        'boop': Boop, 'connect-four': ConnectFour, 'tic-tac-toe': TicTacToe,
+        'lost-cities': LostCities, 'boop': Boop, 'connect-four': ConnectFour, 'tic-tac-toe': TicTacToe,
         'spotf': SpiritsOfTheForest, 'splendor': Splendor, 'connect6': Connect6,
     }
     name = name.replace('_', '-')

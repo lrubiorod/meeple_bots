@@ -170,6 +170,7 @@ pub fn report(
         winner,
         moves,
         chance_events,
+        lost_cities_state: None,
         splendor_state: Some(state),
         unassigned_maintenance_seconds: traced.unassigned_maintenance_time.map(|d| d.as_secs_f64()),
         final_board: Vec::new(),

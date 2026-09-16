@@ -34,6 +34,7 @@ from ._agent_config import (
 from . import _native
 from .connect6 import Connect6, Connect6Action, Connect6State
 from .game_config import game_parameters
+from .lost_cities import LostCities, LostCitiesAction, LostCitiesState, LostCitiesChanceEvent
 from .splendor import Splendor, SplendorAction, SplendorState, SplendorChanceOutcome, ChanceEvent
 from ._capabilities import game_search_capabilities
 from ._concurrency import WorkerSetting, ordered_parallel_map, resolve_workers
@@ -433,9 +434,9 @@ class SpiritGemstonePool:
             raise ValueError("each player must account for exactly three gemstones")
 
 
-Game: TypeAlias = TicTacToe | ConnectFour | Boop | SpiritsOfTheForest | Splendor | Connect6
+Game: TypeAlias = TicTacToe | ConnectFour | Boop | SpiritsOfTheForest | Splendor | LostCities | Connect6
 GameAction: TypeAlias = (
-    Connect6Action | SplendorAction |
+    Connect6Action | SplendorAction | LostCitiesAction |
     TicTacToeAction | ConnectFourAction | BoopAction | SpiritsOfTheForestAction
 )
 BoardCell: TypeAlias = int | BoopPiece | SpiritTile | None
@@ -589,7 +590,8 @@ class MatchResult:
     gemstone_pools: tuple[SpiritGemstonePool, SpiritGemstonePool] | None = None
     scores: tuple[int, int] | None = None
 
-    chance_events: tuple[ChanceEvent, ...] = ()
+    chance_events: tuple[ChanceEvent | LostCitiesChanceEvent, ...] = ()
+    lost_cities_state: LostCitiesState | None = None
     splendor_state: SplendorState | None = None
     game_params: dict[str, int] = field(default_factory=dict)
 
@@ -673,9 +675,9 @@ class Match:
     observe_move: MatchMoveObserver | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, Connect6)):
+        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, LostCities, Connect6)):
             raise TypeError(
-                "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, or Splendor"
+                "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, Splendor, or LostCities"
             )
         if not isinstance(self.first, (RandomAgent, MctsAgent, HumanAgent)):
             raise TypeError("first must be RandomAgent, MctsAgent, or HumanAgent")
@@ -757,9 +759,11 @@ class Match:
             gemstone_pools=_gemstone_pools_from_native(raw["gemstone_pools"]),
             scores=None if raw["scores"] is None else tuple(raw["scores"]),
             chance_events=tuple(
-                ChanceEvent(event["after_ply"], SplendorChanceOutcome(event["outcome"]["card"]))
+                (LostCitiesChanceEvent(event["after_ply"], LostCitiesAction.from_dict(event["outcome"]))
+                 if isinstance(self.game, LostCities) else ChanceEvent(event["after_ply"], SplendorChanceOutcome(event["outcome"]["card"])))
                 for event in raw.get("chance_events", ())
             ),
+            lost_cities_state=(LostCitiesState.from_dict(raw["lost_cities_state"]) if "lost_cities_state" in raw else None),
             splendor_state=(SplendorState.from_dict(raw["splendor_state"])
                             if "splendor_state" in raw else None),
         )
@@ -779,9 +783,9 @@ class Batch:
     workers: WorkerSetting = "auto"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, Connect6)):
+        if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, LostCities, Connect6)):
             raise TypeError(
-                "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, or Splendor"
+                "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, Splendor, or LostCities"
             )
         for name, agent in (("agent_a", self.agent_a), ("agent_b", self.agent_b)):
             if not isinstance(agent, (RandomAgent, MctsAgent)):
@@ -924,7 +928,7 @@ def evaluate_game(
 ) -> GameEvaluationReport:
     """Measure game structure and produce practical local MCTS starting points."""
 
-    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, Connect6)):
+    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, LostCities, Connect6)):
         raise TypeError(
             "game must be TicTacToe, ConnectFour, Boop, or SpiritsOfTheForest"
         )
@@ -1012,9 +1016,9 @@ def benchmark_mcts_agent(
 ) -> MctsAgentBenchmark:
     """Measure one exact MCTS configuration on shared early, middle, and late states."""
 
-    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, Connect6)):
+    if not isinstance(game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, LostCities, Connect6)):
         raise TypeError(
-            "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, or Splendor"
+            "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, Splendor, or LostCities"
         )
     if not isinstance(agent, MctsAgent):
         raise TypeError("agent must be an MctsAgent")
@@ -1101,6 +1105,8 @@ def benchmark_mcts_agent(
 def _native_game(game: Game) -> str:
     if isinstance(game, Connect6):
         return "connect6"
+    if isinstance(game, LostCities):
+        return "lost_cities"
     if isinstance(game, Splendor):
         return "splendor"
     if isinstance(game, TicTacToe):
@@ -1115,6 +1121,8 @@ def _native_game(game: Game) -> str:
 def _action_from_native(raw: dict[str, object]) -> GameAction:
     if raw["type"] == "connect6":
         return Connect6Action(raw["position"])
+    if raw["type"] == "lost_cities":
+        return LostCitiesAction.from_dict(raw)
     if raw["type"] == "splendor":
         return SplendorAction.from_dict(raw)
     if raw["type"] == "tic_tac_toe":
@@ -1273,6 +1281,8 @@ def _native_agent(agent: Agent, game: Game):
 
 
 def _validate_agent_evaluators(game: Game, agent: Agent) -> None:
+    if isinstance(game, LostCities) and not isinstance(agent, RandomAgent):
+        raise ValueError("Lost Cities has imperfect information: only RandomAgent is supported; no compatible searchable agent yet (SO-ISMCTS is not implemented)")
     if isinstance(agent, MctsAgent):
         if isinstance(game, Splendor) and agent.selection_policy == "uct_rave":
             raise ValueError("UCT-RAVE is only supported by deterministic MCTS")
@@ -1425,6 +1435,8 @@ def _validate_game_heuristic(game: Game, heuristic: int | None) -> None:
 def _game_display_name(game: Game) -> str:
     if isinstance(game, Connect6):
         return "connect6"
+    if isinstance(game, LostCities):
+        return "lost_cities"
     if isinstance(game, Splendor):
         return "splendor"
     if isinstance(game, TicTacToe):
@@ -1971,7 +1983,7 @@ def _initial_spirits_state(seed: int):
 def _final_board_from_native(flat_board, game: Game) -> GameBoard:
     if isinstance(game, Connect6):
         return _board_rows([None if p is None else p["player"] for p in flat_board], columns=game.board_size)
-    if isinstance(game, Splendor):
+    if isinstance(game, (Splendor, LostCities)):
         return ()
     if isinstance(game, SpiritsOfTheForest):
         return _board_rows(

@@ -553,6 +553,8 @@ class StudyRunner:
                  selection_search: bool = False, mechanism_search: bool = False, depth_search: bool = False, all_search: bool = False,
                  tune: str | None = None, second_pass: bool = False, widening_expansion_search: bool = False,
                  workers: WorkerSetting = "auto", resume: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
+        if game in ("lost_cities", "lost-cities"):
+            raise ValueError("Lost Cities has no compatible searchable agent yet; SO-ISMCTS is not implemented")
         if game not in GAMES:
             raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
         if budget is not None and (not math.isfinite(budget) or budget <= 0):
@@ -1052,6 +1054,8 @@ class StudyRunner:
 
 def run_study(game: str, *, output: Path, budget: float | None = None, baseline: Path | None = None,
               reference: Path | None = None, **kwargs) -> dict:
+    if game in ("lost_cities", "lost-cities"):
+        raise ValueError("Lost Cities has no compatible searchable agent yet; SO-ISMCTS is not implemented")
     if game not in GAMES:
         raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
     base = _load_mcts_profile(baseline).agent if baseline else None

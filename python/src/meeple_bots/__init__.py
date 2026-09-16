@@ -67,6 +67,7 @@ from .api import (
 
 __all__ = [
     "Connect6", "Connect6Action", "Connect6State", "create_game",
+    "LostCities", "LostCitiesAction", "LostCitiesState", "LostCitiesObservation", "LostCitiesChanceEvent",
     "SplendorSession",
     "Splendor", "SplendorAction", "SplendorMoveKind", "SplendorState",
     "SplendorPlayerState", "SplendorChanceOutcome", "ChanceEvent", "replay_splendor",
@@ -141,3 +142,5 @@ from .splendor import Splendor, SplendorAction, SplendorMoveKind, SplendorState,
 
 from .connect6 import Connect6, Connect6Action, Connect6State
 from .game_config import create_game
+
+from .lost_cities import LostCities, LostCitiesAction, LostCitiesState, LostCitiesObservation, LostCitiesChanceEvent

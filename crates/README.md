@@ -76,12 +76,14 @@ Each game implements `Game` with its own associated types:
 
 The trait also constructs the initial state, reports whose turn it is, applies actions, and returns
 normalized terminal utility. `PositionStatus` distinguishes player turns, terminal positions, and
-a reserved chance boundary.
+an environment-owned chance boundary. Outcomes may be public or private.
 
 Capability traits state additional guarantees required by algorithms:
 
 - `DeterministicGame`: the game never requests a chance transition.
 - `PerfectInformationGame`: every player can observe the authoritative state.
+- `ImperfectInformationGame`: optionally sample a complete hidden assignment from a
+  player observation and an explicit RNG, preserving that observation exactly.
 - `HeuristicGame`: the game exposes one or more indexed state evaluators.
 - `TwoPlayerZeroSumGame`: the current two-seat adversarial model.
 
@@ -97,7 +99,11 @@ actions, active player, and player observation. `DecisionContext::state()` requi
 The lifecycle methods `on_match_start`, `on_action_applied` and `on_match_end` receive the full
 `G::State` without that bound. An agent could retain private information received there; supplying
 a filtered `observation()` alone would not prevent this. Simulation observers also receive full
-state. The current framework does not enforce hidden-information isolation.
+state. The legacy lifecycle does not enforce hidden-information isolation. Lost Cities
+registers only the audited RandomAgent (legal actions only, no-op callbacks); future
+hidden-information searches require an observation-safe lifecycle. Lost Cities does
+not implement `PerfectInformationGame`, so both MCTS backends are excluded by type
+bounds as well as runtime catalog validation.
 
 Randomness is explicit through `RandomSource`. The simulation crate derives a separate
 deterministic stream for each seat from the match seed, avoiding accidental coupling between the
@@ -201,22 +207,20 @@ The binding only converts actions; legality remains in the Rust game implementat
 
 ## Current boundaries
 
-The implemented games are sequential, perfect-information, two-player and zero-sum. Can't Stop
-adds public stochastic events. `Game::sample_chance` returns a sampled event, applied through
-`apply_action`; event actions never belong to a player's legal-action list. The generic simulator
-accepts `Game` and resolves `Chance` with an independent RNG stream. Agent and observer callbacks
-receive each resolved event. Traces preserve outcomes in `chance_events` with an `after_ply`
-position for replay; chance-only chains have a separate cap equal to `max_plies`.
-The original MCTS wrappers remain restricted to `DeterministicGame`; `StochasticMctsAgent`
-provides sampled-outcome search without retained trees. See [Can't Stop](../games/cant-stop/README.md)
-for the typed catalog session and the current Python integration boundary.
+The implemented games are sequential, two-player and zero-sum. Lost Cities is the
+first imperfect-information game; other games have perfect information. The generic
+simulator resolves Chance with an independent environment RNG using `sample_chance`
+and `apply_chance_outcome`; event actions never belong to player legal-action lists.
+Authoritative traces record outcomes with `after_ply` for replay, including setup at
+position zero. These traces disclose private draws and are administrative data, not
+observations.
 
-Before adding a hidden-information game, define a per-player view for every agent callback and
-review action visibility, legal-action exposure, retained agent memory and observer/trace access.
-Use filtered observations or a separate agent contract, then add tests proving private data is
-not exposed through any supported route. Before adding stochastic play, define outcome sampling,
-probabilities and RNG ownership in both simulation and compatible search agents. These are future
-integration requirements, not capabilities provided by the existing contracts.
+Lost Cities separates owned observations, hidden-hand determinization and future
+Chance sampling from a deck pool. It implements no search agent, belief model or
+information-set tree. Before registering SO-ISMCTS, provide an observation-safe
+agent lifecycle and review action visibility, retained memory and observer access.
+See [Lost Cities](../games/lost-cities/README.md) for the exact variant, observation
+fields, conservation/roundtrip invariants and currently supported interfaces.
 
 See the [agents guide](../agents/README.md) for current MCTS behavior, the
 [MCTS roadmap](../agents/MCTS_ROADMAP.md) for possible extensions, and the

@@ -23,3 +23,7 @@ Commands assume the repository root and an activated `.venv`. Run
 
 After changing any Rust crate used by Python, rebuild with `maturin develop --release`.
 An editable Python installation does not rebuild the native extension automatically.
+
+Lost Cities is available as `LostCities` / CLI `lost_cities` for Random vs Random
+matches and tournaments. See the [information model and single-round variant](../games/lost-cities/README.md).
+Standard MCTS and study are intentionally unavailable until a compatible hidden-information agent exists.

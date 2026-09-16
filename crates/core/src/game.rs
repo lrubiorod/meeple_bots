@@ -5,7 +5,8 @@ use crate::{IllegalAction, PlayerId, RandomSource};
 #[non_exhaustive]
 pub enum PositionStatus {
     PlayerTurn(PlayerId),
-    /// A public stochastic event sampled by the environment, never by a player.
+    /// A stochastic event sampled by the environment, never by a player.
+    /// Its outcome may be private; observations control what each player sees.
     Chance,
     Terminal,
 }
@@ -57,7 +58,7 @@ pub trait Game {
         action: &Self::Action,
     ) -> Result<(), IllegalAction>;
 
-    /// Enumerated public events. Probabilities must be finite, positive and sum to one.
+    /// Enumerated authoritative events. Probabilities must be finite, positive and sum to one.
     /// Event values share the transition transport type, but are never player legal actions.
     fn chance_outcomes(
         &self,
@@ -80,7 +81,7 @@ pub trait Game {
         self.apply_action(state, outcome)
     }
 
-    /// Sample a public event according to its probability distribution. Apply it with
+    /// Sample an environment event according to its probability distribution. Apply it with
     /// `apply_chance_outcome`; event actions must not appear in `legal_actions`. Sampling must
     /// only use the supplied RNG, never a hidden seed stored in the authoritative state.
     /// Deterministic games keep the default implementation.

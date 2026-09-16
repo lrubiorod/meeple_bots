@@ -7,6 +7,7 @@ from dataclasses import asdict
 from .connect6 import Connect6, Connect6Action
 from .game_config import game_parameters
 from .splendor import Splendor, SplendorAction
+from .lost_cities import LostCities, LostCitiesAction
 
 from .api import (
     Boop, ConnectFour, SpiritsOfTheForest, TicTacToe,
@@ -103,6 +104,9 @@ def match_result_dict(result: MatchResult) -> dict[str, object]:
         state.pop('_position', None)
         payload['splendor_state'] = state
         payload['chance_events'] = [{'after_ply': e.after_ply, 'outcome': e.outcome.to_dict()} for e in result.chance_events]
+    if result.lost_cities_state is not None:
+        payload['lost_cities_state'] = result.lost_cities_state.to_dict()
+        payload['chance_events'] = [{'after_ply': e.after_ply, 'outcome': e.outcome.to_dict()} for e in result.chance_events]
     return payload
 
 
@@ -111,7 +115,7 @@ def action_dict(action: GameAction) -> dict[str, object]:
     if isinstance(action, Connect6Action):
         return {"type": "connect6", "position": action.position}
 
-    if isinstance(action, SplendorAction):
+    if isinstance(action, (SplendorAction, LostCitiesAction)):
         return action.to_dict()
     if isinstance(action, TicTacToeAction):
         return {
@@ -322,6 +326,8 @@ def _evaluator_dict(
 def game_name(game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest) -> str:
     if isinstance(game, Connect6):
         return "connect6"
+    if isinstance(game, LostCities):
+        return "lost_cities"
     if isinstance(game, Splendor):
         return "splendor"
     if isinstance(game, TicTacToe):

@@ -2,6 +2,7 @@
 
 mod cant_stop;
 mod connect6;
+mod lost_cities;
 mod splendor;
 
 use meeple_bots_catalog::{
@@ -1465,6 +1466,20 @@ fn py_run_match(
         }
         result.set_item("chance_events", events)?;
     }
+    if let Some(state) = &report.lost_cities_state {
+        result.set_item("lost_cities_state", lost_cities::snapshot(py, state)?)?;
+        let events = PyList::empty(py);
+        for e in &report.chance_events {
+            let CatalogAction::LostCities(a) = e.event else {
+                return Err(PyRuntimeError::new_err("unexpected chance event"));
+            };
+            let item = PyDict::new(py);
+            item.set_item("after_ply", e.after_ply)?;
+            item.set_item("outcome", lost_cities::action_dict(py, a)?)?;
+            events.append(item)?;
+        }
+        result.set_item("chance_events", events)?;
+    }
     result.set_item(
         "unassigned_maintenance_seconds",
         report.unassigned_maintenance_seconds,
@@ -1472,13 +1487,15 @@ fn py_run_match(
 
     let moves = PyList::empty(py);
     for recorded in report.moves {
-        let action = if let CatalogAction::Splendor(a) = recorded.action {
+        let action = if let CatalogAction::LostCities(a) = recorded.action {
+            lost_cities::action_dict(py, a)?.into_bound(py)
+        } else if let CatalogAction::Splendor(a) = recorded.action {
             splendor::action_dict(py, a)?.into_bound(py)
         } else {
             PyDict::new(py)
         };
         match recorded.action {
-            CatalogAction::Splendor(_) => {}
+            CatalogAction::Splendor(_) | CatalogAction::LostCities(_) => {}
             CatalogAction::Boop {
                 piece,
                 row,
@@ -1585,7 +1602,7 @@ fn run_python_match(
     observer: Option<&Py<PyAny>>,
     config: MatchConfig,
 ) -> PyResult<CatalogMatchReport> {
-    if matches!(game, GameId::Splendor) {
+    if matches!(game, GameId::Splendor | GameId::LostCities) {
         if observer.is_some() {
             return Err(PyValueError::new_err(
                 "Live observers are not supported for this game",
@@ -1611,7 +1628,7 @@ fn run_python_match(
             GameId::Connect6(size) => {
                 run_observed_connect6_match(size, first, second, observer, config)
             }
-            GameId::Splendor => unreachable!("handled above"),
+            GameId::Splendor | GameId::LostCities => unreachable!("handled above"),
             GameId::Boop => run_observed_boop_match(first, second, observer, config),
             GameId::ConnectFour => run_observed_connect_four_match(first, second, observer, config),
             GameId::SpiritsOfTheForest => {
@@ -1622,7 +1639,7 @@ fn run_python_match(
     }
 
     match game {
-        GameId::Splendor => unreachable!("handled above"),
+        GameId::Splendor | GameId::LostCities => unreachable!("handled above"),
         GameId::Connect6(size) => run_connect6_match_with_trace(
             size,
             &mut python_participant(first, configured_connect6_mcts)?,
@@ -1668,7 +1685,7 @@ fn py_analyze_trace(
             .into_iter()
             .map(|(player, position)| replay_record(player, CatalogAction::Connect6 { position }))
             .collect(),
-        GameId::Splendor => {
+        GameId::Splendor | GameId::LostCities => {
             return Err(PyValueError::new_err(
                 "Splendor replay requires chance events; use replay_splendor",
             ));
@@ -2505,6 +2522,7 @@ fn parse_game(game: &str) -> PyResult<GameId> {
         "connect6" => Ok(GameId::Connect6(meeple_bots_connect6::DEFAULT_BOARD_SIZE)),
         "boop" => Ok(GameId::Boop),
         "splendor" => Ok(GameId::Splendor),
+        "lost_cities" => Ok(GameId::LostCities),
         "connect_four" => Ok(GameId::ConnectFour),
         "spotf" | "spirits_of_the_forest" => Ok(GameId::SpiritsOfTheForest),
         "tic_tac_toe" => Ok(GameId::TicTacToe),
@@ -2523,6 +2541,9 @@ fn py_spirits_initial_state(seed: u64) -> NativeSpiritsState {
 fn py_game_search_capabilities(py: Python<'_>, game: &str) -> PyResult<Py<PyDict>> {
     let capabilities = meeple_bots_catalog::game_search_capabilities(parse_game(game)?);
     let result = PyDict::new(py);
+    result.set_item("imperfect_information", capabilities.imperfect_information)?;
+    result.set_item("stochastic", capabilities.stochastic)?;
+    result.set_item("players", capabilities.players)?;
     result.set_item("turn_phase_conditions", capabilities.turn_phase_conditions)?;
     result.set_item("selection_policies", capabilities.selection_policies)?;
     let heuristics = PyDict::new(py);
@@ -2548,6 +2569,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<connect6::Position>()?;
     module.add_function(wrap_pyfunction!(normalize_game_parameters, module)?)?;
     module.add_class::<splendor::PySplendorPosition>()?;
+    module.add_class::<lost_cities::PyLostCitiesPosition>()?;
     module.add_class::<splendor::PySplendorSession>()?;
     module.add_function(wrap_pyfunction!(py_game_search_capabilities, module)?)?;
     module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;

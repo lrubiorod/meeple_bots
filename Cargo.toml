@@ -9,6 +9,7 @@ members = [
     "games/boop",
     "games/splendor",
     "games/cant-stop",
+    "games/lost-cities",
     "games/connect-four",
     "games/connect6",
     "games/spirits-of-the-forest",

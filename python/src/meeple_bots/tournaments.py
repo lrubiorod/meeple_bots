@@ -360,11 +360,26 @@ def _validate_completed_record(record: dict, header: dict) -> None:
     number(record.get("duration_seconds"), "duration_seconds")
     if header["game"] == "connect6":
         _validate_connect6_result(result, header.get("game_params"))
+    if header["game"] == "lost_cities":
+        from . import _native
+        from .lost_cities import LostCitiesState
+        try:
+            position = _native.LostCitiesPosition.replay(result['moves'], result['chance_events'])
+            state = LostCitiesState.from_dict(position.snapshot())
+            if state != LostCitiesState.from_dict(result['lost_cities_state']):
+                raise ValueError('Lost Cities final state differs from replay')
+            if tuple(result['scores']) != state.scores:
+                raise ValueError('Lost Cities scores differ from replay')
+            expected = None if state.scores[0] == state.scores[1] else int(state.scores[1] > state.scores[0])
+            if result['winner'] != expected:
+                raise ValueError('Lost Cities winner differs from replay')
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError('invalid Lost Cities trace') from error
     if header["game"] == "splendor":
         _validate_splendor_result(result)
     action_type = {
         "tic-tac-toe": "tic_tac_toe", "connect-four": "connect_four",
-        "boop": "boop", "spotf": "spotf", "splendor": "splendor", "connect6": "connect6",
+        "boop": "boop", "spotf": "spotf", "splendor": "splendor", "connect6": "connect6", "lost_cities": "lost_cities",
     }[header["game"]]
     if action_type == "spotf":
         for field in ("scores", "collections", "gemstone_pools"):

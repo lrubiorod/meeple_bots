@@ -24,6 +24,19 @@ pub trait DeterministicGame: Game {}
 /// Contract: every player can observe the complete authoritative state.
 pub trait PerfectInformationGame: Game {}
 
+/// Optional hidden-information contract. Observations must contain only the observer's
+/// information, with no authoritative-state handle. Eq/Hash/serialization must not leak
+/// hidden assignments. Sampling uses only this observation and the supplied RNG, and
+/// observing the result again must reproduce the input. Future chance remains separate.
+pub trait ImperfectInformationGame: Game {
+    fn sample_determinization<R: crate::RandomSource + ?Sized>(
+        &self,
+        observation: &Self::Observation<'_>,
+        observer: PlayerId,
+        rng: &mut R,
+    ) -> Result<Self::State, crate::IllegalAction>;
+}
+
 /// Optional contract for games that provide state evaluations to search agents.
 pub trait HeuristicGame: Game {
     /// Number of heuristic variants exposed by this game.

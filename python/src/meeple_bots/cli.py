@@ -102,7 +102,7 @@ from .tournaments import (
 )
 
 
-_PLAYABLE_GAMES = ["connect6", "splendor", "boop", "connect-four", "spotf", "tic-tac-toe"]
+_PLAYABLE_GAMES = ["lost_cities", "connect6", "splendor", "boop", "connect-four", "spotf", "tic-tac-toe"]
 _TOURNAMENT_GRID_FIELDS = (
     (("iterations",), "i"),
     (("time_budget",), "t"),
@@ -162,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     gui.add_argument(
         "--game",
         type=_game_tag,
-        choices=[*_PLAYABLE_GAMES, "cant-stop"],
+        choices=[g for g in _PLAYABLE_GAMES if g != "lost_cities"] + ["cant-stop"],
         default="tic-tac-toe",
     )
     gui.add_argument("--host", default="127.0.0.1")
@@ -349,7 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     analyze = commands.add_parser("analyze", help="measure game complexity and calibrate MCTS")
     analyze.add_argument(
-        "--game", type=_game_tag, choices=[g for g in _PLAYABLE_GAMES if g != "splendor"], required=True
+        "--game", type=_game_tag, choices=[g for g in _PLAYABLE_GAMES if g not in ("splendor", "lost_cities")], required=True
     )
     analyze.add_argument("--samples", type=int, default=128)
     analyze.add_argument("--max-depth", type=int, default=256)
@@ -1559,11 +1559,12 @@ def _print_result(
     second_agent,
 ) -> None:
     from .splendor import SplendorAction
+    from .lost_cities import LostCitiesAction
     print(f"Player 0: {_agent_name(first, first_agent)}")
     print(f"Player 1: {_agent_name(second, second_agent)}")
     print()
     for ply, move in enumerate(result.moves, start=1):
-        if isinstance(move.action, SplendorAction):
+        if isinstance(move.action, (SplendorAction, LostCitiesAction)):
             selected = str(move.action.to_dict())
         elif isinstance(move.action, TicTacToeAction):
             selected = f"row {move.action.row}, column {move.action.column}"
@@ -1594,8 +1595,9 @@ def _print_result(
                 selected += f"; {resolution}"
         print(f"{ply}. Player {move.player} -> {selected}")
     print()
-    print("Final board:")
-    _print_board(result.final_board)
+    if result.final_board:
+        print("Final board:")
+        _print_board(result.final_board)
     if result.pools is not None:
         for player, pool in enumerate(result.pools):
             print(f"Player {player} pool: {pool.kittens} kittens, {pool.cats} cats")

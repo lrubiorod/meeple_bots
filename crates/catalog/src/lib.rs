@@ -1,6 +1,7 @@
 //! Runtime configuration and independent participants for the typed engine.
 
 pub mod cant_stop;
+pub mod lost_cities;
 pub mod splendor;
 
 mod configuration;
@@ -51,6 +52,7 @@ use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GameId {
+    LostCities,
     Connect6(usize),
     Splendor,
     Boop,
@@ -99,6 +101,9 @@ fn connect6_game(size: usize) -> Result<Connect6, CatalogError> {
 /// Search options exposed by the registered game integration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameSearchCapabilities {
+    pub imperfect_information: bool,
+    pub stochastic: bool,
+    pub players: u8,
     pub heuristics: Vec<HeuristicDescriptor>,
     pub turn_phase_conditions: bool,
     pub selection_policies: Vec<&'static str>,
@@ -123,14 +128,21 @@ pub fn game_search_capabilities(game: GameId) -> GameSearchCapabilities {
             .collect()
     }
     GameSearchCapabilities {
+        imperfect_information: matches!(game, GameId::LostCities),
+        stochastic: matches!(game, GameId::LostCities | GameId::Splendor),
+        players: 2,
         heuristics: match game {
             GameId::Boop => heuristics(&Boop),
             GameId::SpiritsOfTheForest => heuristics(&spirits_of_the_forest_game(0)),
             GameId::Splendor => heuristics(&splendor::game(0)),
-            GameId::Connect6(_) | GameId::ConnectFour | GameId::TicTacToe => Vec::new(),
+            GameId::LostCities | GameId::Connect6(_) | GameId::ConnectFour | GameId::TicTacToe => {
+                Vec::new()
+            }
         },
         turn_phase_conditions: supports_turn_phase_conditions(game),
-        selection_policies: if matches!(game, GameId::Splendor) {
+        selection_policies: if matches!(game, GameId::LostCities) {
+            vec![]
+        } else if matches!(game, GameId::Splendor) {
             vec!["uct", "ucb1_tuned"]
         } else {
             vec!["uct", "ucb1_tuned", "uct_rave"]
@@ -142,6 +154,7 @@ pub const fn game_name(game: GameId) -> &'static str {
     match game {
         GameId::Connect6(_) => "connect6",
         GameId::Splendor => "splendor",
+        GameId::LostCities => "lost_cities",
         GameId::Boop => "boop",
         GameId::ConnectFour => "connect-four",
         GameId::SpiritsOfTheForest => "spotf",
@@ -155,6 +168,7 @@ fn supports_turn_phase_conditions(game: GameId) -> bool {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogAction {
+    LostCities(meeple_bots_lost_cities::LostCitiesAction),
     Connect6 {
         position: usize,
     },
@@ -302,6 +316,7 @@ pub struct RecordedMove {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CatalogMatchReport {
     pub chance_events: Vec<meeple_bots_simulation::TracedChance<CatalogAction>>,
+    pub lost_cities_state: Option<meeple_bots_lost_cities::LostCitiesState>,
     pub splendor_state: Option<meeple_bots_splendor::SplendorState>,
     pub seed: u64,
     pub plies: u32,
@@ -421,7 +436,9 @@ pub fn evaluate_game(
     config: EvaluationConfig,
 ) -> Result<GameEvaluationReport, CatalogError> {
     let report = match game {
-        GameId::Splendor => return Err(CatalogError::AnalysisUnavailable(game)),
+        GameId::Splendor | GameId::LostCities => {
+            return Err(CatalogError::AnalysisUnavailable(game));
+        }
         GameId::Boop => evaluate_typed_game(&Boop, config),
         GameId::Connect6(size) => evaluate_typed_game(&connect6_game(size)?, config),
         GameId::ConnectFour => evaluate_typed_game(&ConnectFour, config),
@@ -441,6 +458,11 @@ pub fn benchmark_mcts_agent(
     seed: u64,
 ) -> Result<MctsAgentBenchmark, CatalogError> {
     let benchmark = match game {
+        GameId::LostCities => {
+            return Err(CatalogError::InvalidMctsConfig(
+                lost_cities::SEARCH_UNAVAILABLE,
+            ));
+        }
         GameId::Connect6(size) => {
             let mut agent = configured_connect6_mcts(config)?;
             benchmark_typed_mcts_agent(&connect6_game(size)?, &mut agent, median_depth, seed)
@@ -484,6 +506,7 @@ pub fn analyze_seeded_trace(
     seed: u64,
 ) -> Result<CatalogTraceAnalysis, CatalogError> {
     match game {
+        GameId::LostCities => Err(CatalogError::AnalysisUnavailable(game)),
         GameId::Splendor => Err(CatalogError::InvalidTrace {
             game,
             message: "Splendor replay requires recorded chance events; use splendor::replay".into(),
@@ -691,6 +714,7 @@ pub fn run_match(
     config: MatchConfig,
 ) -> Result<MatchResult, CatalogError> {
     match game {
+        GameId::LostCities => Ok(lost_cities::run(first, second, config)?.result),
         GameId::Splendor => Ok(splendor::run(first, second, config)?.result),
         GameId::Boop => run_boop(first, second, config),
         GameId::Connect6(size) => {
@@ -711,6 +735,7 @@ pub fn run_match_with_trace(
     config: MatchConfig,
 ) -> Result<CatalogMatchReport, CatalogError> {
     match game {
+        GameId::LostCities => lost_cities::report(lost_cities::run(first, second, config)?),
         GameId::Splendor => splendor::report(splendor::run(first, second, config)?),
         GameId::Boop => run_boop_with_trace(first, second, config),
         GameId::Connect6(size) => {
@@ -992,6 +1017,7 @@ fn connect6_report(
 
     CatalogMatchReport {
         chance_events: Vec::new(),
+        lost_cities_state: None,
         splendor_state: None,
         unassigned_maintenance_seconds: traced
             .unassigned_maintenance_time
@@ -1049,6 +1075,7 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
 
     CatalogMatchReport {
         chance_events: Vec::new(),
+        lost_cities_state: None,
         splendor_state: None,
         unassigned_maintenance_seconds: traced
             .unassigned_maintenance_time
@@ -1107,6 +1134,7 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
 
     CatalogMatchReport {
         chance_events: Vec::new(),
+        lost_cities_state: None,
         splendor_state: None,
         unassigned_maintenance_seconds: traced
             .unassigned_maintenance_time
@@ -1182,6 +1210,7 @@ fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
 
     CatalogMatchReport {
         chance_events: Vec::new(),
+        lost_cities_state: None,
         splendor_state: None,
         unassigned_maintenance_seconds: traced
             .unassigned_maintenance_time
@@ -1272,6 +1301,7 @@ fn spirits_of_the_forest_report(
 
     CatalogMatchReport {
         chance_events: Vec::new(),
+        lost_cities_state: None,
         splendor_state: None,
         unassigned_maintenance_seconds: traced
             .unassigned_maintenance_time
@@ -1374,7 +1404,7 @@ pub fn run_batch(
         max_plies,
     };
     match game {
-        GameId::Connect6(_) | GameId::Splendor => (0..matches.get())
+        GameId::LostCities | GameId::Connect6(_) | GameId::Splendor => (0..matches.get())
             .map(|i| {
                 run_match(
                     game,
@@ -1974,6 +2004,7 @@ mod tests {
                 CatalogAction::Connect6 { .. } => panic!("unexpected Connect6 action"),
                 CatalogAction::ConnectFour { .. } => panic!("unexpected Connect Four action"),
                 CatalogAction::Boop { .. } => panic!("unexpected boop action"),
+                CatalogAction::LostCities(_) => panic!("unexpected Lost Cities action"),
                 CatalogAction::Splendor(_) => panic!("unexpected Splendor action"),
                 CatalogAction::SpiritsOfTheForest(_) => {
                     panic!("unexpected Spirits of the Forest action")
@@ -2000,6 +2031,7 @@ mod tests {
                 CatalogAction::ConnectFour { column } => assert!(column < 7),
                 CatalogAction::TicTacToe { .. } => panic!("unexpected tic-tac-toe action"),
                 CatalogAction::Boop { .. } => panic!("unexpected boop action"),
+                CatalogAction::LostCities(_) => panic!("unexpected Lost Cities action"),
                 CatalogAction::Splendor(_) => panic!("unexpected Splendor action"),
                 CatalogAction::SpiritsOfTheForest(_) => {
                     panic!("unexpected Spirits of the Forest action")

@@ -14,12 +14,14 @@ the rules.
 | Connect Four | `connect-four` | `ConnectFour` | `column` |
 | boop. | `boop` | `Boop` | `k/c row column` |
 | Spirits of the Forest | `spotf` | `SpiritsOfTheForest` | legal action index |
+| [Lost Cities](lost-cities/README.md) | `lost_cities` | `LostCities` | Random agents only |
 | [Can't Stop](cant-stop/README.md) | `cant-stop` (GUI) | `CantStopSession` | GUI action index |
 
 Rows, board indices and player identifiers are zero-based; Can't Stop column labels are sums 2–12.
-All current games are sequential, perfect-information, two-player and zero-sum. Can't Stop uses
-public dice; the other four games are deterministic. See its guide for the session API and
-current limits of tournament integration.
+All current games are sequential, two-player and zero-sum. Lost Cities is the first
+imperfect-information game; the others have perfect information. Lost Cities uses
+private card draws, Splendor public refills and Can't Stop public dice. See each
+game guide for its interfaces and integration limits.
 
 ## Tic-tac-toe
 
