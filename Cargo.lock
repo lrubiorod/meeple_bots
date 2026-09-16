@@ -44,6 +44,7 @@ dependencies = [
  "meeple_bots_mcts_agent",
  "meeple_bots_random_agent",
  "meeple_bots_simulation",
+ "meeple_bots_so_ismcts",
  "meeple_bots_spirits_of_the_forest",
  "meeple_bots_splendor",
  "meeple_bots_tic_tac_toe",
@@ -111,6 +112,7 @@ dependencies = [
  "meeple_bots_lost_cities",
  "meeple_bots_mcts_agent",
  "meeple_bots_simulation",
+ "meeple_bots_so_ismcts",
  "meeple_bots_spirits_of_the_forest",
  "meeple_bots_splendor",
  "meeple_bots_tic_tac_toe",
@@ -131,6 +133,15 @@ name = "meeple_bots_simulation"
 version = "0.1.0"
 dependencies = [
  "meeple_bots_core",
+]
+
+[[package]]
+name = "meeple_bots_so_ismcts"
+version = "0.1.0"
+dependencies = [
+ "meeple_bots_core",
+ "meeple_bots_lost_cities",
+ "meeple_bots_simulation",
 ]
 
 [[package]]

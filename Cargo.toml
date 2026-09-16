@@ -15,5 +15,6 @@ members = [
     "games/spirits-of-the-forest",
     "games/tic-tac-toe",
     "agents/random",
+    "agents/so-ismcts",
     "agents/mcts",
 ]

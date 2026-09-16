@@ -77,3 +77,15 @@ pub trait TwoPlayerZeroSumGame: Game {
         }
     }
 }
+
+/// A complete sampled world: actions consume already fixed randomness.
+/// No environment state access or stochastic sampling is part of this interface.
+pub trait DeterminizedWorld {
+    type Action: Clone + Eq;
+    type Observation: Clone + Eq;
+    fn status(&self) -> crate::PositionStatus;
+    fn observation(&self, observer: PlayerId) -> Self::Observation;
+    fn legal_actions(&self) -> Vec<Self::Action>;
+    fn apply_action(&mut self, action: &Self::Action) -> Result<(), crate::IllegalAction>;
+    fn terminal_utility(&self, observer: PlayerId) -> Option<f32>;
+}

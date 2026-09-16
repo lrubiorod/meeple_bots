@@ -51,12 +51,13 @@ or a new stochastic Chance branch. Observations taken during setup or a pending 
 are preserved exactly at sampling; `resolve_pending_draws()` explicitly advances
 those pending transitions using the fixed order. No uncertainty is sampled twice.
 
-**Future ISMCTS tree: retain only observable distinctions and learned statistics.**
+**SO-ISMCTS tree: retain only observable distinctions and learned statistics.**
 Never key a persistent tree by the complete world or put its hidden cards/deck order
 in tree nodes. Two worlds with different deck orders have equal observations before
 a draw; a hidden opponent draw remains indistinguishable to the observer. An own
 draw legitimately changes the observer's hand. A fresh world must be sampled per
-iteration and discarded afterward; no ISMCTS tree or agent is implemented here.
+iteration and discarded afterward. See [SO-ISMCTS](../../agents/so-ismcts/README.md)
+for the baseline implementation and its limitations.
 
 The world provides `observation`, `legal_actions`, `apply_action` and validation;
 Rust also exposes status/terminal utility and read-only administrative state/order
@@ -67,19 +68,20 @@ Observing every sampled world reproduces the original observation exactly.
 
 ## Agents and interfaces
 
-Only `RandomAgent` is registered, selecting solely from legal actions with no-op
-lifecycle callbacks. Lost Cities does **not** implement `PerfectInformationGame`;
-normal and stochastic MCTS therefore fail their Rust type bounds. Catalog and Python
-also reject MCTS explicitly. The legacy `Agent` lifecycle still accepts authoritative
-states: it is **not** a general hidden-agent security boundary. Future SO-ISMCTS must
-use an observation-safe lifecycle; do not register arbitrary legacy agents here.
+`RandomAgent` and `SoIsmctsAgent` are registered. Random selects solely from legal
+actions. SO-ISMCTS receives only a player observation and legal root actions through
+a trusted catalog adapter with no-op lifecycle callbacks. Lost Cities does **not**
+implement `PerfectInformationGame`; normal and stochastic MCTS fail their Rust type
+bounds and are explicitly rejected by catalog/Python. The legacy `Agent` lifecycle
+still accepts authoritative states: it is **not** a general hidden-agent security
+boundary. Never forward those callbacks to an information-set search object.
 
 Rust catalog, Python `LostCities`, CLI matches, batches and tournament JSONL are
 available. Trace replay validates both player actions and setup/draw Chance events.
 Authoritative positions, exact Chance distributions and saved match traces are
 engine/administrative data, **not player observations**; traces disclose private draws.
-Live match observers, study, PIMC/ISMCTS/SO-ISMCTS/RIS-MCTS, heuristics and
-information-set trees are intentionally not implemented. A separate administrative
+Live match observers, study tuning, PIMC/MO-ISMCTS/RIS-MCTS and heuristics
+are intentionally not implemented. A separate administrative
 GUI supports human and random players (see below). Reports currently consist
 of CLI scores, tournament summaries and validated JSON traces; no game-specific
 HTML report or extraction analysis is provided.

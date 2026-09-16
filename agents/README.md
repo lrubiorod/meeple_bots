@@ -12,6 +12,7 @@ concrete game, preserving strongly typed actions and static dispatch inside the 
 | `HumanAgent` | Terminal or application-controlled input | Python boundary |
 | `RandomAgent` | Uniform baseline and reproducible opponent | Rust |
 | `MctsAgent` | Configurable Monte Carlo Tree Search | Rust |
+| [`SoIsmctsAgent`](so-ismcts/README.md) | Observation-only Single-Observer ISMCTS; currently Lost Cities | Rust |
 
 ## Random
 

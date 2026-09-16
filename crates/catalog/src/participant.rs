@@ -19,6 +19,9 @@ impl<M> ConfiguredAgent<M> {
         mcts: impl FnOnce(MctsAgentConfig) -> Result<M, CatalogError>,
     ) -> Result<Self, CatalogError> {
         match config {
+            AgentConfig::SoIsmcts(_) => Err(CatalogError::InvalidMctsConfig(
+                "SO-ISMCTS is only supported by Lost Cities",
+            )),
             AgentConfig::Random => Ok(Self::Random(RandomAgent)),
             AgentConfig::Mcts(config) => mcts(config).map(Self::Mcts),
         }

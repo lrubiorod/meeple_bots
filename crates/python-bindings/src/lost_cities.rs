@@ -330,3 +330,80 @@ impl PyLostCitiesWorld {
         self.world.validate().map_err(error)
     }
 }
+
+/// Observation-only search/debug API. No authoritative position handle crosses this boundary.
+#[pyfunction]
+pub fn lost_cities_so_ismcts_search(
+    py: Python<'_>,
+    observation: &Bound<'_, PyDict>,
+    legal_actions: Vec<Bound<'_, PyDict>>,
+    iterations: u32,
+    exploration: f64,
+    seed: u64,
+) -> PyResult<Py<PyDict>> {
+    use meeple_bots_so_ismcts::{SoIsmctsAgent, SoIsmctsConfig};
+    let observation = parse_observation(observation)?;
+    let legal = legal_actions
+        .iter()
+        .map(parse_action)
+        .collect::<PyResult<Vec<_>>>()?;
+    let search = SoIsmctsAgent {
+        config: SoIsmctsConfig {
+            iterations: std::num::NonZeroU32::new(iterations)
+                .ok_or_else(|| error("iterations must be positive"))?,
+            exploration,
+        },
+    };
+    let result = search
+        .search(
+            &LostCities,
+            &observation,
+            observation.observer,
+            &legal,
+            &mut SplitMix64::new(seed),
+        )
+        .map_err(error)?;
+    let out = PyDict::new(py);
+    out.set_item("action", action_dict(py, result.action)?)?;
+    let d = PyDict::new(py);
+    d.set_item(
+        "completed_iterations",
+        result.diagnostics.completed_iterations,
+    )?;
+    d.set_item("tree_nodes", result.diagnostics.tree_nodes)?;
+    d.set_item("action_edges", result.diagnostics.action_edges)?;
+    d.set_item(
+        "determinizations_sampled",
+        result.diagnostics.determinizations_sampled,
+    )?;
+    d.set_item("rollout_count", result.diagnostics.rollout_count)?;
+    d.set_item(
+        "terminal_simulations",
+        result.diagnostics.terminal_simulations,
+    )?;
+    d.set_item("cutoff_simulations", result.diagnostics.cutoff_simulations)?;
+    out.set_item("diagnostics", d)?;
+    let mut nodes = Vec::new();
+    for node in result.nodes {
+        let n = PyDict::new(py);
+        n.set_item("visits", node.visits)?;
+        let mut edges = Vec::new();
+        for edge in node.edges {
+            let e = PyDict::new(py);
+            e.set_item("action", action_dict(py, edge.action)?)?;
+            e.set_item("visits", edge.visits)?;
+            e.set_item("availability", edge.availability)?;
+            e.set_item("q", edge.mean_utility())?;
+            // Expose child IDs only. Rust keys are root-observer observations, never worlds.
+            e.set_item(
+                "children",
+                edge.outcomes.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
+            )?;
+            edges.push(e.unbind());
+        }
+        n.set_item("edges", edges)?;
+        nodes.push(n.unbind());
+    }
+    out.set_item("nodes", nodes)?;
+    Ok(out.unbind())
+}

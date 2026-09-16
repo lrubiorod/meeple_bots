@@ -27,6 +27,9 @@ pub type CantStopAgent = ConfiguredAgent<
 
 pub fn configured_cant_stop_agent(config: AgentConfig) -> Result<CantStopAgent, AgentError> {
     match config {
+        AgentConfig::SoIsmcts(_) => Err(AgentError::message(
+            "SO-ISMCTS is only supported by Lost Cities",
+        )),
         AgentConfig::Random => Ok(ConfiguredAgent::Random(
             meeple_bots_random_agent::RandomAgent,
         )),

@@ -60,6 +60,21 @@ struct PyAgentConfig {
 #[pymethods]
 impl PyAgentConfig {
     #[staticmethod]
+    #[pyo3(signature = (iterations=1000, exploration=std::f64::consts::SQRT_2))]
+    fn so_ismcts(iterations: u32, exploration: f64) -> PyResult<Self> {
+        let config = meeple_bots_so_ismcts::SoIsmctsConfig {
+            iterations: std::num::NonZeroU32::new(iterations)
+                .ok_or_else(|| PyValueError::new_err("iterations must be positive"))?,
+            exploration,
+        };
+        config
+            .validate()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self {
+            inner: PythonAgentConfig::Automated(AgentConfig::SoIsmcts(config)),
+        })
+    }
+    #[staticmethod]
     fn random() -> Self {
         Self {
             inner: PythonAgentConfig::Automated(AgentConfig::Random),
@@ -2571,6 +2586,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<splendor::PySplendorPosition>()?;
     module.add_class::<lost_cities::PyLostCitiesPosition>()?;
     module.add_class::<lost_cities::PyLostCitiesWorld>()?;
+    module.add_function(wrap_pyfunction!(
+        lost_cities::lost_cities_so_ismcts_search,
+        module
+    )?)?;
     module.add_class::<splendor::PySplendorSession>()?;
     module.add_function(wrap_pyfunction!(py_game_search_capabilities, module)?)?;
     module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;

@@ -21,6 +21,7 @@ use meeple_bots_tic_tac_toe::TicTacToe;
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentConfig {
+    SoIsmcts(meeple_bots_so_ismcts::SoIsmctsConfig),
     Random,
     Mcts(MctsAgentConfig),
 }

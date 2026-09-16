@@ -15,7 +15,7 @@ from time import perf_counter
 
 from .api import (
     Game, Boop, ConnectFour, SpiritsOfTheForest, TicTacToe,
-    RandomAgent, MctsAgent, Match, MatchResult,
+    RandomAgent, SoIsmctsAgent, MctsAgent, Match, MatchResult,
 )
 from ._concurrency import WorkerSetting, ordered_parallel_map, resolve_workers
 from .game_config import game_parameters, create_game
@@ -25,7 +25,7 @@ from .serialization import agent_dict, game_name, trace_match_dict, write_jsonl
 @dataclass(frozen=True, slots=True)
 class TournamentAgent:
     name: str
-    agent: RandomAgent | MctsAgent
+    agent: RandomAgent | SoIsmctsAgent | MctsAgent
     self_play: bool = False
     template_index: int = 0
     grid_position: tuple[int, ...] = ()

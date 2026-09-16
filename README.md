@@ -10,7 +10,7 @@ workflow.
 | Area | Available features |
 | --- | --- |
 | Games | [Connect6](games/connect6/README.md), Tic-tac-toe, Connect Four, boop., two-player Spirits of the Forest, [public stochastic Splendor](games/splendor/README.md), and [imperfect-information Lost Cities](games/lost-cities/README.md). |
-| Agents | Interactive human input, uniform random play, and configurable MCTS. |
+| Agents | Interactive human input, uniform random play, configurable MCTS, and [SO-ISMCTS for Lost Cities](agents/so-ismcts/README.md). |
 | Interfaces | Typed Python API, command-line commands, and local browser playrooms. |
 | Experiments | Reproducible batches, round-robin tournaments, trace extraction, and generic, Boop and SPOTF reports. |
 | Analysis | Structural game sampling and local MCTS cost estimation. |

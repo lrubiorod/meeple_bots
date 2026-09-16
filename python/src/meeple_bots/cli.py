@@ -64,6 +64,7 @@ from .api import (
     PlaceSpiritGemstone,
     ProgressiveBias,
     RandomAgent,
+    SoIsmctsAgent,
     SkipSpiritGemstone,
     SpiritTile,
     SpiritsOfTheForest,
@@ -177,8 +178,10 @@ def build_parser() -> argparse.ArgumentParser:
     match.add_argument(
         "--game", type=_game_tag, choices=_PLAYABLE_GAMES, default="tic-tac-toe"
     )
-    match.add_argument("--first", choices=["human", "mcts", "random"], default="mcts")
-    match.add_argument("--second", choices=["human", "mcts", "random"], default="random")
+    match.add_argument("--first", choices=["human", "mcts", "so_ismcts", "random"], default="mcts")
+    match.add_argument("--second", choices=["human", "mcts", "so_ismcts", "random"], default="random")
+    match.add_argument("--so-ismcts-iterations", type=int, default=1000)
+    match.add_argument("--so-ismcts-exploration", type=float, default=2 ** 0.5)
     match.add_argument("--seed", type=int, default=0)
     match.add_argument("--max-plies", type=int, default=10_000)
     match_budget = match.add_mutually_exclusive_group()
@@ -518,8 +521,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "batch":
             return _run_batch(args, game)
 
+        using_so = "so_ismcts" in (args.first, args.second)
+        supplied = list(sys.argv[1:] if argv is None else argv)
+        if using_so and any(a.startswith(("--mcts-", "--first-mcts-", "--second-mcts-")) for a in supplied):
+            raise ValueError("MCTS options are not supported by SO-ISMCTS; use --so-ismcts-iterations and --so-ismcts-exploration")
+        if not using_so and any(a.startswith("--so-ismcts-") for a in supplied):
+            raise ValueError("SO-ISMCTS options require a so_ismcts participant")
         mcts = _mcts_configuration(args)
-        first = _match_agent(
+        first = SoIsmctsAgent(args.so_ismcts_iterations, args.so_ismcts_exploration) if args.first == "so_ismcts" else _match_agent(
             args.first,
             args.first_mcts_config,
             mcts,
@@ -527,7 +536,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--first-mcts-config",
             "--first-mcts-heuristic",
         )
-        second = _match_agent(
+        second = SoIsmctsAgent(args.so_ismcts_iterations, args.so_ismcts_exploration) if args.second == "so_ismcts" else _match_agent(
             args.second,
             args.second_mcts_config,
             mcts,
@@ -1419,6 +1428,9 @@ def _agent(
 
 
 def _agent_dict(name: str, agent) -> dict[str, object]:
+    if isinstance(agent, SoIsmctsAgent):
+        return {"type": "so_ismcts", "iterations": agent.iterations, "exploration": agent.exploration,
+                "rollout_policy": "uniform", "root_selection": "most_visited"}
     cutoff_evaluator = agent.cutoff_evaluator if isinstance(agent, MctsAgent) else None
     rollout_evaluator = (
         _rollout_policy_evaluator(agent.rollout_policy)

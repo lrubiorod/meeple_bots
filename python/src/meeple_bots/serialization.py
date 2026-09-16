@@ -11,7 +11,7 @@ from .lost_cities import LostCities, LostCitiesAction
 
 from .api import (
     Boop, ConnectFour, SpiritsOfTheForest, TicTacToe,
-    RandomAgent, MctsAgent, ProgressiveBias, ConditionalRollout,
+    RandomAgent, SoIsmctsAgent, MctsAgent, ProgressiveBias, ConditionalRollout,
     UniformRandom, Greedy, EpsilonGreedy, Mast, NeutralEvaluator, GameHeuristic,
     BoopAction,
     BoopGraduateLine,
@@ -192,9 +192,13 @@ def _boop_resolution_dict(action: BoopAction) -> dict[str, object]:
     return {"type": "none"}
 
 
-def agent_dict(name: str, agent: RandomAgent | MctsAgent) -> dict[str, object]:
+def agent_dict(name: str, agent: RandomAgent | SoIsmctsAgent | MctsAgent) -> dict[str, object]:
     if isinstance(agent, RandomAgent):
         return {"name": name, "type": "random"}
+    if isinstance(agent, SoIsmctsAgent):
+        return {"name": name, "type": "so_ismcts", "iterations": agent.iterations,
+                "exploration": agent.exploration, "rollout_policy": "uniform",
+                "root_selection": "most_visited"}
     return {
         "name": name,
         "type": "mcts",

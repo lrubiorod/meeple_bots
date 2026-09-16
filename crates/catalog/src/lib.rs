@@ -1758,7 +1758,7 @@ mod tests {
     fn rejects_unknown_or_unsupported_heuristics() {
         let unknown = configured_boop_mcts(match mcts(Some(2)) {
             AgentConfig::Mcts(config) => config,
-            AgentConfig::Random => unreachable!(),
+            AgentConfig::Random | AgentConfig::SoIsmcts(_) => unreachable!(),
         })
         .unwrap_err();
         assert!(unknown.to_string().contains("available indices: 0..1"));

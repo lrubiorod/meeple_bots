@@ -505,3 +505,23 @@ impl LostCitiesSimulationWorld {
         Ok(())
     }
 }
+
+impl meeple_bots_core::DeterminizedWorld for LostCitiesSimulationWorld {
+    type Action = LostCitiesAction;
+    type Observation = LostCitiesObservation;
+    fn status(&self) -> PositionStatus {
+        self.status()
+    }
+    fn observation(&self, observer: PlayerId) -> Self::Observation {
+        self.observation(observer)
+    }
+    fn legal_actions(&self) -> Vec<Self::Action> {
+        self.legal_actions().collect()
+    }
+    fn apply_action(&mut self, action: &Self::Action) -> Result<(), IllegalAction> {
+        self.apply_action(action)
+    }
+    fn terminal_utility(&self, observer: PlayerId) -> Option<f32> {
+        self.terminal_utility(observer)
+    }
+}

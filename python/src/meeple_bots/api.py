@@ -21,6 +21,7 @@ from ._agent_config import (
     NeutralEvaluator,
     ProgressiveBias,
     RandomAgent,
+    SoIsmctsAgent,
     RolloutPolicy,
     StateEvaluator,
     TurnPhaseIs,
@@ -519,7 +520,7 @@ class HumanAgent:
             raise TypeError("observe_action must be callable")
 
 
-Agent: TypeAlias = RandomAgent | MctsAgent | HumanAgent
+Agent: TypeAlias = RandomAgent | SoIsmctsAgent | MctsAgent | HumanAgent
 
 
 @dataclass(frozen=True, slots=True)
@@ -679,10 +680,10 @@ class Match:
             raise TypeError(
                 "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, Splendor, or LostCities"
             )
-        if not isinstance(self.first, (RandomAgent, MctsAgent, HumanAgent)):
-            raise TypeError("first must be RandomAgent, MctsAgent, or HumanAgent")
-        if not isinstance(self.second, (RandomAgent, MctsAgent, HumanAgent)):
-            raise TypeError("second must be RandomAgent, MctsAgent, or HumanAgent")
+        if not isinstance(self.first, (RandomAgent, SoIsmctsAgent, MctsAgent, HumanAgent)):
+            raise TypeError("first must be SoIsmctsAgent, RandomAgent, MctsAgent, or HumanAgent")
+        if not isinstance(self.second, (RandomAgent, SoIsmctsAgent, MctsAgent, HumanAgent)):
+            raise TypeError("second must be SoIsmctsAgent, RandomAgent, MctsAgent, or HumanAgent")
         _validate_agent_evaluators(self.game, self.first)
         _validate_agent_evaluators(self.game, self.second)
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
@@ -774,8 +775,8 @@ class Batch:
     """A reproducible series of automated matches between two participants."""
 
     game: Game = field(default_factory=TicTacToe)
-    agent_a: RandomAgent | MctsAgent = field(default_factory=RandomAgent)
-    agent_b: RandomAgent | MctsAgent = field(default_factory=MctsAgent)
+    agent_a: RandomAgent | SoIsmctsAgent | MctsAgent = field(default_factory=RandomAgent)
+    agent_b: RandomAgent | SoIsmctsAgent | MctsAgent = field(default_factory=MctsAgent)
     matches: int = 20
     seed: int = 0
     max_plies: int = 10_000
@@ -788,8 +789,8 @@ class Batch:
                 "game must be TicTacToe, ConnectFour, Connect6, Boop, SpiritsOfTheForest, Splendor, or LostCities"
             )
         for name, agent in (("agent_a", self.agent_a), ("agent_b", self.agent_b)):
-            if not isinstance(agent, (RandomAgent, MctsAgent)):
-                raise TypeError(f"{name} must be RandomAgent or MctsAgent")
+            if not isinstance(agent, (RandomAgent, SoIsmctsAgent, MctsAgent)):
+                raise TypeError(f"{name} must be SoIsmctsAgent, RandomAgent or MctsAgent")
             _validate_agent_evaluators(self.game, agent)
         _positive_u32("matches", self.matches)
         _positive_u32("max_plies", self.max_plies)
@@ -1227,6 +1228,8 @@ def _analyze_trace(game: Game, moves: tuple[Move, ...], *, seed: int = 0):
 def _native_agent(agent: Agent, game: Game):
     if isinstance(agent, RandomAgent):
         return _native.AgentConfig.random()
+    if isinstance(agent, SoIsmctsAgent):
+        return _native.AgentConfig.so_ismcts(agent.iterations, agent.exploration)
     if isinstance(agent, MctsAgent):
         (
             policy,
@@ -1281,8 +1284,10 @@ def _native_agent(agent: Agent, game: Game):
 
 
 def _validate_agent_evaluators(game: Game, agent: Agent) -> None:
-    if isinstance(game, LostCities) and not isinstance(agent, RandomAgent):
-        raise ValueError("Lost Cities has imperfect information: only RandomAgent is supported; no compatible searchable agent yet (SO-ISMCTS is not implemented)")
+    if isinstance(agent, SoIsmctsAgent) and not isinstance(game, LostCities):
+        raise ValueError("SO-ISMCTS is only supported by Lost Cities")
+    if isinstance(game, LostCities) and not isinstance(agent, (RandomAgent, SoIsmctsAgent)):
+        raise ValueError("Lost Cities has imperfect information: standard MCTS is not compatible; use SoIsmctsAgent or RandomAgent")
     if isinstance(agent, MctsAgent):
         if isinstance(game, Splendor) and agent.selection_policy == "uct_rave":
             raise ValueError("UCT-RAVE is only supported by deterministic MCTS")

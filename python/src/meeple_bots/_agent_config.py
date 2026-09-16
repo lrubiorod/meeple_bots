@@ -24,6 +24,37 @@ class RandomAgent:
 
 
 @dataclass(frozen=True, slots=True)
+class SoIsmctsAgent:
+    """Single-observer ISMCTS: complete worlds, IS-UCT, uniform rollout, MostVisited."""
+
+    iterations: int = 1000
+    exploration: float = sqrt(2.0)
+
+    def __post_init__(self) -> None:
+        _positive_u32("iterations", self.iterations)
+        if isinstance(self.exploration, bool) or not isinstance(self.exploration, (int, float)):
+            raise TypeError("exploration must be a number")
+        if not isfinite(self.exploration) or self.exploration < 0:
+            raise ValueError("exploration must be finite and non-negative")
+
+    def search(self, observation, legal_actions, *, seed=0):
+        """Search from player information only; return action and inspectable statistics.
+
+        No authoritative position or simulation world is accepted at this boundary.
+        """
+        from . import _native
+        from .lost_cities import LostCitiesObservation, LostCitiesAction
+        if not isinstance(observation, LostCitiesObservation):
+            raise TypeError("search requires a LostCitiesObservation")
+        result = _native.lost_cities_so_ismcts_search(
+            observation.to_dict(), [a.to_dict() for a in legal_actions],
+            self.iterations, self.exploration, seed,
+        )
+        result["action"] = LostCitiesAction.from_dict(result["action"])
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class NeutralEvaluator:
     """Assign zero utility to every non-terminal state."""
 

@@ -1,10 +1,10 @@
-//! Only audited RandomAgent is registered. Authoritative replay is an engine/admin API.
+//! Random and observation-only SO-ISMCTS registration. Authoritative replay is an engine/admin API.
 use crate::{AgentConfig, CatalogAction, CatalogError, CatalogMatchReport, RecordedMove};
 use meeple_bots_core::{Game, PlayerId, PositionStatus};
 use meeple_bots_lost_cities::{LostCities, LostCitiesAction, LostCitiesState};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{MatchConfig, TracedChance, TracedMatchResult, play_match_with_trace};
-pub const SEARCH_UNAVAILABLE: &str = "Lost Cities has imperfect information: standard MCTS is not compatible; no searchable agent yet (SO-ISMCTS is not implemented)";
+pub const SEARCH_UNAVAILABLE: &str = "Lost Cities has imperfect information: standard MCTS is not compatible; use SO-ISMCTS or RandomAgent";
 /// Perfect-information searches cannot implement Agent<LostCities>.
 /// ```compile_fail
 /// use meeple_bots_core::Agent;
@@ -24,12 +24,9 @@ pub fn run(
     second: AgentConfig,
     config: MatchConfig,
 ) -> Result<TracedMatchResult<LostCitiesAction>, CatalogError> {
-    if !matches!(first, AgentConfig::Random) || !matches!(second, AgentConfig::Random) {
-        return Err(CatalogError::InvalidMctsConfig(SEARCH_UNAVAILABLE));
-    }
-    // RandomAgent uses only legal actions; its lifecycle callbacks are no-ops.
-    play_match_with_trace(&LostCities, &mut RandomAgent, &mut RandomAgent, config)
-        .map_err(Into::into)
+    let mut first = LostCitiesParticipant::new(first)?;
+    let mut second = LostCitiesParticipant::new(second)?;
+    play_match_with_trace(&LostCities, &mut first, &mut second, config).map_err(Into::into)
 }
 pub fn replay(
     moves: &[RecordedMove],
@@ -171,5 +168,171 @@ mod tests {
             .to_string()
             .contains("imperfect information")
         );
+    }
+}
+
+use meeple_bots_core::{
+    Agent, AgentDecisionStats, AgentError, DecisionContext, RandomSource, RootActionStats,
+};
+use meeple_bots_so_ismcts::SoIsmctsAgent;
+/// Trusted environment adapter. It has NO lifecycle overrides and never passes
+/// authoritative states/chance events to the search object, even after opponent moves.
+pub struct LostCitiesParticipant {
+    search: Option<SoIsmctsAgent>,
+    stats: AgentDecisionStats,
+}
+impl LostCitiesParticipant {
+    pub fn new(config: AgentConfig) -> Result<Self, CatalogError> {
+        let search = match config {
+            AgentConfig::Random => None,
+            AgentConfig::SoIsmcts(config) => {
+                config.validate().map_err(|_| {
+                    CatalogError::InvalidMctsConfig("invalid SO-ISMCTS exploration")
+                })?;
+                Some(SoIsmctsAgent { config })
+            }
+            AgentConfig::Mcts(_) => {
+                return Err(CatalogError::InvalidMctsConfig(SEARCH_UNAVAILABLE));
+            }
+        };
+        Ok(Self {
+            search,
+            stats: AgentDecisionStats::default(),
+        })
+    }
+}
+impl Agent<LostCities> for LostCitiesParticipant {
+    fn select_action<R: RandomSource + ?Sized>(
+        &mut self,
+        decision: DecisionContext<'_, LostCities>,
+        rng: &mut R,
+    ) -> Result<LostCitiesAction, AgentError> {
+        if let Some(search) = &self.search {
+            let observer = decision.player();
+            let observation = decision.observation();
+            let legal: Vec<_> = decision.legal_actions().collect();
+            let result = search.search(&LostCities, &observation, observer, &legal, rng)?;
+            self.stats = AgentDecisionStats {
+                search_iterations: Some(result.diagnostics.completed_iterations),
+                search_nodes: Some(result.diagnostics.tree_nodes as u64),
+                terminal_simulations: Some(result.diagnostics.terminal_simulations),
+                cutoff_simulations: Some(result.diagnostics.cutoff_simulations),
+                root_actions: legal
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| {
+                        let e = result.nodes[0]
+                            .edges
+                            .iter()
+                            .find(|e| e.action == *a)
+                            .unwrap();
+                        RootActionStats {
+                            action_index: i as u32,
+                            visits: e.visits as u32,
+                            mean_utility: e.mean_utility(),
+                            heuristic_value: None,
+                            progressive_bias: None,
+                            selected: *a == result.action,
+                        }
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            Ok(result.action)
+        } else {
+            self.stats = AgentDecisionStats::default();
+            RandomAgent.select_action(decision, rng)
+        }
+    }
+    fn last_decision_stats(&self) -> AgentDecisionStats {
+        self.stats.clone()
+    }
+}
+
+#[cfg(test)]
+mod so_ismcts_tests {
+    use super::*;
+    use meeple_bots_so_ismcts::SoIsmctsConfig;
+    use std::num::NonZeroU32;
+
+    fn config() -> AgentConfig {
+        AgentConfig::SoIsmcts(SoIsmctsConfig {
+            iterations: NonZeroU32::new(2).unwrap(),
+            exploration: 1.0,
+        })
+    }
+    #[test]
+    fn seeded_so_random_and_so_so_matches_replay() {
+        for second in [AgentConfig::Random, config()] {
+            let traced = run(config(), second, MatchConfig::default()).unwrap();
+            let result = report(traced).unwrap();
+            assert!(
+                result
+                    .moves
+                    .iter()
+                    .filter(|m| m.player == 0)
+                    .all(|m| m.search_iterations == Some(2))
+            );
+            assert_eq!(result.lost_cities_state.as_ref().unwrap().deck.len(), 0);
+            assert_eq!(
+                replay(&result.moves, &result.chance_events).unwrap(),
+                result.lost_cities_state.unwrap()
+            );
+        }
+    }
+    struct FixedActions {
+        run_search: bool,
+    }
+    impl Agent<LostCities> for FixedActions {
+        fn select_action<R: RandomSource + ?Sized>(
+            &mut self,
+            d: DecisionContext<'_, LostCities>,
+            rng: &mut R,
+        ) -> Result<LostCitiesAction, AgentError> {
+            let legal: Vec<_> = d.legal_actions().collect();
+            if self.run_search {
+                let search = SoIsmctsAgent {
+                    config: SoIsmctsConfig {
+                        iterations: NonZeroU32::new(2).unwrap(),
+                        exploration: 1.0,
+                    },
+                };
+                search.search(&LostCities, &d.observation(), d.player(), &legal, rng)?;
+            }
+            Ok(legal[0])
+        }
+    }
+    #[test]
+    fn search_rng_does_not_change_environment_draws() {
+        let mut plain = FixedActions { run_search: false };
+        let mut plain_opponent = FixedActions { run_search: false };
+        let mut searching = FixedActions { run_search: true };
+        let mut searching_opponent = FixedActions { run_search: true };
+        let a = report(
+            play_match_with_trace(
+                &LostCities,
+                &mut plain,
+                &mut plain_opponent,
+                MatchConfig::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let b = report(
+            play_match_with_trace(
+                &LostCities,
+                &mut searching,
+                &mut searching_opponent,
+                MatchConfig::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            a.moves.iter().map(|m| m.action.clone()).collect::<Vec<_>>(),
+            b.moves.iter().map(|m| m.action.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(a.chance_events, b.chance_events);
+        assert_eq!(a.lost_cities_state, b.lost_cities_state);
     }
 }
