@@ -2,7 +2,8 @@
 use meeple_bots_core::{Game, ImperfectInformationGame, PlayerId, PositionStatus};
 use meeple_bots_lost_cities::{
     LostCities, LostCitiesAction as Action, LostCitiesCard as Card, LostCitiesColor as Color,
-    LostCitiesObservation as Observation, LostCitiesState as State, Phase,
+    LostCitiesObservation as Observation, LostCitiesSimulationWorld, LostCitiesState as State,
+    Phase,
 };
 use meeple_bots_simulation::SplitMix64;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
@@ -237,10 +238,14 @@ impl PyLostCitiesPosition {
         observation_dict(py, &LostCities.observation(&self.state, player(observer)?))
     }
     #[staticmethod]
-    fn determinize(observation: &Bound<'_, PyDict>, observer: usize, seed: u64) -> PyResult<Self> {
+    fn determinize(
+        observation: &Bound<'_, PyDict>,
+        observer: usize,
+        seed: u64,
+    ) -> PyResult<PyLostCitiesWorld> {
         let o = parse_observation(observation)?;
-        Ok(Self {
-            state: LostCities
+        Ok(PyLostCitiesWorld {
+            world: LostCities
                 .sample_determinization(&o, player(observer)?, &mut SplitMix64::new(seed))
                 .map_err(error)?,
         })
@@ -283,5 +288,45 @@ impl PyLostCitiesPosition {
     }
     fn validate(&self) -> PyResult<()> {
         LostCities.validate_state(&self.state).map_err(error)
+    }
+}
+
+#[pyclass(name = "LostCitiesSimulationWorld", frozen, skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyLostCitiesWorld {
+    world: LostCitiesSimulationWorld,
+}
+#[pymethods]
+impl PyLostCitiesWorld {
+    fn snapshot(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        snapshot(py, self.world.state())
+    }
+    fn deck_order(&self) -> Vec<[u8; 2]> {
+        raw(self.world.deck_order())
+    }
+    fn observation(&self, py: Python<'_>, observer: usize) -> PyResult<Py<PyDict>> {
+        observation_dict(py, &self.world.observation(player(observer)?))
+    }
+    fn legal_actions(&self, py: Python<'_>) -> PyResult<Vec<Py<PyDict>>> {
+        self.world
+            .legal_actions()
+            .map(|a| action_dict(py, a))
+            .collect()
+    }
+    fn apply_action(&self, action: &Bound<'_, PyDict>) -> PyResult<Self> {
+        let mut result = self.clone();
+        result
+            .world
+            .apply_action(&parse_action(action)?)
+            .map_err(error)?;
+        Ok(result)
+    }
+    fn resolve_pending_draws(&self) -> PyResult<Self> {
+        let mut result = self.clone();
+        result.world.resolve_pending_draws().map_err(error)?;
+        Ok(result)
+    }
+    fn validate(&self) -> PyResult<()> {
+        self.world.validate().map_err(error)
     }
 }

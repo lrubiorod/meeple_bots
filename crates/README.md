@@ -215,8 +215,9 @@ Authoritative traces record outcomes with `after_ply` for replay, including setu
 position zero. These traces disclose private draws and are administrative data, not
 observations.
 
-Lost Cities separates owned observations, hidden-hand determinization and future
-Chance sampling from a deck pool. It implements no search agent, belief model or
+Lost Cities separates owned observations, stochastic environment states and complete
+simulation worlds. Determinization samples an opponent hand plus an ordered deck;
+simulation draws consume that order without resampling, while real draws use Chance. It implements no search agent, belief model or
 information-set tree. Before registering SO-ISMCTS, provide an observation-safe
 agent lifecycle and review action visibility, retained memory and observer access.
 See [Lost Cities](../games/lost-cities/README.md) for the exact variant, observation

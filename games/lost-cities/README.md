@@ -34,18 +34,36 @@ colors; terminal utilities are +1/-1 for winner/loser or 0/0 for a tie.
   deck composition, seed or future order**. Python observations are frozen/hashable
   and serialize only these fields.
 - The optional core `ImperfectInformationGame` trait adds `sample_determinization`
-  to the existing `Game::Observation` contract. Other games need no changes.
-  Sampling subtracts known cards from the full multiset, uniformly deals the hidden
-  opponent hand, and leaves the remaining pool for future Chance. It checks card
-  conservation, phase hand sizes (including seven-card draw phases), public zones
-  and observer identity. Invalid observations return an error.
+  and an associated `Determinization` type to the existing observation contract.
+  Lost Cities returns a separate `LostCitiesSimulationWorld`, not an environment state.
+  Fisher-Yates shuffles all unknown physical cards with the supplied RNG, assigns
+  the required opponent hand and keeps the remainder in exact future draw order.
+  Identical wagers preserve their natural multiplicities. Validation checks all 60
+  cards, public zones, phase hand sizes and agreement between order and remaining pool.
 
-**Determinization is not chance.** Determinization samples which unknown cards are
-currently in the opponent's hand; Chance samples which remaining card is drawn next.
-A determinization assigns no future order. Observing any compatible sampled state
-again reproduces exactly the original observation; root legal actions are identical
-across determinizations for the acting observer. This initial model uses only the
-listed observation data, with no inference from play or private-history framework.
+**Real game: chance chooses reality.** Environment states retain an unordered pool;
+real matches, the debug GUI and replay still use normal stochastic Chance events.
+
+**Simulation: determinization samples one complete possible reality.** The temporary
+world owns the opponent hand and `deck_order` (next card first). Its `apply_action`
+reuses real rules but resolves `DrawDeck` immediately from that order, without an RNG
+or a new stochastic Chance branch. Observations taken during setup or a pending draw
+are preserved exactly at sampling; `resolve_pending_draws()` explicitly advances
+those pending transitions using the fixed order. No uncertainty is sampled twice.
+
+**Future ISMCTS tree: retain only observable distinctions and learned statistics.**
+Never key a persistent tree by the complete world or put its hidden cards/deck order
+in tree nodes. Two worlds with different deck orders have equal observations before
+a draw; a hidden opponent draw remains indistinguishable to the observer. An own
+draw legitimately changes the observer's hand. A fresh world must be sampled per
+iteration and discarded afterward; no ISMCTS tree or agent is implemented here.
+
+The world provides `observation`, `legal_actions`, `apply_action` and validation;
+Rust also exposes status/terminal utility and read-only administrative state/order
+inspection. Python `world.state` is a summary with no executable environment handle.
+Use `world.apply_action(action)` for simulation, not `game.apply_action(world, action)`.
+Sampling is uniform without opponent inference or a private-history framework.
+Observing every sampled world reproduces the original observation exactly.
 
 ## Agents and interfaces
 
@@ -78,8 +96,8 @@ game = LostCities()
 state = game.initial_state(seed=42)  # Resolves the sixteen setup Chance events.
 observation = game.observation(state, observer=0)
 world = game.sample_determinization(observation, observer=0, seed=123)
-assert game.observation(world, 0) == observation
-assert game.legal_actions(world) == game.legal_actions(state)
+assert world.observation(0) == observation
+assert world.legal_actions() == game.legal_actions(state)
 ```
 
 ## Open-hand debugging GUI
@@ -99,7 +117,7 @@ then draw. Random decisions choose uniformly from that same action list without
 inspecting hands or deck composition. Environment chance still runs through Rust,
 with a separate seeded RNG stream from each random policy. The GUI seed reproduces
 GUI sessions; its Python orchestration does not promise identical random choices
-to native tournament execution. Observations and determinization APIs are unchanged.
+to native tournament execution. The debug GUI uses only real-game execution, never determinized simulation worlds.
 
 New Match cancels the previous worker, including human waits; stale/duplicate moves
 are rejected using session and decision tokens. Step delay controls inspection pace.

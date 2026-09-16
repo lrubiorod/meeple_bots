@@ -213,8 +213,10 @@ fn check_determinizations(s: &LostCitiesState) {
             let d = LostCities
                 .sample_determinization(&o, observer, &mut SplitMix64::new(seed))
                 .unwrap();
-            LostCities.validate_state(&d).unwrap();
-            assert_eq!(LostCities.observation(&d, observer), o);
+            d.validate().unwrap();
+            assert_eq!(d.deck_order().len(), s.deck.len());
+            let d = d.state();
+            assert_eq!(LostCities.observation(d, observer), o);
             assert_eq!(d.hands[observer.index()], s.hands[observer.index()]);
             assert_eq!(d.expeditions, s.expeditions);
             assert_eq!(d.discards, s.discards);
@@ -228,7 +230,7 @@ fn check_determinizations(s: &LostCitiesState) {
             if LostCities.status(s) == PositionStatus::PlayerTurn(observer) {
                 assert_eq!(
                     LostCities.legal_actions(s).collect::<Vec<_>>(),
-                    LostCities.legal_actions(&d).collect::<Vec<_>>()
+                    LostCities.legal_actions(d).collect::<Vec<_>>()
                 );
             }
         }
@@ -261,7 +263,7 @@ fn determinizations_roundtrip_all_phases_and_preserve_conservation() {
     assert!(visited.contains(&Phase::Finished));
 }
 #[test]
-fn seeded_hidden_assignments_vary_without_fixing_future_order() {
+fn seeded_complete_worlds_fix_future_draws() {
     let s = ready(42);
     let o = LostCities.observation(&s, PlayerId::FIRST);
     let mut worlds = HashSet::new();
@@ -282,17 +284,17 @@ fn seeded_hidden_assignments_vary_without_fixing_future_order() {
             .sample_determinization(&o, PlayerId::FIRST, &mut SplitMix64::new(8))
             .unwrap()
     );
-    let a = LostCities.legal_actions(&d).next().unwrap();
-    LostCities.apply_action(&mut d, &a).unwrap();
-    LostCities.apply_action(&mut d, &DrawDeck).unwrap();
-    let draws: HashSet<_> = (0..20)
-        .map(|seed| {
-            LostCities
-                .sample_chance(&d, &mut SplitMix64::new(seed))
-                .unwrap()
-        })
-        .collect();
-    assert!(draws.len() > 1);
+    let a = d.legal_actions().next().unwrap();
+    d.apply_action(&a).unwrap();
+    let order = d.deck_order().to_vec();
+    let mut repeated = d.clone();
+    d.apply_action(&DrawDeck).unwrap();
+    repeated.apply_action(&DrawDeck).unwrap();
+    assert_eq!(d, repeated);
+    assert!(d.state().hands[0].contains(&order[0]));
+    assert_eq!(d.deck_order(), &order[1..]);
+    assert_ne!(d.status(), PositionStatus::Chance);
+    d.validate().unwrap();
     assert!(
         LostCities
             .sample_determinization(&o, PlayerId::SECOND, &mut SplitMix64::new(8))
@@ -361,4 +363,94 @@ fn agent_rng_consumption_cannot_change_environment_events() {
     let b = run(17);
     assert_eq!(a.chance_events, b.chance_events);
     assert_eq!(a.result, b.result);
+}
+
+#[test]
+fn deck_order_is_hidden_even_after_an_opponent_draw() {
+    let s = ready(42);
+    let mut a = LostCities
+        .sample_determinization(
+            &LostCities.observation(&s, PlayerId::FIRST),
+            PlayerId::FIRST,
+            &mut SplitMix64::new(12),
+        )
+        .unwrap();
+    // Same opponent hand and pool, different future orders.
+    a.state.current_player = PlayerId::SECOND;
+    let mut b = a.clone();
+    let i = b
+        .deck_order
+        .iter()
+        .position(|c| *c != b.deck_order[0])
+        .unwrap();
+    b.deck_order.swap(0, i);
+    assert_ne!(a.deck_order(), b.deck_order());
+    assert_eq!(
+        a.observation(PlayerId::FIRST),
+        b.observation(PlayerId::FIRST)
+    );
+    assert_eq!(
+        hash(&a.observation(PlayerId::FIRST)),
+        hash(&b.observation(PlayerId::FIRST))
+    );
+    let play = a.legal_actions().next().unwrap();
+    for w in [&mut a, &mut b] {
+        w.apply_action(&play).unwrap();
+        w.apply_action(&DrawDeck).unwrap();
+        w.validate().unwrap();
+    }
+    assert_ne!(a.state().hands[1], b.state().hands[1]);
+    assert_eq!(
+        a.observation(PlayerId::FIRST),
+        b.observation(PlayerId::FIRST)
+    );
+    assert_ne!(
+        a.observation(PlayerId::SECOND),
+        b.observation(PlayerId::SECOND)
+    );
+}
+
+#[test]
+fn complete_simulation_reaches_terminal_without_chance_sampling() {
+    let s = ready(7);
+    let mut w = LostCities
+        .sample_determinization(
+            &LostCities.observation(&s, PlayerId::FIRST),
+            PlayerId::FIRST,
+            &mut SplitMix64::new(3),
+        )
+        .unwrap();
+    for remaining in (1..=44).rev() {
+        let action = w.legal_actions().next().unwrap();
+        w.apply_action(&action).unwrap();
+        let next = w.deck_order()[0];
+        let active = w.state().current_player.index();
+        w.apply_action(&DrawDeck).unwrap();
+        assert!(w.state().hands[active].contains(&next));
+        assert_eq!(w.deck_order().len(), remaining - 1);
+        w.validate().unwrap();
+    }
+    assert_eq!(w.status(), PositionStatus::Terminal);
+    assert!(w.terminal_utility(PlayerId::FIRST).is_some());
+}
+
+#[test]
+fn complete_sampling_preserves_physical_wager_weights() {
+    let s = ready(42);
+    let o = LostCities.observation(&s, PlayerId::FIRST);
+    let card = W(Red);
+    let count = full_deck().iter().filter(|&&c| c == card).count()
+        - o.hand.iter().filter(|&&c| c == card).count();
+    let expected = count as f64 / (60 - o.hand.len()) as f64;
+    let mut first = 0;
+    let mut last = 0;
+    for seed in 0..3000 {
+        let world = LostCities
+            .sample_determinization(&o, PlayerId::FIRST, &mut SplitMix64::new(seed))
+            .unwrap();
+        first += usize::from(world.deck_order()[0] == card);
+        last += usize::from(world.deck_order().last() == Some(&card));
+    }
+    assert!((first as f64 / 3000. - expected).abs() < 0.02);
+    assert!((last as f64 / 3000. - expected).abs() < 0.02);
 }

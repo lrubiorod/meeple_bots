@@ -27,14 +27,16 @@ pub trait PerfectInformationGame: Game {}
 /// Optional hidden-information contract. Observations must contain only the observer's
 /// information, with no authoritative-state handle. Eq/Hash/serialization must not leak
 /// hidden assignments. Sampling uses only this observation and the supplied RNG, and
-/// observing the result again must reproduce the input. Future chance remains separate.
+/// observing the result again must reproduce the input. A temporary simulation world
+/// may also fix future randomness; it must not resample the same uncertainty.
 pub trait ImperfectInformationGame: Game {
+    type Determinization;
     fn sample_determinization<R: crate::RandomSource + ?Sized>(
         &self,
         observation: &Self::Observation<'_>,
         observer: PlayerId,
         rng: &mut R,
-    ) -> Result<Self::State, crate::IllegalAction>;
+    ) -> Result<Self::Determinization, crate::IllegalAction>;
 }
 
 /// Optional contract for games that provide state evaluations to search agents.

@@ -96,7 +96,7 @@ class LostCities:
 
     def sample_determinization(self, observation, observer, seed=0):
         position = _native.LostCitiesPosition.determinize(observation.to_dict(), observer, seed)
-        return LostCitiesState.from_dict(position.snapshot(), position)
+        return LostCitiesSimulationWorld._from_native(position)
 
     def legal_actions(self, state):
         return tuple(LostCitiesAction.from_dict(a) for a in state._native_position().legal_actions())
@@ -122,3 +122,34 @@ class LostCities:
             return None
         a, b = state.scores[player], state.scores[1-player]
         return float((a > b) - (a < b))
+
+
+@dataclass(frozen=True, slots=True)
+class LostCitiesSimulationWorld:
+    """Temporary complete world; never an information-set key or an agent observation.
+
+    state is an administrative snapshot without an executable environment handle.
+    deck_order[0] is the next card. Simulation transitions never resample draws.
+    """
+    state: LostCitiesState
+    deck_order: tuple
+    _world: object = field(repr=False, compare=False)
+
+    @classmethod
+    def _from_native(cls, world):
+        return cls(LostCitiesState.from_dict(world.snapshot()), tuple(map(tuple, world.deck_order())), world)
+
+    def observation(self, observer):
+        return LostCitiesObservation.from_dict(self._world.observation(observer))
+
+    def legal_actions(self):
+        return tuple(LostCitiesAction.from_dict(a) for a in self._world.legal_actions())
+
+    def apply_action(self, action):
+        return self._from_native(self._world.apply_action(action.to_dict()))
+
+    def resolve_pending_draws(self):
+        return self._from_native(self._world.resolve_pending_draws())
+
+    def validate(self):
+        self._world.validate()

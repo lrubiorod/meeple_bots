@@ -46,15 +46,17 @@ class LostCitiesTests(unittest.TestCase):
         self.assertNotEqual(o, game.observation(state, 1))
         self.assertEqual(o, LostCitiesObservation.from_dict(json.loads(json.dumps(o.to_dict()))))
         worlds = [game.sample_determinization(o, 0, seed) for seed in range(20)]
-        self.assertGreater(len({w.hands[1] for w in worlds}), 1)
+        self.assertGreater(len({w.state.hands[1] for w in worlds}), 1)
+        self.assertGreater(len({w.deck_order for w in worlds}), 1)
+        self.assertTrue(all(len(w.deck_order) == 44 for w in worlds))
         expected = json.dumps(o.to_dict(), sort_keys=True)
         for world in worlds:
-            world._native_position().validate()
-            observed = game.observation(world, 0)
+            world.validate()
+            observed = world.observation(0)
             self.assertEqual(observed, o)
             self.assertEqual(hash(observed), hash(o))
             self.assertEqual(json.dumps(observed.to_dict(), sort_keys=True), expected)
-            self.assertEqual(game.legal_actions(world), game.legal_actions(state))
+            self.assertEqual(world.legal_actions(), game.legal_actions(state))
         self.assertEqual(worlds[0], game.sample_determinization(o, 0, 0))
         with self.assertRaises(ValueError):
             game.sample_determinization(o, 1, 0)
@@ -74,27 +76,35 @@ class LostCitiesTests(unittest.TestCase):
             self.assertEqual(len(o.hand), 7 if observer == 0 else 8)
             self.assertEqual(o.opponent_hand_size, 8 if observer == 0 else 7)
             world = game.sample_determinization(o, observer, 33)
-            self.assertEqual(game.observation(world, observer), o)
+            self.assertEqual(world.observation(observer), o)
         state = game.apply_action(state, LostCitiesAction('draw_deck'))
         self.assertEqual(state.status, 'chance')
         self.assertEqual(game.legal_actions(state), ())
         o = game.observation(state, 0)
         world = game.sample_determinization(o, 0, 77)
-        self.assertEqual(game.observation(world, 0), o)
-        outcomes = game.chance_outcomes(world)
+        self.assertEqual(world.observation(0), o)
+        next_card = world.deck_order[0]
+        resolved = world.resolve_pending_draws()
+        self.assertIn(next_card, resolved.state.hands[0])
+        self.assertEqual(resolved.deck_order, world.deck_order[1:])
+        self.assertEqual(resolved.state.status, 'player')
+        self.assertFalse(hasattr(world, 'sample_chance'))
+        with self.assertRaises(ValueError):
+            game.sample_chance(world.state)  # Inspection snapshot is not a real-game position.
+        outcomes = game.chance_outcomes(state)
         self.assertAlmostEqual(sum(p for _, p in outcomes), 1.)
         for action, probability in outcomes:
-            self.assertAlmostEqual(probability, world.deck.count(action.card) / len(world.deck))
-        draws = {game.sample_chance(world, seed) for seed in range(20)}
+            self.assertAlmostEqual(probability, state.deck.count(action.card) / len(state.deck))
+        draws = {game.sample_chance(state, seed) for seed in range(20)}
         self.assertGreater(len(draws), 1)
         for draw in draws:
-            after = game.apply_chance_outcome(world, draw)
+            after = game.apply_chance_outcome(state, draw)
             after._native_position().validate()
             self.assertEqual(len(after.deck), 43)
             self.assertEqual(after.current_player, 1)
             self.assertEqual(after.phase, 'play')
         with self.assertRaises(ValueError):
-            game.apply_action(world, next(iter(draws)))
+            game.apply_action(state, next(iter(draws)))
 
     def test_mcts_rejected_at_python_and_native_boundaries_and_study(self):
         game = LostCities()
@@ -150,3 +160,32 @@ class LostCitiesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Lost Cities'):
                 with TournamentTrace(config.output, header, resume=True):
                     pass
+
+
+    def test_simulation_draw_consumes_order_and_opponent_draw_stays_private(self):
+        game = LostCities()
+        state = game.initial_state(42)
+        # Advance player 0 using real rules to obtain player 1's decision.
+        state = game.apply_action(state, game.legal_actions(state)[0])
+        state = game.apply_action(state, LostCitiesAction('draw_deck'))
+        state = game.apply_chance_outcome(state, game.sample_chance(state, 4))
+        observation = game.observation(state, 0)
+        after_observations = []
+        for seed in range(20):
+            world = game.sample_determinization(observation, 0, seed)
+            # Same public discard if that card is in the sampled hand.
+            card = state.hands[1][0]
+            action = LostCitiesAction('discard', card)
+            if action not in world.legal_actions():
+                continue
+            world = world.apply_action(action)
+            next_card = world.deck_order[0]
+            after = world.apply_action(LostCitiesAction('draw_deck'))
+            after.validate()
+            self.assertEqual(after.deck_order, world.deck_order[1:])
+            self.assertIn(next_card, after.state.hands[1])
+            self.assertEqual(after.state.status, 'player')
+            after_observations.append(after.observation(0))
+        self.assertGreater(len(after_observations), 1)
+        self.assertTrue(all(o == after_observations[0] for o in after_observations))
+        self.assertEqual(len({json.dumps(o.to_dict(), sort_keys=True) for o in after_observations}), 1)

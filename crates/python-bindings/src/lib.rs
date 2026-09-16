@@ -2570,6 +2570,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(normalize_game_parameters, module)?)?;
     module.add_class::<splendor::PySplendorPosition>()?;
     module.add_class::<lost_cities::PyLostCitiesPosition>()?;
+    module.add_class::<lost_cities::PyLostCitiesWorld>()?;
     module.add_class::<splendor::PySplendorSession>()?;
     module.add_function(wrap_pyfunction!(py_game_search_capabilities, module)?)?;
     module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;

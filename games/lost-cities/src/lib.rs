@@ -316,12 +316,13 @@ impl Game for LostCities {
     }
 }
 impl ImperfectInformationGame for LostCities {
+    type Determinization = LostCitiesSimulationWorld;
     fn sample_determinization<R: RandomSource + ?Sized>(
         &self,
         o: &LostCitiesObservation,
         observer: PlayerId,
         rng: &mut R,
-    ) -> Result<LostCitiesState, IllegalAction> {
+    ) -> Result<LostCitiesSimulationWorld, IllegalAction> {
         if observer.index() >= 2 || observer != o.observer {
             return Err(IllegalAction::new(
                 "observation belongs to a different player",
@@ -343,10 +344,14 @@ impl ImperfectInformationGame for LostCities {
         }
         let mut hands: [Vec<LostCitiesCard>; 2] = Default::default();
         hands[observer.index()] = o.hand.clone();
-        for _ in 0..o.opponent_hand_size {
-            let index = rng.index(unknown.len()).unwrap();
-            hands[1 - observer.index()].push(unknown.remove(index));
+        // Fisher-Yates over physical cards: identical wagers retain their multiplicity.
+        for i in (1..unknown.len()).rev() {
+            let j = rng.index(i + 1).unwrap();
+            unknown.swap(i, j);
         }
+        hands[1 - observer.index()] = unknown.drain(..o.opponent_hand_size).collect();
+        let deck_order = unknown.clone();
+        unknown.sort();
         hands[1 - observer.index()].sort();
         let state = LostCitiesState {
             current_player: o.current_player,
@@ -358,7 +363,7 @@ impl ImperfectInformationGame for LostCities {
             blocked_discard: o.blocked_discard,
         };
         self.validate_state(&state)?;
-        Ok(state)
+        Ok(LostCitiesSimulationWorld { state, deck_order })
     }
 }
 impl LostCities {
@@ -440,3 +445,63 @@ impl LostCities {
 }
 #[cfg(test)]
 mod tests;
+
+/// One complete temporary reality for a simulation, never an information-set key.
+/// The real game keeps its stochastic pool; only this world owns a future order.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct LostCitiesSimulationWorld {
+    state: LostCitiesState,
+    /// First element is the next card. Private to prevent pool/order divergence.
+    deck_order: Vec<LostCitiesCard>,
+}
+impl LostCitiesSimulationWorld {
+    /// Administrative inspection only, never expose this to an observation-based policy.
+    pub fn state(&self) -> &LostCitiesState {
+        &self.state
+    }
+    pub fn deck_order(&self) -> &[LostCitiesCard] {
+        &self.deck_order
+    }
+    pub fn observation(&self, observer: PlayerId) -> LostCitiesObservation {
+        LostCities.observation(&self.state, observer)
+    }
+    pub fn legal_actions(&self) -> std::vec::IntoIter<LostCitiesAction> {
+        LostCities.legal_actions(&self.state)
+    }
+    pub fn status(&self) -> PositionStatus {
+        LostCities.status(&self.state)
+    }
+    pub fn terminal_utility(&self, player: PlayerId) -> Option<f32> {
+        LostCities.terminal_utility(&self.state, player)
+    }
+    /// Normal rules, but DrawDeck consumes the already sampled next card immediately.
+    /// No RNG or selectable Chance edge is involved in this simulation transition.
+    pub fn apply_action(&mut self, action: &LostCitiesAction) -> Result<(), IllegalAction> {
+        LostCities.apply_action(&mut self.state, action)?;
+        self.resolve_pending_draws()
+    }
+    /// For observations captured during setup or a pending real-world Chance draw.
+    /// Sampling itself preserves the observation; the caller explicitly advances it.
+    pub fn resolve_pending_draws(&mut self) -> Result<(), IllegalAction> {
+        while LostCities.status(&self.state) == PositionStatus::Chance {
+            let card = *self
+                .deck_order
+                .first()
+                .ok_or_else(|| IllegalAction::new("empty simulation deck"))?;
+            LostCities.apply_chance_outcome(&mut self.state, &LostCitiesAction::DealCard(card))?;
+            self.deck_order.remove(0);
+        }
+        Ok(())
+    }
+    pub fn validate(&self) -> Result<(), IllegalAction> {
+        LostCities.validate_state(&self.state)?;
+        let mut pool = self.deck_order.clone();
+        pool.sort();
+        if pool != self.state.deck {
+            return Err(IllegalAction::new(
+                "simulation deck differs from remaining pool",
+            ));
+        }
+        Ok(())
+    }
+}
