@@ -518,7 +518,7 @@ All search stages are opt-in. `--all-search` enables all supported stages:
 | `--selection-search` | Compare UCT exploration candidates against the incumbent, then UCB1-Tuned against the winner. |
 | `--rave-search` | Calibrate a RAVE copy before comparing it with the incumbent. |
 | `--mechanism-search` | Test all four reuse/transposition combinations, each alternative against the incumbent. |
-| `--pw-search` | Calibrate k/alpha on a PW copy before comparing it with the incumbent. |
+| `--pw-search` | Screen no-PW, random PW and RAVE-guided PW, then independently refine surviving policies. |
 | `--widening-expansion-search` | Compare random and AMAF admission when the incumbent has PW enabled. |
 | `--second-pass` | Append local exploration, RAVE k and PW k/alpha tuning on the retained champion. |
 
@@ -536,8 +536,8 @@ rule, not a 95% significance claim. All tuners share it.
 
 There is **no mandatory final refinement or independent confirmation**. A local
 second pass is available explicitly through `--second-pass`. In a PW-only
-study, the calibrated PW copy faces the original baseline and the winner is
-exported immediately. The joint k/alpha check remains part of PW calibration.
+study, both admission policies face no-PW before calibration; refined survivors
+then challenge the retained screen winner. The joint k/alpha check remains part of PW calibration.
 Results are exploratory; use a separate tournament for independent verification.
 With no optional stages, the initial candidate is exported without competitive
 matches (calibration still measures cost).
@@ -612,11 +612,30 @@ check geometric gaps or expand improving boundaries, followed by local explorati
 calibration. Only then does the calibrated copy face the incumbent. Stopping for
 lack of improvement is not proof of a plateau.
 
-PW starts with the incumbent's k/alpha (defaults 1.5/0.5). It tests k multiplied
-by 1/3 and 8/3, then alpha shifted by +/-0.25, then four joint neighbors (k times
-0.5/2, alpha +/-0.125, bounded to [0.05,1]). Only fully completed calibration
-allows the final PW-vs-incumbent comparison. Existing PW in the input is retained:
-this also permits refining an already widened baseline.
+Progressive Widening decides **how many** actions enter; expansion policy decides
+**which** enter. Random and RAVE-guided admission are sibling alternatives: random
+PW losing never prevents RAVE-guided PW from being evaluated.
+
+The shared study race first compares no-PW against both policies at the incumbent's
+alpha (default 0.5), using current k (default 1.5) and k multiplied by 1/3 and 8/3.
+Budget screening reserves the current-k comparison for **both** policies before
+adding k breadth, preserving the full planned sample (at least four paired seeds).
+If even this minimum coverage is unaffordable or incomplete, the family is
+inconclusive, not rejected. A policy is screened out only when its best completed
+representative clearly loses under the same paired evidence rule used for promotion.
+Rejecting the family requires representative evidence for every applicable policy.
+
+Each surviving policy refines its own k and alpha, with separate tested-value
+histories, then checks four joint neighbors (k times 0.5/2, alpha +/-0.125, bounded
+to [0.05,1]). RAVE-guided tuning never inherits random PW's calibrated optimum.
+A supported screen winner can be retained immediately; incomplete refinement
+cannot displace it. Completed refinements challenge that retained winner.
+
+AMAF applicability follows the deterministic backend capability (currently exposed
+by availability of `uct_rave`). Rust's `collects_amaf()` activates statistics for
+RAVE-guided admission itself, so **UCT-RAVE selection is not required**: UCT and
+UCB1-Tuned can also use informed admission. If that capability is absent, guided
+admission is explicitly non-applicable, not scored as a loss.
 
 ### Fixed games per comparison
 
@@ -652,7 +671,7 @@ Budget-pruned races are frozen, not silently reintroduced on resume. A completed
 study with `budget_limited=true` may have omitted challengers; start a new local
 retune to explore them. Resume is for incomplete executed races.
 
-PW now calibrates k, then alpha, with up to **five additional rounds per axis**.
+After family screening, each surviving PW policy calibrates k, then alpha, with up to **five additional rounds per axis**.
 The first additional round checks gaps around the coarse winner. Subsequent
 rounds continue only for a winning challenger scoring at least 55%, with mean
 paired-seed score minus one estimated standard error above 50%. This is an
@@ -660,7 +679,7 @@ exploratory trend heuristic, not confirmation or a significance guarantee.
 Improving boundaries extend outward (alpha never exceeds 1); interior values
 receive geometric k or arithmetic alpha neighbors. Stopping without a clear
 trend is not proof of convergence. A four-neighbor joint check follows, then
-calibrated PW faces the incumbent with its complete fixed sample.
+each calibrated policy faces the retained screen winner with its complete fixed sample.
 
 ### Results and resume
 
@@ -676,7 +695,8 @@ unfinished internal RAVE/PW calibration does not replace it. The report explicit
 marks it `not_independently_confirmed`. `--reference`, `--confirmation-pairs` and
 `--auxiliary-pairs` have been removed; compare profiles in a separate tournament.
 
-Protocol **21** adds coordinate tuners, conservative promotion and candidate-budget screening.
+Protocol **22** adds sibling PW screening and independent admission-policy calibration.
+Older studies require a new output directory; their frozen phase/seed plans cannot resume under this protocol.
 Older studies require a new output directory. Resume requires identical game
 counts, flags and compatible code/native build; it completes exactly the missing
 matches without replaying completed seats. Git commits alone do not invalidate it.
@@ -708,9 +728,13 @@ reference and never replaces an explicit profile's iterations/time budget.
 | `progressive-widening` | k and alpha, PW must already be enabled |
 | `progressive-widening-k` | k only |
 | `progressive-widening-alpha` | alpha only |
-| `widening-expansion` | random/rave admission, PW must already be enabled |
+| `widening-expansion` | random/rave admission, PW must already be enabled and AMAF available |
 | `structure` | the four reuse/transposition combinations |
 | `cutoff-depth` | rollout depth, evaluator unchanged |
+
+`--tune widening-expansion` directly compares random and RAVE-guided admission
+regardless of earlier study results. It freezes k, alpha, selection, exploration,
+RAVE equivalence, reuse, transpositions, rollout and every other agent field.
 
 Each generated candidate is checked against an allowlist of fields. Local output
 is checked again against the original profile before saving. Inactive parameters
@@ -730,8 +754,8 @@ selection/admission/structure comparisons use one round. The coupled PW tuner
 runs k, alpha, then one local k recheck, never enabling/disabling PW itself.
 
 Full study and local mode call the same candidate generators in `_study_tuners.py`.
-Full stages explicitly wrap them when enabling a new selector or PW, calibrate a
-private copy and then compare it with the retained incumbent. Local mode never
+Full stages explicitly wrap them when enabling a new selector or screening the PW
+family, calibrate private copies and then compare them with the retained incumbent. Local mode never
 uses those enabling wrappers. Tournament execution, cost planning, paired seeds,
 trace recovery and promotion are shared in `StudyRunner`.
 

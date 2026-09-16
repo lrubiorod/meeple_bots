@@ -46,6 +46,8 @@ def validate_tuner(dimension, base, selectors):
             raise ValueError(f'{dimension} requires PW already enabled; local tuning never enables it implicitly')
     if dimension == 'rave' and base.selection_policy != 'uct_rave':
         raise ValueError('rave_equivalence affects UCT-RAVE selection; --tune rave requires selection_policy=uct_rave')
+    if dimension == 'widening-expansion' and 'uct_rave' not in selectors:
+        raise ValueError('widening-expansion is not applicable: AMAF unavailable for this backend')
     if dimension == 'exploration' and base.selection_policy == 'ucb1_tuned':
         raise ValueError('UCB1-Tuned does not use exploration; choose another tuning dimension')
     if dimension == 'selection' and base.selection_policy not in selectors:

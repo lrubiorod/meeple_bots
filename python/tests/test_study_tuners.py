@@ -174,3 +174,160 @@ class StudyTunerTests(unittest.TestCase):
             self.assertEqual(state['local_retune']['changed_fields'], {})
             self.assertEqual(_load_mcts_profile(Path(tmp)/'candidates/best_agent.toml').agent, runner.base)
             self.assertIn('No sufficiently supported improvement found.', (Path(tmp)/'report.html').read_text())
+
+
+class PwSiblingTests(unittest.TestCase):
+    def runner(self, tmp, **kwargs):
+        base = MctsAgent(iterations=4, rollout_depth=9, selection_policy='uct',
+                         progressive_widening_k=1., progressive_widening_alpha=.5)
+        runner = StudyRunner('tic-tac-toe', base, output=Path(tmp), pw_search=True,
+                             games_per_comparison=8, workers=1, progress=lambda _: None, **kwargs)
+        runner.state['calibration'] = {'horizon': {'depth': 9}, 'fixed_iterations': 4,
+                                      'mean_plies': 9, 'seconds_per_iteration': .001}
+        for name in PHASES[:PHASES.index('pw_screen')]:
+            phase = _build_phase(name, runner.state, base, None)
+            phase['status'] = 'complete'
+            runner.state['phases'][name] = phase
+        return runner
+
+    def screen(self, runner, scores):
+        phase = _build_phase('pw_screen', runner.state, runner.base, None)
+        for c in phase['contrasts']:
+            score = scores[c['policy']]
+            c['result'] = {'seed_pairs': 4, 'score_b': score,
+                           'seed_scores_b': {str(i): score for i in range(4)}}
+        phase['status'] = 'complete'
+        runner.state['phases']['pw_screen'] = phase
+        runner.save()
+        return phase
+
+    def test_rave_wins_and_refines_when_random_loses_under_uct(self):
+        with TemporaryDirectory() as tmp:
+            runner = self.runner(tmp)
+            screen = self.screen(runner, {'random': .44, 'rave': .58})
+            self.assertEqual({c['policy'] for c in screen['contrasts']}, {'random', 'rave'})
+            self.assertEqual(runner.state['selected_candidate']['profile']['progressive_widening_expansion'], 'rave')
+            for name in PHASES[PHASES.index('pw_k'):]:
+                phase = _build_phase(name, runner.state, runner.base, None)
+                if name != 'pw_compare':
+                    self.assertEqual(set(phase['groups']), {'rave'})
+                for c in phase['contrasts']:
+                    self.assertEqual(c['policy'], 'rave')
+                    c['result'] = {'seed_pairs': 4, 'score_b': .7}
+                phase['status'] = 'complete'
+                runner.state['phases'][name] = phase
+                runner.save()
+            self.assertEqual(runner.state['selected_candidate']['profile']['progressive_widening_expansion'], 'rave')
+            self.assertTrue(runner.state['phases']['pw_alpha']['contrasts'])
+
+    def test_rejection_requires_minimum_evidence_for_each_policy(self):
+        with TemporaryDirectory() as tmp:
+            runner = self.runner(tmp)
+            screen = self.screen(runner, {'random': .3, 'rave': .3})
+            for c in screen['contrasts']:
+                if c['policy'] == 'rave':
+                    c['result']['seed_pairs'] = 3
+            runner.save()
+            self.assertEqual(screen['pw_decisions']['family'], 'inconclusive')
+            for c in screen['contrasts']:
+                c['result']['seed_pairs'] = 4
+            runner.save()
+            self.assertEqual(screen['pw_decisions']['family'], 'rejected')
+            self.assertFalse(_build_phase('pw_k', runner.state, runner.base, None)['contrasts'])
+
+    def test_separate_k_and_alpha_histories(self):
+        with TemporaryDirectory() as tmp:
+            runner = self.runner(tmp)
+            screen = self.screen(runner, {'random': .6, 'rave': .6})
+            for c in screen['contrasts']:
+                k = screen['agents'][c['b']]['progressive_widening_k']
+                c['result']['score_b'] = .8 if (k > 2 if c['policy'] == 'random' else k < .5) else .6
+            k_phase = _build_phase('pw_k', runner.state, runner.base, None)
+            self.assertAlmostEqual(k_phase['agents']['random-incumbent']['progressive_widening_k'], 8/3)
+            self.assertAlmostEqual(k_phase['agents']['rave-incumbent']['progressive_widening_k'], 1/3)
+            for name in PHASES[PHASES.index('pw_k'):PHASES.index('pw_compare')]:
+                with patch('meeple_bots.studies.proposals', wraps=proposals) as generator:
+                    phase = _build_phase(name, runner.state, runner.base, None)
+                if name == 'pw_k_extend_1':
+                    calls = {call.args[1].progressive_widening_expansion: call for call in generator.call_args_list}
+                    self.assertNotEqual(calls['random'].kwargs['tested'], calls['rave'].kwargs['tested'])
+                for c in phase['contrasts']:
+                    value = phase['agents'][c['b']]['progressive_widening_alpha']
+                    score = .8 if name == 'pw_alpha' and (value > .5 if c['policy'] == 'random' else value < .5) else .5
+                    c['result'] = {'seed_pairs': 4, 'score_b': score}
+                runner.state['phases'][name] = phase
+            refinement = runner.state['phases']['pw_refine']
+            self.assertEqual(refinement['agents']['random-incumbent']['progressive_widening_alpha'], .75)
+            self.assertEqual(refinement['agents']['rave-incumbent']['progressive_widening_alpha'], .25)
+
+    def test_budget_preserves_sibling_coverage_before_parameter_breadth(self):
+        with TemporaryDirectory() as tmp:
+            runner = self.runner(tmp, budget=11)
+            phase = _build_phase('pw_screen', runner.state, runner.base, None)
+            with patch.object(runner, '_cost_pair', return_value=1):
+                runner._plan_phase(phase, 0)
+            self.assertEqual([c['policy'] for c in phase['contrasts']], ['random', 'rave'])
+            self.assertEqual([c['target_pairs'] for c in phase['contrasts']], [4, 4])
+            self.assertEqual(len(phase['discarded_comparisons']), 4)
+            runner.budget = 6
+            phase = _build_phase('pw_screen', runner.state, runner.base, None)
+            with patch.object(runner, '_cost_pair', return_value=1):
+                runner._plan_phase(phase, 0)
+            self.assertFalse(phase['contrasts'])
+            runner.state['phases']['pw_screen'] = phase
+            runner.save()
+            self.assertEqual(phase['pw_decisions']['family'], 'inconclusive')
+
+    def test_local_admission_freezes_every_other_field_for_both_selectors(self):
+        for selector in ('uct', 'uct_rave'):
+            for expansion in ('random', 'rave'):
+                with TemporaryDirectory() as tmp:
+                    base = StudyTunerTests().champion(selection_policy=selector, progressive_widening_expansion=expansion)
+                    runner = StudyRunner('tic-tac-toe', base, output=Path(tmp), tune='widening-expansion', progress=lambda _: None)
+                    runner.state['calibration'] = {'horizon': {'depth': 9}}
+                    phase = _build_phase(runner.phase_names[0], runner.state, base, None)
+                    self.assertEqual(len(phase['contrasts']), 1)
+                    self.assertEqual({v['progressive_widening_expansion'] for v in phase['agents'].values()}, {'random', 'rave'})
+                    for v in phase['agents'].values():
+                        assert_frozen(base, agent_from_values(v), 'widening-expansion')
+                    runner.state['request']['selection_policies'] = ['uct']
+                    phase = _build_phase(runner.phase_names[0], runner.state, base, None)
+                    self.assertIn('not applicable: AMAF unavailable', phase['skip_reason'])
+                    self.assertFalse(phase['contrasts'])
+
+    def test_unavailable_amaf_is_reported_not_scored_as_loss(self):
+        with TemporaryDirectory() as tmp:
+            runner = self.runner(tmp)
+            runner.state['request']['selection_policies'] = ['uct']
+            screen = self.screen(runner, {'random': .3})
+            self.assertEqual(screen['pw_decisions']['rave'], 'not_applicable_amaf_unavailable')
+            self.assertEqual({c['policy'] for c in screen['contrasts']}, {'random'})
+
+    def test_incomplete_refinement_preserves_supported_screen_winner(self):
+        with TemporaryDirectory() as tmp:
+            runner = self.runner(tmp)
+            self.screen(runner, {'random': .44, 'rave': .58})
+            winner = runner.state['selected_candidate']['profile']
+            for name in PHASES[PHASES.index('pw_k'):]:
+                phase = _build_phase(name, runner.state, runner.base, None)
+                for c in phase['contrasts']:
+                    c['result'] = {'seed_pairs': 1, 'score_b': 1.}
+                phase['status'] = 'complete'
+                runner.state['phases'][name] = phase
+            runner.save()
+            self.assertEqual(runner.state['selected_candidate']['profile'], winner)
+            self.assertEqual(runner.state['phases']['pw_refine']['pw_decisions']['rave'], 'calibration_incomplete')
+
+    def test_enabled_baseline_requires_evidence_before_disabling_pw(self):
+        with TemporaryDirectory() as tmp:
+            runner = self.runner(tmp)
+            base = replace(runner.base, progressive_widening=True, progressive_widening_expansion='rave')
+            mechanisms = runner.state['phases']['mechanisms']
+            mechanisms['agents'] = {'incumbent': profile_values(base)}
+            screen = self.screen(runner, {'random': .5, 'rave': .5})
+            self.assertEqual(runner.state['selected_candidate']['profile'], profile_values(base))
+            for c in screen['contrasts']:
+                c['result']['score_b'] = .3
+                c['result']['seed_scores_b'] = {str(i): .3 for i in range(4)}
+            runner.save()
+            self.assertFalse(runner.state['selected_candidate']['profile']['progressive_widening'])

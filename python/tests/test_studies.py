@@ -549,8 +549,8 @@ class StudyTests(unittest.TestCase):
         self.assertNotIn('refinement', state['phases'])
         self.assertNotIn('confirmation', state['phases'])
         final = state['phases']['pw_compare']
-        self.assertEqual(agent_from_values(final['agents']['incumbent']), base)
-        self.assertTrue(final['agents']['calibrated-pw']['progressive_widening'])
+        self.assertEqual(agent_from_values(state['phases']['pw_screen']['agents']['incumbent']), base)
+        self.assertTrue(final['agents']['calibrated-pw-rave']['progressive_widening'])
 
     def test_all_search_enables_supported_stages_and_generated_baseline(self):
         with TemporaryDirectory() as tmp:
@@ -562,7 +562,7 @@ class StudyTests(unittest.TestCase):
             args = build_parser().parse_args(['study', '--game', 'connect6', '--budget', '4h', '--all-search'])
             self.assertTrue(args.all_search)
 
-    def test_pw_opt_in_and_calibrate_before_cross_comparison(self):
+    def test_pw_opt_in_screens_siblings_before_independent_calibration(self):
         args = ['study', '--game', 'connect6', '--budget', '4h']
         self.assertFalse(build_parser().parse_args(args).pw_search)
         self.assertTrue(build_parser().parse_args(args + ['--pw-search']).pw_search)
@@ -580,9 +580,9 @@ class StudyTests(unittest.TestCase):
                         if not key.startswith('progressive_widening'):
                             self.assertEqual(values[key], original[key])
             comparison = state['phases']['pw_compare']
-            self.assertEqual(len(comparison['contrasts']), 1)
-            self.assertFalse(comparison['agents']['incumbent'].get('progressive_widening', False))
-            self.assertTrue(comparison['agents']['calibrated-pw']['progressive_widening'])
+            self.assertEqual(len(comparison['contrasts']), 2 if rave else 1)
+            self.assertFalse(state['phases']['pw_screen']['agents']['incumbent']['progressive_widening'])
+            self.assertTrue(comparison['agents']['calibrated-pw-random']['progressive_widening'])
             self.assertGreater(PHASES.index('pw_compare'), PHASES.index('pw_refine'))
 
     def test_pw_incomplete_and_unsupported_keep_incumbent(self):
@@ -591,9 +591,12 @@ class StudyTests(unittest.TestCase):
             state['request'].update(pw_search=enabled, pw_supported=supported)
             self.populate(state)
             if enabled and supported:
-                state['phases']['pw_k']['contrasts'][0]['result']['seed_pairs'] = 1
-                for name in ('pw_alpha', 'pw_refine', 'pw_compare'):
+                # Incomplete screening must not reject or refine either policy.
+                for c in state['phases']['pw_screen']['contrasts']:
+                    c['result']['seed_pairs'] = 1
+                for name in PHASES[PHASES.index('pw_k'):]:
                     state['phases'][name] = _build_phase(name, state, generic_baseline('boop'), None)
+                self.assertEqual(state['phases']['pw_compare']['pw_decisions']['family'], 'inconclusive')
             comparison = state['phases']['pw_compare']
             self.assertFalse(comparison['contrasts'])
             self.assertFalse(any(v.get('progressive_widening', False) for v in comparison['agents'].values()))
@@ -607,7 +610,7 @@ class StudyTests(unittest.TestCase):
             runner.state['phases'] = self.populate(state)['phases']
             phase = _build_phase('pw_k', runner.state, runner.base, None)
             runner._plan_phase(phase, PHASES.index('pw_k'))
-            self.assertEqual([c['target_pairs'] for c in phase['contrasts']], [25, 25])
+            self.assertEqual([c['target_pairs'] for c in phase['contrasts']], [25]*4)
             self.assertEqual(phase['planned_games'], sum(2*c['target_pairs'] for c in phase['contrasts']))
             runner.state['phases']['pw_k'] = phase
             runner.save()
@@ -705,7 +708,8 @@ class StudyTests(unittest.TestCase):
         for name in list(PHASES)[PHASES.index('pw_k_extend_2'):PHASES.index('pw_alpha')]:
             phase = _build_phase(name, state, generic_baseline('boop'), None)
             self.assertFalse(phase['contrasts'])
-            self.assertEqual(phase['pw_decisions']['main'], 'no_clear_improvement_not_proven_plateau')
+            for policy in ('random', 'rave'):
+                self.assertEqual(phase['pw_decisions'][policy], 'no_clear_improvement_not_proven_plateau')
             state['phases'][name] = phase
         alpha = _build_phase('pw_alpha', state, generic_baseline('boop'), None)
         self.assertTrue(alpha['contrasts'])
@@ -727,7 +731,7 @@ class StudyTests(unittest.TestCase):
             with patch.object(runner, '_batch', side_effect=pause_after_first_pair):
                 state = runner.run()
             self.assertEqual(state['status'], 'budget_exhausted')
-            phase = state['phases']['pw_k']
+            phase = state['phases']['pw_screen']
             self.assertEqual(phase['contrasts'][0]['result']['seed_pairs'], 1)
             self.assertEqual(phase['contrasts'][0]['target_pairs'], 4)
             self.assertNotIn('confirmation', state['phases'])

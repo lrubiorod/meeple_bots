@@ -45,7 +45,7 @@ GAMES = {"connect6": Connect6, "boop": Boop, "spotf": SpiritsOfTheForest, "conne
          "tic-tac-toe": TicTacToe, "splendor": Splendor}
 PHASES = ("depth_screen", "exploration", "selectors", "rave", "rave_extend_1", "rave_extend_2", "rave_extend_3", "rave_extend_4", "rave_extend_5",
           "rave_exploration", "rave_compare",
-          "mechanisms", "pw_k", *(f"pw_k_extend_{i}" for i in range(1, 6)),
+          "mechanisms", "pw_screen", "pw_k", *(f"pw_k_extend_{i}" for i in range(1, 6)),
           "pw_alpha", *(f"pw_alpha_extend_{i}" for i in range(1, 6)), "pw_refine", "pw_compare")
 STAGES = ("depth", "selection", "rave", "mechanisms", "pw")
 
@@ -240,7 +240,12 @@ def _group_leaders(phase: dict) -> dict[str, str]:
     for group, members in phase["groups"].items():
         subset = {**phase, "agents": {n: phase["agents"][n] for n in members},
                   "contrasts": [c for c in phase["contrasts"] if c["a"] in members and c["b"] in members]}
-        leaders[group] = next(iter(_rank(subset)), members[0])
+        leaders[group] = next(iter(_rank(subset)), phase.get("fallback", members[0]))
+        if phase.get("pw_policies") and phase.get("fallback") and leaders[group] == members[0]:
+            # Disabling an already widened baseline also needs supported evidence.
+            evidence = next((c for c in phase["contrasts"] if c["b"] == phase["fallback"]), None)
+            if evidence is None or not _evidence_complete(evidence) or not _promising(_reverse_result(evidence["result"])):
+                leaders[group] = phase["fallback"]
     return leaders
 
 
@@ -370,54 +375,127 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
         control = add("incumbent", parent)
         for candidate in proposals("structure", parent):
             compare(control, add(f"r{int(candidate.tree_reuse)}-t{int(candidate.transpositions)}", candidate), "mechanisms")
-    elif "_extend_" in name and name.startswith("pw_"):
-        axis = "k" if name.startswith("pw_k_") else "alpha"
-        key = f"progressive_widening_{axis}"
-        previous = PHASES[PHASES.index(name)-1]
-        prior = phases[previous]
-        parent = next(iter(carry(previous).values()))
-        control = add("pw-incumbent", parent)
-        evidence = prior["contrasts"]
-        complete = bool(evidence) and all(c.get("result", {}).get("seed_pairs", 0) >= max(4, c.get("target_pairs", 4)) for c in evidence)
-        if not complete:
-            decisions["main"] = prior.get("pw_decisions", {}).get("main", "calibration_incomplete") if not evidence else "calibration_incomplete"
-        else:
-            improving = any(prior["agents"][c["b"]][key] == getattr(parent, key) and _promising(c["result"]) for c in evidence)
-            if previous != f"pw_{axis}" and not improving:
-                decisions["main"] = "no_clear_improvement_not_proven_plateau"
-            else:
-                stages = PHASES[PHASES.index(f"pw_{axis}"):PHASES.index(name)]
-                tested = {v[key] for stage in stages for v in phases[stage]["agents"].values() if v.get("progressive_widening")}
-                for candidate in proposals(f"progressive-widening-{axis}", parent, tested=tested):
-                    compare(control, add(f"pw-{axis}{getattr(candidate, key):g}", candidate), key)
-                decisions["main"] = "refining_neighbors" if contrasts else "no_untested_neighbors"
-    elif name in ("pw_k", "pw_alpha", "pw_refine", "pw_compare"):
-        original = next(iter(carry("mechanisms").values()))
-        enabled = request.get("pw_search", False) and request.get("pw_supported", False)
-        previous = {"pw_alpha": "pw_k_extend_5", "pw_refine": "pw_alpha_extend_5", "pw_compare": "pw_refine"}.get(name)
-        ready = enabled
-        if previous:
-            prior = phases[previous]
-            ready = ready and (bool(prior["contrasts"]) or prior.get("pw_decisions", {}).get("main") in ("no_clear_improvement_not_proven_plateau", "no_untested_neighbors")) and all(
-                c.get("result", {}).get("seed_pairs", 0) >= max(4, c.get("target_pairs", 4))
-                for c in prior["contrasts"])
-        if not ready:
-            add("incumbent", original)
-            decisions["main"] = "disabled" if not request.get("pw_search") else "unavailable" if not enabled else "calibration_incomplete"
-        elif name == "pw_compare":
-            control = add("incumbent", original)
-            compare(control, add("calibrated-pw", next(iter(carry(previous).values()))), "calibrated_pw_vs_incumbent")
-            decisions["main"] = "bounded_calibration_complete"
-        else:
-            parent = replace(original, progressive_widening=True) if name == "pw_k" else next(iter(carry(previous).values()))
-            control = add("pw-incumbent", parent)
-            dimension = {"pw_k": "progressive-widening-k", "pw_alpha": "progressive-widening-alpha", "pw_refine": "progressive-widening"}[name]
-            for candidate in proposals(dimension, parent):
-                compare(control, add(f"pw-k{candidate.progressive_widening_k:g}-a{candidate.progressive_widening_alpha:g}", candidate), name)
-            decisions["main"] = "calibrating_pw_only"
+    elif name.startswith("pw_"):
+        return _build_pw_phase(name, state)
     else:
         raise ValueError(f"unknown study phase: {name}")
     return finish()
+
+
+def _evidence_complete(contrast):
+    return contrast.get("result", {}).get("seed_pairs", 0) >= max(4, contrast.get("target_pairs", 4))
+
+
+def _reverse_result(result):
+    return {**result, "score_b": 1-result["score_b"],
+            "seed_scores_b": {k: 1-v for k, v in result.get("seed_scores_b", {}).items()}}
+
+
+def _pw_survivors(screen):
+    """A loss by one admission policy says nothing about its sibling."""
+    survivors, decisions = {}, {}
+    for policy in screen["pw_policies"]:
+        evidence = [c for c in screen["contrasts"] if c["policy"] == policy and _evidence_complete(c)]
+        if not evidence:
+            decisions[policy] = "insufficient_budget_or_evidence"
+            continue
+        best = max(evidence, key=lambda c: c["result"]["score_b"])
+        result = best["result"]
+        if _promising(_reverse_result(result)):
+            decisions[policy] = "screened_out"
+        else:
+            survivors[policy] = agent_from_values(screen["agents"][best["b"]])
+            decisions[policy] = "survived"
+    decisions["family"] = ("rejected" if all(v == "screened_out" for v in decisions.values())
+                           else "inconclusive" if "insufficient_budget_or_evidence" in decisions.values()
+                           else "survivors")
+    return survivors, decisions
+
+
+def _build_pw_phase(name, state):
+    phases, request = state["phases"], state["request"]
+    original_phase = phases["mechanisms"]
+    original = agent_from_values(original_phase["agents"][next(iter(_group_leaders(original_phase).values()))])
+    phase = {"name": name, "agents": {}, "groups": {}, "contrasts": [], "tie_priority": {},
+             "incremental": True, "evidence_policy": "paired_55_one_se", "pw_decisions": {}, "status": "pending"}
+
+    def add(label, agent, group="main"):
+        phase["agents"][label] = profile_values(agent)
+        phase["groups"].setdefault(group, []).append(label)
+        phase["tie_priority"][label] = [len(phase["agents"])]
+        return label
+
+    def compare(control, candidate, policy):
+        if phase["agents"][control] != phase["agents"][candidate]:
+            phase["contrasts"].append({"a": control, "b": candidate, "factor": name, "policy": policy})
+
+    if name == "pw_screen":
+        # PW decides HOW MANY actions enter; admission decides WHICH enter.
+        # The deterministic backend collects AMAF for rave admission even under UCT.
+        policies = ["random", "rave"] if "uct_rave" in request["selection_policies"] else ["random"]
+        phase["pw_policies"] = policies
+        phase["accept"] = True
+        if "rave" not in policies:
+            phase["pw_decisions"]["rave"] = "not_applicable_amaf_unavailable"
+        control = add("incumbent", replace(original, progressive_widening=False, progressive_widening_expansion="random"))
+        ks = [original.progressive_widening_k, original.progressive_widening_k/3, original.progressive_widening_k*8/3]
+        for k in ks:
+            for policy in policies:
+                candidate = replace(original, progressive_widening=True, progressive_widening_expansion=policy, progressive_widening_k=k)
+                label = add(f"{policy}-k{k:g}", candidate)
+                compare(control, label, policy)
+                if candidate == original:
+                    phase["fallback"] = label
+        # Retain at least one representative of EVERY applicable policy together.
+        phase["minimum_policy_comparisons"] = len(policies)
+        return phase
+
+    screen = phases["pw_screen"]
+    survivors, decisions = _pw_survivors(screen)
+    phase["pw_decisions"] = {**screen["pw_decisions"], **decisions}
+    previous = phases[PHASES[PHASES.index(name)-1]]
+    if name == "pw_compare":
+        # Preserve a supported screen winner even when refinement runs out of budget.
+        leader = next(iter(_group_leaders(screen).values()))
+        control = add("incumbent", agent_from_values(screen["agents"][leader]))
+        for policy, parent in survivors.items():
+            evidence = [c for c in previous["contrasts"] if c.get("policy") == policy]
+            if (policy in previous["groups"] and evidence and all(_evidence_complete(c) for c in evidence)
+                    and previous["pw_decisions"].get(policy) != "calibration_incomplete"):
+                parent = agent_from_values(previous["agents"][_group_leaders(previous)[policy]])
+            compare(control, add(f"calibrated-pw-{policy}", parent), policy)
+        return phase
+
+    axis = "alpha" if name.startswith("pw_alpha") else "k"
+    dimension = "progressive-widening" if name == "pw_refine" else f"progressive-widening-{axis}"
+    key = f"progressive_widening_{axis}"
+    for policy, parent in survivors.items():
+        if name != "pw_k" and policy in previous["groups"]:
+            parent = agent_from_values(previous["agents"][_group_leaders(previous)[policy]])
+        control = add(f"{policy}-incumbent", parent, policy)
+        evidence = [c for c in previous["contrasts"] if c.get("policy") == policy]
+        reason = previous.get("pw_decisions", {}).get(policy)
+        if name != "pw_k" and (any(not _evidence_complete(c) for c in evidence)
+                               or reason == "calibration_incomplete"
+                               or (not evidence and previous.get("discarded_comparisons") and any(c.get("policy") == policy for c in previous["discarded_comparisons"]))):
+            phase["pw_decisions"][policy] = "calibration_incomplete"
+            continue
+        if "_extend_" in name and not name.endswith("_extend_1"):
+            improving = any(previous["agents"][c["b"]][key] == getattr(parent, key) and _promising(c["result"]) for c in evidence)
+            if not improving:
+                phase["pw_decisions"][policy] = "no_clear_improvement_not_proven_plateau"
+                continue
+        stages = PHASES[PHASES.index("pw_screen" if axis == "k" else "pw_alpha"):PHASES.index(name)]
+        tested = {v[key] for stage in stages for c in phases[stage]["contrasts"]
+                  if c.get("policy") == policy and _evidence_complete(c)
+                  for role in ("a", "b") if (v := phases[stage]["agents"][c[role]]).get("progressive_widening")
+                  and v["progressive_widening_expansion"] == policy}
+        for i, candidate in enumerate(proposals(dimension, parent, tested=tested)):
+            compare(control, add(f"{policy}-{i}", candidate, policy), policy)
+        phase["pw_decisions"][policy] = "refining_neighbors"
+    if not phase["groups"]:
+        add("incumbent", original)
+    return phase
 
 
 def tuning_specs(dimension, prefix="local"):
@@ -550,7 +628,7 @@ class StudyRunner:
         self.base, self.reference = baseline, reference
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
-        request = {"version": 21, "execution_mode": "local_retune" if tune else "full_study", "minimum_evidence_pairs": 4, "tune": tune, "second_pass": second_pass, "widening_expansion_search": widening_expansion_search, "tuner_specs": specs, "phase_names": list(self.phase_names), "games_per_comparison": 2 * max_pairs, "stage_games": stage_games, "baseline_supplied": supplied, "selection_search": selection_search, "mechanism_search": mechanism_search, "depth_search": depth_search, "pw_search": pw_search, "pw_supported": pw_supported, "rave_search": rave_search, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
+        request = {"version": 22, "execution_mode": "local_retune" if tune else "full_study", "minimum_evidence_pairs": 4, "tune": tune, "second_pass": second_pass, "widening_expansion_search": widening_expansion_search, "tuner_specs": specs, "phase_names": list(self.phase_names), "games_per_comparison": 2 * max_pairs, "stage_games": stage_games, "baseline_supplied": supplied, "selection_search": selection_search, "mechanism_search": mechanism_search, "depth_search": depth_search, "pw_search": pw_search, "pw_supported": pw_supported, "rave_search": rave_search, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
                    "heuristic": heuristic, "target_match_time": target_match_time, "safety_margin": 1.2,
                    "selection_policies": selectors, "game": game, **({"game_params": game_parameters(self.game)} if game_parameters(self.game) else {}), "baseline": profile_values(baseline),
                    "reference": profile_values(reference) if reference else None,
@@ -562,8 +640,8 @@ class StudyRunner:
             if not resume:
                 raise FileExistsError(f"study exists: {self.path}; use --resume")
             self.state = json.loads(self.path.read_text())
-            if self.state["request"].get("version") != 21:
-                raise ValueError("old study protocol cannot resume with coordinate tuners; use a new output directory")
+            if self.state["request"].get("version") != 22:
+                raise ValueError("old study protocol cannot resume with sibling PW calibration; use a new output directory")
             # Git revision is provenance, not an execution compatibility key.
             # Keep the original revision in the saved request.
             saved_request = self.state["request"]
@@ -592,6 +670,9 @@ class StudyRunner:
         return self.previous_spent + perf_counter() - self.started
 
     def save(self):
+        screen = self.state["phases"].get("pw_screen")
+        if screen and "pw_policies" in screen:
+            screen["pw_decisions"].update(_pw_survivors(screen)[1])
         accepted = {"depth_screen", "exploration", "selectors", "rave_compare", "mechanisms", "pw_compare"}
         selected = next((p for name, p in reversed(list(self.state["phases"].items()))
                          if (name in accepted or p.get("accept")) and p["status"] == "complete"), None)
@@ -850,6 +931,15 @@ class StudyRunner:
         for contrast in phase["contrasts"]:
             cost = 1.2 * self._cost_pair(phase, contrast) * contrast["target_pairs"]
             contrast["estimated_seconds"] = cost
+        minimum = phase.get("minimum_policy_comparisons", 0)
+        representatives = phase["contrasts"][:minimum]
+        if representatives:
+            cost = sum(c["estimated_seconds"] for c in representatives) / min(request["workers"], 2*minimum)
+            if cost > remaining:
+                dropped = [{**c, "reason": "insufficient_budget_for_policy_coverage"} for c in phase["contrasts"]]
+            else:
+                retained.extend(representatives)
+        for contrast in ([] if dropped else phase["contrasts"][minimum:]):
             proposed_cost = sum(c["estimated_seconds"] for c in [*retained, contrast]) / min(request["workers"], 2*(len(retained)+1))
             if proposed_cost <= remaining:
                 retained.append(contrast)
