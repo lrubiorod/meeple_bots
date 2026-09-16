@@ -125,3 +125,43 @@ class LostCitiesGuiTests(unittest.TestCase):
         if shutil.which('node'):
             subprocess.run(['node', '--check'], input=PAGE.split('<script>')[1].split('</script>')[0],
                            text=True, check=True, capture_output=True)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node is required for browser interaction tests')
+    def test_card_selection_filters_legal_actions_and_preserves_server_indices(self):
+        script = PAGE.split('<script>')[1].split('</script>')[0]
+        harness = r'''
+const assert=require('node:assert/strict');
+class Element {
+ constructor(){this.children=[];this.style={};this.dataset={};this.innerHTML='';this.textContent='';}
+ replaceChildren(){this.children=[];}
+ append(el){this.children.push(el);}
+ querySelectorAll(){return [];}
+}
+const elements=new Map();
+global.document={getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement(){return new Element();}};
+global.setInterval=()=>{};
+let requests=[];
+global.fetch=async(path,options)=>{if(options)requests.push(JSON.parse(options.body));return {ok:true,json:async()=>({status:'idle',message:''})};};
+'''
+        assertions = r'''
+(async()=>{
+ await new Promise(setImmediate);
+ const s={session_id:'test',turn:3,status:'waiting_human',phase:'play',current_player:0,
+ hands:[[[0,2],[1,0],[1,0]],[[2,3]]],players:[{kind:'human'},{kind:'random'}],scores:[0,0],
+ expeditions:[[[],[],[],[],[]],[[],[],[],[],[]]],discards:[[],[],[],[],[]],deck:[],events:[],
+ legal_actions:[{kind:'play',card:[0,2]},{kind:'discard',card:[0,2]},{kind:'discard',card:[1,0]}]};
+ render(s);assert.equal($('actions').children.length,0);
+ assert.match($('p0').innerHTML,/data-hand-index/);assert.doesNotMatch($('p1').innerHTML,/data-hand-index/);
+ selectCard(s,[0,2]);assert.deepEqual($('actions').children.map(b=>b.textContent),['Play expedition','Discard']);
+ const button=$('actions').children[0];render(structuredClone(s));assert.equal($('actions').children[0],button);
+ // A wager that cannot be played still offers discard, at its original server index.
+ selectCard(s,[1,0]);assert.deepEqual($('actions').children.map(b=>b.textContent),['Discard']);
+ await $('actions').children[0].onclick();assert.deepEqual(requests,[{action:2,turn:3,session_id:'test'}]);
+ render({...s,turn:4,phase:'draw',legal_actions:[{kind:'draw_deck'},{kind:'draw_discard',color:2}]});
+ assert.equal(selectedCard,null);assert.equal($('actions').children.length,2);
+ assert.doesNotMatch($('p0').innerHTML,/data-hand-index/);
+ render({...s,turn:5,status:'playing',legal_actions:[]});assert.equal($('actions').children.length,0);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+        subprocess.run(['node'], input=harness + script + assertions, text=True,
+                       check=True, capture_output=True, timeout=10)

@@ -112,8 +112,8 @@ an expandable unordered deck pool, and a transition log including private draws.
 This is an administrative test interface, not a private player view or remote
 multiplayer service. There is no handoff/reveal screen.
 
-Human controls expose only Rust-generated legal actions: first play/discard,
-then draw. Random decisions choose uniformly from that same action list without
+Click a card in the active human hand to see its legal Play expedition / Discard
+options, then choose a draw source. Controls expose only Rust-generated legal actions. Random decisions choose uniformly from that same action list without
 inspecting hands or deck composition. Environment chance still runs through Rust,
 with a separate seeded RNG stream from each random policy. The GUI seed reproduces
 GUI sessions; its Python orchestration does not promise identical random choices
