@@ -14,7 +14,7 @@ the rules.
 | Connect Four | `connect-four` | `ConnectFour` | `column` |
 | boop. | `boop` | `Boop` | `k/c row column` |
 | Spirits of the Forest | `spotf` | `SpiritsOfTheForest` | legal action index |
-| [Lost Cities](lost-cities/README.md) | `lost_cities` | `LostCities` | Random agents only |
+| [Lost Cities](lost-cities/README.md) | `lost_cities` | `LostCities` | Debug GUI legal actions (both hands visible) |
 | [Can't Stop](cant-stop/README.md) | `cant-stop` (GUI) | `CantStopSession` | GUI action index |
 
 Rows, board indices and player identifiers are zero-based; Can't Stop column labels are sums 2–12.

@@ -101,7 +101,11 @@ def run_gui(
 ) -> None:
     """Select and serve one supported game's GUI."""
 
-    if game == "connect6":
+    if game == "lost_cities":
+        from ..games.lost_cities.gui import PAGE, LostCitiesApplication
+
+        application = LostCitiesApplication()
+    elif game == "connect6":
         from ..games.connect6.gui import PAGE, Connect6Application
 
         application = Connect6Application()
@@ -135,7 +139,7 @@ def run_gui(
     else:
         raise ValueError(
             f"graphical interface is not available for {game}; "
-            "available games: connect6, splendor, cant-stop, boop, connect-four, spotf, tic-tac-toe"
+            "available games: lost_cities, connect6, splendor, cant-stop, boop, connect-four, spotf, tic-tac-toe"
         )
 
     serve_gui(

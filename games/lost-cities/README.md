@@ -60,8 +60,9 @@ Rust catalog, Python `LostCities`, CLI matches, batches and tournament JSONL are
 available. Trace replay validates both player actions and setup/draw Chance events.
 Authoritative positions, exact Chance distributions and saved match traces are
 engine/administrative data, **not player observations**; traces disclose private draws.
-Live observers, human/GUI play, study, PIMC/ISMCTS/SO-ISMCTS/RIS-MCTS, heuristics and
-information-set trees are intentionally not implemented. Reports currently consist
+Live match observers, study, PIMC/ISMCTS/SO-ISMCTS/RIS-MCTS, heuristics and
+information-set trees are intentionally not implemented. A separate administrative
+GUI supports human and random players (see below). Reports currently consist
 of CLI scores, tournament summaries and validated JSON traces; no game-specific
 HTML report or extraction analysis is provided.
 
@@ -80,3 +81,28 @@ world = game.sample_determinization(observation, observer=0, seed=123)
 assert game.observation(world, 0) == observation
 assert game.legal_actions(world) == game.legal_actions(state)
 ```
+
+## Open-hand debugging GUI
+
+```bash
+.venv/bin/python -m meeple_bots gui --game lost_cities
+```
+
+Choose Human or Random independently for both seats. The GUI intentionally shows
+**both hands**, all expeditions and discard stacks, scores, remaining deck count,
+an expandable unordered deck pool, and a transition log including private draws.
+This is an administrative test interface, not a private player view or remote
+multiplayer service. There is no handoff/reveal screen.
+
+Human controls expose only Rust-generated legal actions: first play/discard,
+then draw. Random decisions choose uniformly from that same action list without
+inspecting hands or deck composition. Environment chance still runs through Rust,
+with a separate seeded RNG stream from each random policy. The GUI seed reproduces
+GUI sessions; its Python orchestration does not promise identical random choices
+to native tournament execution. Observations and determinization APIs are unchanged.
+
+New Match cancels the previous worker, including human waits; stale/duplicate moves
+are rejected using session and decision tokens. Step delay controls inspection pace.
+A 10,000-decision execution safeguard reports an error without awarding a result.
+GUI trace-file saving is not provided; the current transition log is available in
+this debug view. Use native random tournaments for persisted validated match traces.
