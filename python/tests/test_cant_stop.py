@@ -245,6 +245,14 @@ global.fetch=async(path,options)=>{
 (async()=>{
  await new Promise(setImmediate); // Initial page poll finishes.
  assert.deepEqual(config(1),{...baseline,kind:'mcts'});
+ // Settings without UI controls must survive even when the baseline differs from defaults.
+ const originalBaseline={...baseline};
+ const widening={progressive_widening:true,progressive_widening_k:0.8,
+  progressive_widening_alpha:0.4,progressive_widening_expansion:'random'};
+ Object.assign(baseline,widening);
+ for(const [key,value] of Object.entries(widening))assert.equal(config(1)[key],value);
+ assert.deepEqual(config(0),{kind:'human'});
+ Object.assign(baseline,originalBaseline);
  document.querySelector('#primary-policy-1').value='mast';
  document.querySelector('#primary-epsilon-1').value='0.2';
  document.querySelector('#rollout-phase-1').value='continue';

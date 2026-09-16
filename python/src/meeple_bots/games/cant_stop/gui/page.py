@@ -60,7 +60,8 @@ function config(i){
  const rollout_policy=phase==='always'?primary:{kind:'conditional',condition:{kind:'turn_phase',phase},primary,fallback:readPolicy(i,'fallback')};
  const biasPhase=$(`#bias-phase-${i}`).value;
  const progressive_bias=$(`#bias-${i}`).checked?{weight:Number($(`#bias-weight-${i}`).value),evaluator:evaluator($(`#bias-evaluator-${i}`).value),condition:biasPhase==='always'?null:{kind:'turn_phase',phase:biasPhase}}:null;
- return{kind,iterations:timed?null:Number($(`#budget-${i}`).value),time_budget:timed?Number($(`#budget-${i}`).value):null,rollout_depth:Number($(`#depth-${i}`).value),exploration:Number($(`#exploration-${i}`).value),selection_policy:$(`#selection-${i}`).value,heuristic:h==='none'?null:Number(h),tree_reuse:$(`#reuse-${i}`).checked,transpositions:$(`#transpositions-${i}`).checked,rollout_policy,progressive_bias,root_diagnostics:$(`#diagnostics-${i}`).checked};
+ // Preserve baseline settings without a dedicated control, including Progressive Widening.
+ return{...baseline,kind,iterations:timed?null:Number($(`#budget-${i}`).value),time_budget:timed?Number($(`#budget-${i}`).value):null,rollout_depth:Number($(`#depth-${i}`).value),exploration:Number($(`#exploration-${i}`).value),selection_policy:$(`#selection-${i}`).value,heuristic:h==='none'?null:Number(h),tree_reuse:$(`#reuse-${i}`).checked,transpositions:$(`#transpositions-${i}`).checked,rollout_policy,progressive_bias,root_diagnostics:$(`#diagnostics-${i}`).checked};
 }
 async function api(path,payload){const r=await fetch(path,payload===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const value=await r.json();if(!r.ok)throw Error(value.error??r.statusText);return value;}
 function actionLabel(a){return a.kind==='advance'?'Avanzar '+a.columns.join(' + '):a.kind==='roll'?'Volver a tirar':a.kind==='stop'?'Plantarse':'Dados: '+a.dice.join(' · ');}
