@@ -332,14 +332,15 @@ impl PyLostCitiesWorld {
 }
 
 /// Observation-only search/debug API. No authoritative position handle crosses this boundary.
-#[pyfunction]
+#[pyfunction(signature = (observation, legal_actions, iterations, exploration, seed, time_budget=None))]
 pub fn lost_cities_so_ismcts_search(
     py: Python<'_>,
     observation: &Bound<'_, PyDict>,
     legal_actions: Vec<Bound<'_, PyDict>>,
-    iterations: u32,
+    iterations: Option<u32>,
     exploration: f64,
     seed: u64,
+    time_budget: Option<f64>,
 ) -> PyResult<Py<PyDict>> {
     use meeple_bots_so_ismcts::{SoIsmctsAgent, SoIsmctsConfig};
     let observation = parse_observation(observation)?;
@@ -349,8 +350,7 @@ pub fn lost_cities_so_ismcts_search(
         .collect::<PyResult<Vec<_>>>()?;
     let search = SoIsmctsAgent {
         config: SoIsmctsConfig {
-            iterations: std::num::NonZeroU32::new(iterations)
-                .ok_or_else(|| error("iterations must be positive"))?,
+            budget: super::parse_search_budget(iterations, time_budget)?,
             exploration,
         },
     };

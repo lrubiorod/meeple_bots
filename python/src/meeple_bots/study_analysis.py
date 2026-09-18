@@ -419,6 +419,22 @@ def family_study_diagnostics(state):
                                   "iterations_per_second": timing["iterations_per_second"],
                                   "actual_elapsed_seconds": timing["total_seconds"], "mean_decision_seconds": timing["mean_seconds"],
                                   "terminal_fraction": timing["terminal_fraction"]})
+    if state["request"].get("agent_family") == "so_ismcts":
+        selected = state.get("selected_candidate", {})
+        confirmed = complete and tested and result.get("ci95_b", [0])[0] > .5
+        for cost in costs:
+            cost["median_determinizations_per_decision"] = cost["median_iterations_per_decision"]
+            cost["determinizations_per_second"] = cost["iterations_per_second"]
+        return {"agent_family": "so_ismcts", "mode": state["request"]["mode"],
+                "search_complete": state.get("status") == "complete",
+                "final_selection": {"candidate": selected.get("name"), "phase": selected.get("phase"),
+                    "status": "confirmed" if confirmed else "provisional",
+                    "competitive_confidence": verdict if complete and tested else "not_measured",
+                    "confirmation_result": "IMPROVED" if confirmed else "INCONCLUSIVE" if complete else "PENDING",
+                    "score_b": result.get("score_b"), "ci95_b": result.get("ci95_b"),
+                    "seed_pairs": result.get("seed_pairs", 0),
+                    "interpretation": "Fresh-seed confirmation against the original operating incumbent; no sufficiently supported improvement found." if not confirmed else "Improvement confirmed on fresh paired seeds."},
+                "improvement_comparisons": effects, "candidate_search_costs": costs}
     if state["request"].get("version", 0) >= 20:
         selected = state.get("selected_candidate", {})
         return {"mode": state["request"]["mode"], "search_complete": state.get("status") == "complete",
@@ -436,7 +452,7 @@ def family_study_diagnostics(state):
 
 
 def write_family_study_report(output, state):
-    summary = {**state, **family_study_diagnostics(state)}
+    summary = {**state, **family_study_diagnostics(state), "agent_family": state["request"].get("agent_family", "mcts")}
     summary["limitations"] = [
         "Only the requested evaluator family is optimized; compare separate studies in a tournament.",
         "Candidate compute budgets are equal within each race: baseline iterations/time or derived decision time. Parallel comparisons share CPU; iterations and elapsed search work are measured.",
@@ -448,19 +464,31 @@ def write_family_study_report(output, state):
         "Pilot length and random representative positions are preliminary estimates. Actual game costs can differ; target match time is not a match deadline.",
         "Fixed evidence per comparison. Budget screening can omit challengers explicitly; elapsed limits may overshoot by an in-flight match batch. Old study protocols require a new output directory.",
     ]
+    if summary["agent_family"] == "so_ismcts":
+        summary["limitations"] = [
+            "Equal decision-time budgets are operating resources; iteration/determinization counts are diagnostics, not optimized hyperparameters. Fixed-iteration profiles retain their explicit budget.",
+            "Pilot decision counts and throughput are estimates; Lost Cities has no hard horizon. A search finishes at least one iteration and may overrun by one simulation.",
+            "One fresh complete determinization per iteration. Search adequacy measures action sampling, not percentage of possible hidden worlds.",
+            "Coarse/refinement races are exploratory. Final confirmation uses disjoint paired seeds and a conservative 95% bound; inconclusive confirmation retains the original incumbent.",
+            "Single-observer baseline with uniform rollout and MostVisited; no advanced search techniques or opponent inference. Parallel matches share CPU.",
+        ]
     if state.get("mixed_engines"):
         summary["limitations"].insert(0, "Mixed-engine study: an explicit resume accepted changed code/build. Games from different engines may occur within the same comparison or seed pair; throughput and strength may differ. Engine fingerprints and exact pre-change match IDs are recorded in engine_changes.")
     (output / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
     cal = state.get("calibration") or {}
-    parts = ['<!doctype html><meta charset="utf-8"><title>MCTS family study</title>',
+    parts = ['<!doctype html><meta charset="utf-8"><title>Search-agent study</title>',
              '<style>body{font:16px system-ui;max-width:1200px;margin:2rem auto}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:.5rem;text-align:left}</style>',
-             f'<h1>{escape(state["request"]["game"])} — {escape(state["request"]["mode"])}</h1>',
+             f'<h1>{escape(state["request"]["game"])} — {escape(summary["agent_family"])} — {escape(state["request"]["mode"])}</h1>',
              f'<p>Status: {escape(state["status"])}. Used {state["spent_seconds"]:.1f}/{state["budget_seconds"] if state["budget_seconds"] is not None else "unlimited"}s.</p>',
              '<p><a href="summary.json">Summary and frozen comparisons</a> · <a href="study.json">Checkpoint</a></p>',
-             f'<p>RAVE search requested: {state["request"].get("rave_search", False)}; supported: {"uct_rave" in state["request"].get("selection_policies", [])}.</p>',
              '<h2>Calibration and search adequacy</h2>',
              _table(['Measurement', 'Value'], [(k, json.dumps(cal.get(k))) for k in
                     ('target_match_time', 'estimated_game_decisions', 'safety_margin', 'decision_seconds', 'decision_time_source', 'fixed_iterations', 'cutoff_depths')])]
+    if summary["agent_family"] == "so_ismcts":
+        parts.append('<h2>Operating search budget and determinization throughput</h2><pre>' + escape(json.dumps({
+            k: cal.get(k) for k in ('estimated_game_decisions', 'decision_seconds', 'fixed_iterations',
+            'seconds_per_iteration', 'iterations_per_second', 'determinizations_per_second',
+            'median_iterations_per_decision', 'median_determinizations_per_decision', 'root_action_coverage')}, indent=2)) + '</pre>')
     parts.append(_table(['Sampled player decisions', 'Search ms', 'Iterations', 'Legal actions', 'Terminal / cutoff simulations'],
                         [(t['sampled_ply'], t['milliseconds'], t['iterations'], t['legal_actions'],
                           f"{t.get('terminal_simulations')} / {t.get('cutoff_simulations')}") for t in cal.get('position_timings', [])]))
@@ -469,8 +497,12 @@ def write_family_study_report(output, state):
     if state.get('budget_limited'):
         parts.append('<p><strong>Budget limited: some challengers were not tested. See discarded comparisons below.</strong></p>')
     parts.append('<h2>Fixed game budgets</h2><pre>' + escape(json.dumps({k: state['request'].get(k) for k in ('games_per_comparison', 'stage_games')}, indent=2)) + '</pre>')
-    parts.append('<h2>Incremental stages</h2>' + _table(['Stage', 'Requested'], [(key, state['request'].get(key, False)) for key in ('selection_search', 'rave_search', 'mechanism_search', 'pw_search', 'depth_search')]))
-    parts.append(f'<p>PW search requested: {state["request"].get("pw_search", False)}; supported: {state["request"].get("pw_supported", False)}.</p>')
+    if summary["agent_family"] == "so_ismcts":
+        parts.append('<h2>Study stages</h2>' + _table(['Stage', 'Status'], [(name, state['phases'].get(name, {}).get('status', 'pending')) for name in state['request']['phase_names']]))
+    else:
+        parts.append('<h2>Incremental stages</h2>' + _table(['Stage', 'Requested'], [(key, state['request'].get(key, False)) for key in ('selection_search', 'rave_search', 'mechanism_search', 'pw_search', 'depth_search')]))
+        parts.append(f'<p>RAVE search requested: {state["request"].get("rave_search", False)}; supported: {"uct_rave" in state["request"].get("selection_policies", [])}.</p>')
+        parts.append(f'<p>PW search requested: {state["request"].get("pw_search", False)}; supported: {state["request"].get("pw_supported", False)}.</p>')
     if state.get('pw_budget'):
         parts.append('<h2>Shared PW budget</h2><pre>' + escape(json.dumps(state['pw_budget'], indent=2)) + '</pre>')
     if state.get('rave_budget'):

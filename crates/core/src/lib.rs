@@ -16,3 +16,15 @@ pub use error::{AgentError, IllegalAction};
 pub use game::{Game, PositionStatus, validate_chance_probabilities};
 pub use player::PlayerId;
 pub use random::RandomSource;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchBudget {
+    Iterations(std::num::NonZeroU32),
+    Time(std::time::Duration),
+}
+
+impl Default for SearchBudget {
+    fn default() -> Self {
+        Self::Iterations(std::num::NonZeroU32::new(1_000).expect("constant is non-zero"))
+    }
+}

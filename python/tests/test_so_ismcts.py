@@ -53,7 +53,7 @@ class SoIsmctsTests(unittest.TestCase):
         for kwargs in ({'iterations': 0}, {'exploration': -1}, {'exploration': float('nan')}, {'exploration': float('inf')}):
             with self.assertRaises(ValueError):
                 SoIsmctsAgent(**kwargs)
-        for kwargs in ({'rave_equivalence': 100}, {'tree_reuse': True}, {'time_budget': 1}, {'rollout_policy': 'uniform'}):
+        for kwargs in ({'rave_equivalence': 100}, {'tree_reuse': True}, {'rollout_policy': 'uniform'}):
             with self.assertRaises(TypeError):
                 SoIsmctsAgent(**kwargs)
         with self.assertRaisesRegex(ValueError, 'only supported by Lost Cities'):
@@ -66,6 +66,20 @@ class SoIsmctsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _native.AgentConfig.so_ismcts(iterations, exploration)
         self.assertEqual(agent_dict('search', SoIsmctsAgent(3))['type'], 'so_ismcts')
+
+    def test_time_budget_and_actual_completed_iterations(self):
+        game = LostCities()
+        state = game.initial_state(42)
+        for c in (.25, 2.0):
+            agent = SoIsmctsAgent(time_budget=.003, exploration=c)
+            result = agent.search(game.observation(state, 0), game.legal_actions(state), seed=7)
+            d = result['diagnostics']
+            self.assertGreater(d['completed_iterations'], 0)
+            self.assertEqual(d['completed_iterations'], d['determinizations_sampled'])
+            self.assertIsNone(agent.iterations)
+        for kw in ({'time_budget': 0}, {'time_budget': float('nan')}, {'iterations': 10, 'time_budget': .1}):
+            with self.assertRaises(ValueError):
+                SoIsmctsAgent(**kw)
 
     def test_seeded_small_matches_and_batch(self):
         for opponent in [RandomAgent(), SoIsmctsAgent(2)]:

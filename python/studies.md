@@ -802,3 +802,107 @@ lists tested configurations, evidence/costs, exact changed and preserved fields,
 and IMPROVED or INCONCLUSIVE. If no supported change remains, it explicitly says
 “No sufficiently supported improvement found.” Search adequacy stays separate
 from competitive uncertainty and from the absence of independent confirmation.
+
+### Lost Cities and the SO-ISMCTS study profile
+
+`study` selects a registered compatible search family using catalog metadata. Lost
+Cities currently defaults to `so_ismcts`; `--agent so_ismcts` makes that choice
+explicit. Ordinary MCTS is rejected for this imperfect-information game. Other
+registered study games retain their existing MCTS plan. There is one coordinator:
+profiles supply calibration/candidate policy, while the same planner, paired-match
+executor, trace writer, evidence rules, checkpoints and HTML report execute studies.
+
+```bash
+.venv/bin/python -m meeple_bots study --game lost_cities \
+  --budget 2h --target-match-time 60s \
+  --output results/studies/lost-cities-so
+```
+
+Use a release native build for timing experiments (`maturin develop --release`).
+`--workers 1` isolates compute; the default shares CPU across matches and reports
+that fact. `--budget` limits cumulative elapsed study time, with checks between
+batches. An in-flight match may overrun the limit.
+
+The SO-ISMCTS profile has four bounded stages:
+
+1. A paired Random-vs-Random structural pilot estimates total **player decisions**,
+   counting Play and Draw separately. Three representative legal decision positions
+   measure search throughput. This is a weak operating estimate, not a game horizon.
+2. A coarse exploration race compares the original incumbent with C values from
+   the shared exploration tuner (0.25, 0.5, 1.0, 1.4, 2.0, omitting duplicates).
+3. At most two local refinement rounds test neighbors. Interior candidates bisect
+   adjacent tested values; a boundary candidate may extend the range. Unsupported
+   improvements stop further refinement; this is not proof of an optimum.
+4. A frozen nominee is compared with the **original operating incumbent** on fresh
+   paired seeds. This stage is skipped if tuning retained that same configuration.
+
+By default, decision time is `target_match_time / (estimated_decisions * 1.2)`.
+Every C candidate receives exactly this same configured time budget. SO-ISMCTS
+checks its deadline between complete iterations, always completing at least one.
+Actual elapsed time may exceed the target by one simulation. Iterations and fresh
+determinizations completed per decision can vary; they are compute diagnostics,
+**not** competitive hyperparameters. No hidden-world space is enumerated.
+
+A supplied baseline preserves its explicit iteration/time operating budget, unless
+full study explicitly supplies `--decision-time`. This also permits fixed-iteration
+experiments. Local retuning always freezes the supplied budget.
+
+The shared scheduler uses the same environment seed for both seats of a pair and
+swaps candidates. Environment and each seat's agent have independent RNG streams;
+search sampling cannot consume environment randomness. Pilot, coarse, refinement
+and confirmation seeds occupy disjoint ranges. Fixed-iteration searches are seeded
+and reproducible; timed searches vary with machine load.
+
+Comparisons default to 50 games (25 paired seeds), with a minimum of 8 games. Budget
+pruning reduces challenger count before evidence per retained comparison. If no
+comparison fits, the report records insufficient budget. Coarse/refinement promotion
+uses the existing exploratory rule (at least 55% score and one paired standard error
+above parity). Confirmation requires a complete fixed sample and a conservative
+95% paired interval above 50%. Inconclusive or losing confirmation retains the
+original operating incumbent; an interrupted confirmation leaves an explicitly
+provisional nominee. Random is only the structural pilot, never the C-selection target.
+
+```bash
+.venv/bin/python -m meeple_bots study --game lost_cities \
+  --agent-config results/studies/lost-cities-so/candidates/best_agent.toml \
+  --tune exploration --budget 30m --target-match-time 60s \
+  --output results/studies/lost-cities-so-retune
+```
+
+Full study and local retune use the same exploration generator and comparisons.
+Only C changes in local mode: iterations/time, uniform rollout, MostVisited, and
+game configuration remain frozen. The target match time remains a reporting
+reference for an explicit baseline budget, not a budget replacement. RAVE, widening,
+reuse, other selectors, heuristics and other tuning dimensions are rejected.
+
+`candidates/best_agent.toml` is directly usable, for example:
+
+```toml
+name = "best_agent"
+agent = "so_ismcts"
+exploration = 1.4142135623730951
+rollout = "uniform"
+root_selection = "most_visited"
+time_budget = 0.2 # Example seconds per decision; actual calibration determines this.
+```
+
+Use `iterations = 1000` instead of `time_budget` for fixed-iteration operation.
+To play with an exported profile:
+
+```bash
+.venv/bin/python -m meeple_bots match --game lost_cities \
+  --first so_ismcts --first-agent-config results/studies/lost-cities-so/candidates/best_agent.toml \
+  --second random --seed 42
+```
+
+The normal `study.json`, `summary.json`, `report.html`, candidate TOMLs and JSONL
+traces identify the family, C comparisons, confirmation, and operating budget.
+Calibration reports iterations/second, determinizations/second, medians per decision,
+root action coverage, tree nodes and action records. One determinization is sampled
+per iteration. Adequacy describes action sampling and throughput, not confidence
+of winning or a percentage of possible hidden worlds covered.
+
+Resume uses the identical command plus `--resume`. Family, baseline, game parameters,
+phase plan, seeds and resource settings are frozen; changing MCTS into SO-ISMCTS is
+never an engine-compatibility override. The normal explicit `--allow-engine-change`
+option retains its mixed-engine provenance rules.

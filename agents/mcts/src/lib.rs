@@ -77,17 +77,7 @@ impl<P> MctsConfig<P> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SearchBudget {
-    Iterations(NonZeroU32),
-    Time(Duration),
-}
-
-impl Default for SearchBudget {
-    fn default() -> Self {
-        Self::Iterations(NonZeroU32::new(1_000).expect("constant is non-zero"))
-    }
-}
+pub use meeple_bots_core::SearchBudget;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MctsSearchStats {

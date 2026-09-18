@@ -27,11 +27,23 @@ class RandomAgent:
 class SoIsmctsAgent:
     """Single-observer ISMCTS: complete worlds, IS-UCT, uniform rollout, MostVisited."""
 
-    iterations: int = 1000
+    iterations: int | None = None
     exploration: float = sqrt(2.0)
 
+    time_budget: float | None = None
+
     def __post_init__(self) -> None:
-        _positive_u32("iterations", self.iterations)
+        if self.iterations is None and self.time_budget is None:
+            object.__setattr__(self, "iterations", 1000)
+        if self.iterations is not None and self.time_budget is not None:
+            raise ValueError("iterations and time_budget are mutually exclusive")
+        if self.iterations is not None:
+            _positive_u32("iterations", self.iterations)
+        if self.time_budget is not None:
+            if isinstance(self.time_budget, bool) or not isinstance(self.time_budget, (int, float)):
+                raise TypeError("time_budget must be a number")
+            if not isfinite(self.time_budget) or self.time_budget <= 0:
+                raise ValueError("time_budget must be finite and positive")
         if isinstance(self.exploration, bool) or not isinstance(self.exploration, (int, float)):
             raise TypeError("exploration must be a number")
         if not isfinite(self.exploration) or self.exploration < 0:
@@ -48,7 +60,7 @@ class SoIsmctsAgent:
             raise TypeError("search requires a LostCitiesObservation")
         result = _native.lost_cities_so_ismcts_search(
             observation.to_dict(), [a.to_dict() for a in legal_actions],
-            self.iterations, self.exploration, seed,
+            self.iterations, self.exploration, seed, self.time_budget,
         )
         result["action"] = LostCitiesAction.from_dict(result["action"])
         return result

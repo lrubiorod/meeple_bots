@@ -234,8 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="merge exactly equal MCTS states reached through different action sequences",
     )
-    match.add_argument("--first-mcts-config", type=Path)
-    match.add_argument("--second-mcts-config", type=Path)
+    match.add_argument("--first-mcts-config", "--first-agent-config", dest="first_mcts_config", type=Path)
+    match.add_argument("--second-mcts-config", "--second-agent-config", dest="second_mcts_config", type=Path)
     match.add_argument(
         "--first-mcts-heuristic",
         nargs="?",
@@ -409,6 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--screening-time", type=float, help="removed: use --target-match-time for all comparisons")
     study.add_argument("--workers", type=_worker_setting, default="auto", help="parallel match workers, including equal-time comparisons (default: physical cores minus one)")
     study.add_argument("--max-plies", type=int, default=10000)
+    study.add_argument("--agent", choices=("mcts", "so_ismcts"), help="search family; inferred from game capabilities or agent config")
     study.add_argument("--resume", action="store_true", help="resume a frozen study; --budget may be increased")
     study.add_argument("--allow-engine-change", action="store_true", help="with --resume, explicitly accept changed code/build and record mixed-engine provenance; configuration must still match")
     study.add_argument("--json", action="store_true")
@@ -441,7 +442,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.max_pairs is not None and args.games_per_comparison != 50:
                 raise ValueError("use either --games-per-comparison or --max-pairs")
             result = run_study(args.game, output=output, budget=duration_seconds(args.budget) if args.budget else None,
-                               baseline=args.baseline, seed=args.seed, tune=args.tune, second_pass=args.second_pass, widening_expansion_search=args.widening_expansion_search,
+                               baseline=args.baseline, agent_family=args.agent, seed=args.seed, tune=args.tune, second_pass=args.second_pass, widening_expansion_search=args.widening_expansion_search,
                                heuristic=args.heuristic, rave_search=args.rave_search, pw_search=args.pw_search,
                                selection_search=args.selection_search, mechanism_search=args.mechanism_search, depth_search=args.depth_search, all_search=args.all_search, target_match_time=duration_seconds(args.target_match_time),
                                games_per_comparison=args.games_per_comparison, stage_games=stage_games,
@@ -529,7 +530,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not using_so and any(a.startswith("--so-ismcts-") for a in supplied):
             raise ValueError("SO-ISMCTS options require a so_ismcts participant")
         mcts = _mcts_configuration(args)
-        first = SoIsmctsAgent(args.so_ismcts_iterations, args.so_ismcts_exploration) if args.first == "so_ismcts" else _match_agent(
+        first = SoIsmctsAgent(args.so_ismcts_iterations, args.so_ismcts_exploration) if args.first == "so_ismcts" and args.first_mcts_config is None else _match_agent(
             args.first,
             args.first_mcts_config,
             mcts,
@@ -537,7 +538,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--first-mcts-config",
             "--first-mcts-heuristic",
         )
-        second = SoIsmctsAgent(args.so_ismcts_iterations, args.so_ismcts_exploration) if args.second == "so_ismcts" else _match_agent(
+        second = SoIsmctsAgent(args.so_ismcts_iterations, args.so_ismcts_exploration) if args.second == "so_ismcts" and args.second_mcts_config is None else _match_agent(
             args.second,
             args.second_mcts_config,
             mcts,
@@ -1387,6 +1388,14 @@ def _match_agent(
 ) -> HumanAgent | MctsAgent | RandomAgent:
     if config_path is None:
         return _agent(name, manual_mcts, heuristic, heuristic_option)
+    if name == "so_ismcts":
+        from ._study_profiles import load_search_profile
+        agent = load_search_profile(config_path)
+        if not isinstance(agent, SoIsmctsAgent):
+            raise ValueError("agent config family must match so_ismcts")
+        if heuristic is not None:
+            raise ValueError("SO-ISMCTS does not support heuristics")
+        return agent
     if name != "mcts":
         raise ValueError(f"{config_option} requires the corresponding player to be MCTS")
     if heuristic is not None:

@@ -119,13 +119,9 @@ class LostCitiesTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'imperfect information'):
                 _native.run_match('lost_cities', first, second, 42, 10000)
         with TemporaryDirectory() as tmp:
-            with self.assertRaisesRegex(ValueError, 'SO-ISMCTS tuning is not supported'):
-                StudyRunner('lost_cities', output=Path(tmp))
-            out = io.StringIO()
-            with redirect_stderr(out), redirect_stdout(out):
-                result = main(['study', '--game', 'lost_cities', '--output', tmp])
-            self.assertNotEqual(result, 0)
-            self.assertIn('SO-ISMCTS tuning is not supported', out.getvalue())
+            runner = StudyRunner('lost_cities', output=Path(tmp), budget=.000001, progress=lambda _: None)
+            self.assertEqual(runner.state['request']['agent_family'], 'so_ismcts')
+            self.assertEqual(runner.run()['status'], 'budget_exhausted')
 
     def test_random_match_trace_replay_batch_and_cli(self):
         game = LostCities()

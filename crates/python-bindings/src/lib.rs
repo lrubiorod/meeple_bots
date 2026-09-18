@@ -60,11 +60,14 @@ struct PyAgentConfig {
 #[pymethods]
 impl PyAgentConfig {
     #[staticmethod]
-    #[pyo3(signature = (iterations=1000, exploration=std::f64::consts::SQRT_2))]
-    fn so_ismcts(iterations: u32, exploration: f64) -> PyResult<Self> {
+    #[pyo3(signature = (iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None))]
+    fn so_ismcts(
+        iterations: Option<u32>,
+        exploration: f64,
+        time_budget: Option<f64>,
+    ) -> PyResult<Self> {
         let config = meeple_bots_so_ismcts::SoIsmctsConfig {
-            iterations: std::num::NonZeroU32::new(iterations)
-                .ok_or_else(|| PyValueError::new_err("iterations must be positive"))?,
+            budget: parse_search_budget(iterations, time_budget)?,
             exploration,
         };
         config
@@ -2556,6 +2559,7 @@ fn py_spirits_initial_state(seed: u64) -> NativeSpiritsState {
 fn py_game_search_capabilities(py: Python<'_>, game: &str) -> PyResult<Py<PyDict>> {
     let capabilities = meeple_bots_catalog::game_search_capabilities(parse_game(game)?);
     let result = PyDict::new(py);
+    result.set_item("search_agents", capabilities.search_agents)?;
     result.set_item("imperfect_information", capabilities.imperfect_information)?;
     result.set_item("stochastic", capabilities.stochastic)?;
     result.set_item("players", capabilities.players)?;

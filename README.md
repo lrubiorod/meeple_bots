@@ -73,7 +73,7 @@ rebuild the native extension with `maturin develop --release`.
 | Play or watch a game | `meeple-bots gui` | [Python interface](python/usage.md#play-or-watch) |
 | Run a match | `meeple-bots match` or `Match` | [Python API](python/usage.md#run-one-match) |
 | Compare agents | `batch` or `Batch` | [Python API](python/usage.md#compare-two-agents) |
-| Automatic MCTS diagnosis | `meeple-bots study` | [Budgeted diagnosis](python/studies.md#automatic-mcts-diagnosis) |
+| Search-agent calibration | `meeple-bots study` | [Budgeted diagnosis](python/studies.md#automatic-mcts-diagnosis) |
 | Configured study | `meeple-bots tournament` | [Study workflow](python/studies.md#run-a-study) |
 | Build study artifacts | `extract`, then `report` | [Artifacts](python/studies.md#study-artifacts) |
 | Estimate search cost | `analyze` or `evaluate_game` | [Evaluation](crates/evaluation/README.md) |

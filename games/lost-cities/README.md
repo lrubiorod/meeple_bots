@@ -80,7 +80,7 @@ Rust catalog, Python `LostCities`, CLI matches, batches and tournament JSONL are
 available. Trace replay validates both player actions and setup/draw Chance events.
 Authoritative positions, exact Chance distributions and saved match traces are
 engine/administrative data, **not player observations**; traces disclose private draws.
-Live match observers, study tuning, PIMC/MO-ISMCTS/RIS-MCTS and heuristics
+Live match observers, PIMC/MO-ISMCTS/RIS-MCTS and heuristics
 are intentionally not implemented. A separate administrative
 GUI supports human, random and SO-ISMCTS players (see below). Reports currently consist
 of CLI scores, tournament summaries and validated JSON traces; no game-specific
@@ -101,6 +101,9 @@ world = game.sample_determinization(observation, observer=0, seed=123)
 assert world.observation(0) == observation
 assert world.legal_actions() == game.legal_actions(state)
 ```
+
+SO-ISMCTS calibration is available through the shared `study` command; see
+[study usage and local C retuning](../../python/studies.md#lost-cities-and-the-so-ismcts-study-profile).
 
 ## Open-hand debugging GUI
 

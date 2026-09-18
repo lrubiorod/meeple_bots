@@ -2,6 +2,7 @@ use super::*;
 use meeple_bots_core::{IllegalAction, TwoPlayerZeroSumGame};
 use meeple_bots_simulation::SplitMix64;
 use std::cell::Cell;
+use std::num::NonZeroU32;
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum A {
     Wait,
@@ -104,7 +105,7 @@ impl ImperfectInformationGame for Toy {
 fn agent(n: u32) -> SoIsmctsAgent {
     SoIsmctsAgent {
         config: SoIsmctsConfig {
-            iterations: NonZeroU32::new(n).unwrap(),
+            budget: meeple_bots_core::SearchBudget::Iterations(NonZeroU32::new(n).unwrap()),
             exploration: 1.,
         },
     }
@@ -452,4 +453,27 @@ fn selection_and_backup_follow_actor_across_microturns() {
             assert!(negative.visits > positive.visits);
         }
     }
+}
+
+#[test]
+fn time_budget_completes_whole_iterations_and_at_least_one_world() {
+    use std::time::Duration;
+    let game = Toy {
+        samples: Cell::new(0),
+    };
+    let mut search = agent(1);
+    search.config.budget = SearchBudget::Time(Duration::from_nanos(1));
+    let result = search
+        .search(
+            &game,
+            &0,
+            PlayerId::FIRST,
+            &[A::Wait],
+            &mut SplitMix64::new(1),
+        )
+        .unwrap();
+    assert_eq!(result.diagnostics.completed_iterations, 1);
+    assert_eq!(result.diagnostics.determinizations_sampled, 1);
+    search.config.budget = SearchBudget::Time(Duration::ZERO);
+    assert!(search.config.validate().is_err());
 }

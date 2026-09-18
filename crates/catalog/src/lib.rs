@@ -101,6 +101,8 @@ fn connect6_game(size: usize) -> Result<Connect6, CatalogError> {
 /// Search options exposed by the registered game integration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameSearchCapabilities {
+    /// Registered search families, independent of selection policies within MCTS.
+    pub search_agents: &'static [&'static str],
     pub imperfect_information: bool,
     pub stochastic: bool,
     pub players: u8,
@@ -128,6 +130,11 @@ pub fn game_search_capabilities(game: GameId) -> GameSearchCapabilities {
             .collect()
     }
     GameSearchCapabilities {
+        search_agents: if matches!(game, GameId::LostCities) {
+            &["so_ismcts"]
+        } else {
+            &["mcts"]
+        },
         imperfect_information: matches!(game, GameId::LostCities),
         stochastic: matches!(game, GameId::LostCities | GameId::Splendor),
         players: 2,

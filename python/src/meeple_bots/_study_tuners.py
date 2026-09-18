@@ -39,6 +39,11 @@ def assert_frozen(base, candidate, dimension):
 
 
 def validate_tuner(dimension, base, selectors):
+    from ._agent_config import SoIsmctsAgent
+    if isinstance(base, SoIsmctsAgent):
+        if dimension != 'exploration':
+            raise ValueError('SO-ISMCTS supports only exploration tuning')
+        return
     if dimension not in TUNING_FIELDS:
         raise ValueError('unknown tuning dimension: ' + str(dimension))
     if dimension.startswith('progressive-widening') or dimension == 'widening-expansion':

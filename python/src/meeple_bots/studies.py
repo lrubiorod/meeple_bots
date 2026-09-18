@@ -23,7 +23,7 @@ from . import _native
 from ._concurrency import WorkerSetting, resolve_workers
 from ._agent_config import (
     ConditionalRollout, EpsilonGreedy, GameHeuristic, Greedy, Mast, MctsAgent,
-    NeutralEvaluator, RandomAgent, UniformRandom,
+    NeutralEvaluator, RandomAgent, SoIsmctsAgent, UniformRandom,
 )
 from ._capabilities import heuristic_indices, game_search_capabilities
 from ._mcts_profiles import (
@@ -34,6 +34,8 @@ from .game_config import create_game, game_parameters
 from .connect6 import Connect6
 from .api import Boop, ConnectFour, SpiritsOfTheForest, TicTacToe, benchmark_mcts_agent
 from .splendor import Splendor
+from .lost_cities import LostCities
+from ._study_profiles import PROFILES, resolve_family, load_search_profile, so_from_values
 from .serialization import _evaluator_dict
 from .tournaments import (
     TournamentAgent, TournamentConfig, TournamentTrace, match_jobs, run_matches,
@@ -42,7 +44,7 @@ from .tournaments import (
 from ._study_tuners import TUNING_FIELDS, proposals, config_fields, changes, assert_frozen, validate_tuner
 from .study_analysis import summarize_contrast, write_study_report, study_diagnostics, search_adequacy
 
-GAMES = {"connect6": Connect6, "boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
+GAMES = {"lost_cities": LostCities,"connect6": Connect6, "boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
          "tic-tac-toe": TicTacToe, "splendor": Splendor}
 PHASES = ("depth_screen", "exploration", "selectors", "rave", "rave_extend_1", "rave_extend_2", "rave_extend_3", "rave_extend_4", "rave_extend_5",
           "rave_exploration", "rave_compare",
@@ -88,7 +90,11 @@ def policy_values(policy) -> dict:
     return values
 
 
-def profile_values(agent: MctsAgent) -> dict:
+def profile_values(agent: MctsAgent | SoIsmctsAgent) -> dict:
+    if isinstance(agent, SoIsmctsAgent):
+        return {"agent": "so_ismcts", "exploration": agent.exploration,
+                "rollout": "uniform", "root_selection": "most_visited",
+                **({"iterations": agent.iterations} if agent.iterations is not None else {"time_budget": agent.time_budget})}
     values = {"iterations": agent.iterations} if agent.iterations is not None else {"time_budget": agent.time_budget}
     values.update(exploration=agent.exploration, rollout_depth=agent.rollout_depth,
                   selection_policy=agent.selection_policy, cutoff_evaluator=_evaluator_dict(agent.cutoff_evaluator),
@@ -105,7 +111,9 @@ def profile_values(agent: MctsAgent) -> dict:
     return values
 
 
-def agent_from_values(values: dict) -> MctsAgent:
+def agent_from_values(values: dict) -> MctsAgent | SoIsmctsAgent:
+    if values.get("agent") == "so_ismcts":
+        return so_from_values(values)
     return MctsAgent(iterations=values.get("iterations"), time_budget=values.get("time_budget"),
                      exploration=values["exploration"], rollout_depth=values["rollout_depth"],
                      selection_policy=values["selection_policy"],
@@ -127,7 +135,7 @@ def _toml(value) -> str:
     return json.dumps(value, allow_nan=False)
 
 
-def export_profile(path: Path, name: str, agent: MctsAgent) -> None:
+def export_profile(path: Path, name: str, agent: MctsAgent | SoIsmctsAgent) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = "# Generated study candidate; strength claims require held-out confirmation.\n"
     text += f"name = {json.dumps(name)}\n"
@@ -141,7 +149,7 @@ def generic_baseline(game: str) -> MctsAgent:
                      tree_reuse=False, transpositions=False)
 
 
-def _study_budget(agent: MctsAgent, calibration: dict) -> MctsAgent:
+def _study_budget(agent: MctsAgent | SoIsmctsAgent, calibration: dict) -> MctsAgent:
     if calibration.get("fixed_iterations") is not None:
         return replace(agent, iterations=calibration["fixed_iterations"], time_budget=None)
     return replace(agent, iterations=None, time_budget=calibration["decision_seconds"])
@@ -200,7 +208,7 @@ def _rank(phase: dict) -> list[str]:
         complete = result.get("seed_pairs", 0) >= max(2, contrast.get("target_pairs", 2))
         if phase.get("evidence_policy"):
             complete = result.get("seed_pairs", 0) >= max(4, contrast.get("target_pairs", 4))
-            if not complete or not _promising(result):
+            if not complete or not _promising(result) or (phase.get("evidence_policy") == "confirmation" and result.get("ci95_b", [0])[0] <= .5):
                 scores[contrast["a"]].append(.5)
                 continue
         if result.get("score_b") is not None and (not phase.get("incremental") or complete):
@@ -532,7 +540,7 @@ def _build_tuning_phase(name, state, base):
     field = TUNING_FIELDS[dimension][0]
     tested = {getattr(agent_from_values(v), field) for p in phases for v in p["agents"].values()}
     candidates = proposals(dimension, parent, selectors=request["selection_policies"],
-                           horizon=state["calibration"]["horizon"]["depth"], tested=tested)
+                           horizon=state["calibration"]["horizon"]["depth"], tested=tested, coarse=spec.get("coarse", False))
     for i, candidate in enumerate(candidates):
         assert_frozen(parent, candidate, dimension)
         if request.get("tune"):
@@ -546,18 +554,18 @@ def _build_tuning_phase(name, state, base):
 
 
 class StudyRunner:
-    def __init__(self, game: str, baseline: MctsAgent | None = None, *, output: Path, budget: float | None = None,
+    def __init__(self, game: str, baseline: MctsAgent | SoIsmctsAgent | None = None, *, output: Path, budget: float | None = None,
                  reference: MctsAgent | None = None, seed: int = 42, max_pairs: int | None = None,
                  games_per_comparison: int = 50, stage_games: dict[str, int] | None = None,
                  decision_seconds: float | None = None, screening_seconds: float | None = None, max_plies: int = 10000,
                  heuristic: int | None = None, target_match_time: float = 60.0, rave_search: bool = False, pw_search: bool = False,
                  selection_search: bool = False, mechanism_search: bool = False, depth_search: bool = False, all_search: bool = False,
                  tune: str | None = None, second_pass: bool = False, widening_expansion_search: bool = False,
-                 workers: WorkerSetting = "auto", resume: bool = False, allow_engine_change: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
+                 agent_family: str | None = None, workers: WorkerSetting = "auto", resume: bool = False, allow_engine_change: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
         if allow_engine_change and not resume:
             raise ValueError("--allow-engine-change requires --resume and an existing study")
-        if game in ("lost_cities", "lost-cities"):
-            raise ValueError("Lost Cities SO-ISMCTS tuning is not supported by study")
+        self.family = resolve_family(game, agent_family, baseline)
+        self.profile = PROFILES.get(self.family)
         if game not in GAMES:
             raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
         if budget is not None and (not math.isfinite(budget) or budget <= 0):
@@ -587,47 +595,59 @@ class StudyRunner:
         if heuristic is not None and (type(heuristic) is not int or heuristic not in heuristic_indices(game)):
             raise ValueError(f"unknown cutoff heuristic H{heuristic} for {game}")
         supplied = baseline is not None
-        if tune is not None:
+        if self.profile:
+            if any((rave_search, pw_search, mechanism_search, depth_search, all_search, second_pass, widening_expansion_search)) or heuristic is not None or reference is not None:
+                raise ValueError("unsupported stages/options for SO-ISMCTS; only exploration tuning is available")
+            if stage_games.keys() - {"selection"}:
+                raise ValueError("SO-ISMCTS supports only --stage-games selection=GAMES")
+            if tune is not None and (tune != "exploration" or baseline is None or decision_seconds is not None or selection_search):
+                raise ValueError("SO-ISMCTS --tune exploration requires --agent-config and freezes its search budget")
+            baseline = baseline or SoIsmctsAgent()
+            specs = self.profile.specs()
+            self.phase_names = (*specs, "confirmation")
+            selectors, pw_supported = [], False
+        else:
+            if tune is not None:
+                if baseline is None:
+                    raise ValueError("--tune requires --baseline/--agent-config")
+                if any((all_search, selection_search, rave_search, pw_search, mechanism_search, depth_search, second_pass, widening_expansion_search)):
+                    raise ValueError("--tune cannot be combined with full-study stages or --second-pass")
+                if decision_seconds is not None:
+                    raise ValueError("--tune freezes the agent search budget; remove --decision-time")
+                validate_tuner(tune, baseline, game_search_capabilities(game)["selection_policies"])
             if baseline is None:
-                raise ValueError("--tune requires --baseline/--agent-config")
-            if any((all_search, selection_search, rave_search, pw_search, mechanism_search, depth_search, second_pass, widening_expansion_search)):
-                raise ValueError("--tune cannot be combined with full-study stages or --second-pass")
-            if decision_seconds is not None:
-                raise ValueError("--tune freezes the agent search budget; remove --decision-time")
-            validate_tuner(tune, baseline, game_search_capabilities(game)["selection_policies"])
-        if baseline is None:
-            baseline = replace(generic_baseline(game), cutoff_evaluator=NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic))
-        elif heuristic is not None and baseline.cutoff_evaluator != GameHeuristic(heuristic):
-            raise ValueError("--heuristic conflicts with the supplied baseline evaluator")
-        evaluator = baseline.cutoff_evaluator
-        heuristic = evaluator.index if isinstance(evaluator, GameHeuristic) else None
-        if reference and reference.cutoff_evaluator != evaluator:
-            raise ValueError("reference must belong to the same evaluator family; compare families in a separate tournament")
-        selectors = game_search_capabilities(game)["selection_policies"]
-        for label, agent in (("baseline", baseline), ("reference", reference)):
-            if agent and agent.selection_policy not in selectors:
-                raise ValueError(f"{label} selection policy is unavailable for this game")
-        for name, value in dict(rave_search=rave_search, pw_search=pw_search, selection_search=selection_search,
-                                mechanism_search=mechanism_search, depth_search=depth_search, all_search=all_search, second_pass=second_pass, widening_expansion_search=widening_expansion_search).items():
-            if type(value) is not bool:
-                raise ValueError(f"{name} must be a boolean")
-        rave_search, pw_search, selection_search, mechanism_search, depth_search = [
-            all_search or value for value in (rave_search, pw_search, selection_search, mechanism_search, depth_search)]
-        specs = tuning_specs(tune) if tune else {}
-        if not tune and (widening_expansion_search or all_search):
-            specs.update(tuning_specs("widening-expansion", prefix="admission"))
-        if second_pass:
-            for dimension in ("exploration", "rave", "progressive-widening"):
-                specs.update(tuning_specs(dimension, prefix="second"))
-        self.phase_names = tuple(specs) if tune else (*PHASES, *specs)
-        if seed >= 2**64 - (len(self.phase_names)+1)*SEED_STRIDE:
-            raise ValueError("seed leaves insufficient room for tuning phases")
-        # Current catalog exposes UCT-RAVE exactly for deterministic search backends.
-        pw_supported = "uct_rave" in selectors
-        if not pw_supported and any(a and a.progressive_widening for a in (baseline, reference)):
-            raise ValueError("PW requires a deterministic backend")
-        if reference is not None:
-            raise ValueError("--reference was removed with confirmation; compare it in a separate tournament")
+                baseline = replace(generic_baseline(game), cutoff_evaluator=NeutralEvaluator() if heuristic is None else GameHeuristic(heuristic))
+            elif heuristic is not None and baseline.cutoff_evaluator != GameHeuristic(heuristic):
+                raise ValueError("--heuristic conflicts with the supplied baseline evaluator")
+            evaluator = baseline.cutoff_evaluator
+            heuristic = evaluator.index if isinstance(evaluator, GameHeuristic) else None
+            if reference and reference.cutoff_evaluator != evaluator:
+                raise ValueError("reference must belong to the same evaluator family; compare families in a separate tournament")
+            selectors = game_search_capabilities(game)["selection_policies"]
+            for label, agent in (("baseline", baseline), ("reference", reference)):
+                if agent and agent.selection_policy not in selectors:
+                    raise ValueError(f"{label} selection policy is unavailable for this game")
+            for name, value in dict(rave_search=rave_search, pw_search=pw_search, selection_search=selection_search,
+                                    mechanism_search=mechanism_search, depth_search=depth_search, all_search=all_search, second_pass=second_pass, widening_expansion_search=widening_expansion_search).items():
+                if type(value) is not bool:
+                    raise ValueError(f"{name} must be a boolean")
+            rave_search, pw_search, selection_search, mechanism_search, depth_search = [
+                all_search or value for value in (rave_search, pw_search, selection_search, mechanism_search, depth_search)]
+            specs = tuning_specs(tune) if tune else {}
+            if not tune and (widening_expansion_search or all_search):
+                specs.update(tuning_specs("widening-expansion", prefix="admission"))
+            if second_pass:
+                for dimension in ("exploration", "rave", "progressive-widening"):
+                    specs.update(tuning_specs(dimension, prefix="second"))
+            self.phase_names = tuple(specs) if tune else (*PHASES, *specs)
+            if seed >= 2**64 - (len(self.phase_names)+1)*SEED_STRIDE:
+                raise ValueError("seed leaves insufficient room for tuning phases")
+            # Current catalog exposes UCT-RAVE exactly for deterministic search backends.
+            pw_supported = "uct_rave" in selectors
+            if not pw_supported and any(a and a.progressive_widening for a in (baseline, reference)):
+                raise ValueError("PW requires a deterministic backend")
+            if reference is not None:
+                raise ValueError("--reference was removed with confirmation; compare it in a separate tournament")
         worker_count = resolve_workers(workers)
         self.game = create_game(game, game_params)
         self.base, self.reference = baseline, reference
@@ -640,6 +660,8 @@ class StudyRunner:
                    "seed": seed, "max_pairs": max_pairs,
                    "decision_seconds": decision_seconds, "screening_seconds": screening_seconds,
                    "max_plies": max_plies, "workers": worker_count, "engine": _fingerprint()}
+        if self.profile:
+            request.update(agent_family=self.family, mode="information_set")
         self.path = self.output / "study.json"
         if self.path.exists():
             if not resume:
@@ -694,6 +716,8 @@ class StudyRunner:
         return self.previous_spent + perf_counter() - self.started
 
     def save(self):
+        if self.profile:
+            self.state.setdefault("selected_candidate", {"phase": None, "name": "incumbent", "profile": profile_values(self.base)})
         screen = self.state["phases"].get("pw_screen")
         if screen and "pw_policies" in screen:
             screen["pw_decisions"].update(_pw_survivors(screen)[1])
@@ -773,7 +797,8 @@ class StudyRunner:
             rows = [json.loads(line) for line in config.output.read_text().splitlines()[1:]]
             contrast = phase["contrasts"][index]
             contrast["result"] = summarize_contrast(rows)
-            contrast["result"]["verdict"] = "exploratory"
+            if phase.get("evidence_policy") != "confirmation":
+                contrast["result"]["verdict"] = "exploratory"
             contrast["trace"] = str(config.output.relative_to(self.output))
             rows_by_index[index] = rows
         self.save()
@@ -783,6 +808,8 @@ class StudyRunner:
         return self._batch(phase, [index], round_index, pilot=pilot)[index]
 
     def calibrate(self):
+        if self.profile:
+            return self.profile.calibrate(self)
         if self.state["calibration"]:
             return
         request = self.state["request"]
@@ -979,6 +1006,9 @@ class StudyRunner:
                      allocation_mode="fixed_games")
 
     def _announce_plan(self):
+        if self.profile:
+            return self.profile.announce(self)
+        self.progress("Agent family: MCTS")
         self.progress("Execution: " + ("LOCAL RETUNE" if self.state["request"].get("tune") else "FULL STUDY") + "; enabled stages: " + ", ".join(n for n in self.phase_names if n in self.state["request"]["tuner_specs"] or _phase_enabled(n, self.state["request"])))
         pw_requested = self.state["request"].get("pw_search", False)
         self.progress("PW search: " + ("enabled" if pw_requested and self.state["request"].get("pw_supported") else "unavailable for this game" if pw_requested else "disabled (enable with --pw-search)"))
@@ -1001,6 +1031,9 @@ class StudyRunner:
                 self.state["status"] = "budget_exhausted"
                 return self.state
             self.calibrate()
+            if self.state["calibration"] is None:
+                self.state["status"] = "budget_exhausted"
+                return self.state
             self._announce_plan()
             self.state.pop("last_error", None)
             self.state["status"] = "running"
@@ -1011,7 +1044,7 @@ class StudyRunner:
                 if self.budget is not None and self.spent >= self.budget:
                     break
                 if phase is None:
-                    phase = _build_phase(name, self.state, self.base, self.reference)
+                    phase = self.profile.build_phase(name, self.state, self.base) if self.profile else _build_phase(name, self.state, self.base, self.reference)
                     self._plan_phase(phase, index)
                     self.state["phases"][name] = phase
                     self.save()
@@ -1064,7 +1097,7 @@ class StudyRunner:
         selected = self.state.get("selected_candidate")
         if selected:
             profiles["best_agent"] = selected["profile"]
-            if not self.state["request"]["baseline_supplied"]:
+            if not self.profile and not self.state["request"]["baseline_supplied"]:
                 label = "best_full_depth_agent" if self.state["request"]["mode"] == "full_depth" else "best_heuristic_cutoff_agent"
                 profiles[label] = selected["profile"]
         directory = self.output / "candidates"
@@ -1076,10 +1109,8 @@ class StudyRunner:
 
 def run_study(game: str, *, output: Path, budget: float | None = None, baseline: Path | None = None,
               reference: Path | None = None, **kwargs) -> dict:
-    if game in ("lost_cities", "lost-cities"):
-        raise ValueError("Lost Cities SO-ISMCTS tuning is not supported by study")
     if game not in GAMES:
         raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
-    base = _load_mcts_profile(baseline).agent if baseline else None
-    ref = _load_mcts_profile(reference).agent if reference else None
+    base = load_search_profile(baseline) if baseline else None
+    ref = load_search_profile(reference) if reference else None
     return StudyRunner(game, base, output=output, budget=budget, reference=ref, **kwargs).run()

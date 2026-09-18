@@ -1,28 +1,34 @@
 //! Single-observer ISMCTS. Search accepts an observation, never an authoritative state.
 //! No lifecycle implementation: the catalog adapter must not forward hidden callbacks.
+pub use meeple_bots_core::SearchBudget;
 use meeple_bots_core::{
     AgentError, DeterminizedWorld, Game, ImperfectInformationGame, PlayerId, PositionStatus,
     RandomSource, TwoPlayerZeroSumGame,
 };
-use std::num::NonZeroU32;
+use std::time::Instant;
 
 /// Safety cutoff for cyclic games, not a game horizon. Cutoffs back up neutral utility.
 pub const MAX_SIMULATION_ACTIONS: usize = 10_000;
 #[derive(Clone, Debug, PartialEq)]
 pub struct SoIsmctsConfig {
-    pub iterations: NonZeroU32,
+    pub budget: SearchBudget,
     pub exploration: f64,
 }
 impl Default for SoIsmctsConfig {
     fn default() -> Self {
         Self {
-            iterations: NonZeroU32::new(1000).unwrap(),
+            budget: SearchBudget::default(),
             exploration: std::f64::consts::SQRT_2,
         }
     }
 }
 impl SoIsmctsConfig {
     pub fn validate(&self) -> Result<(), AgentError> {
+        if matches!(self.budget, SearchBudget::Time(t) if t.is_zero()) {
+            return Err(AgentError::message(
+                "SO-ISMCTS time budget must be positive",
+            ));
+        }
         if !self.exploration.is_finite() || self.exploration < 0. {
             return Err(AgentError::message(
                 "SO-ISMCTS exploration must be finite and non-negative",
@@ -205,7 +211,20 @@ impl SoIsmctsAgent {
             edges: vec![],
         }];
         let mut diagnostics = Diagnostics::default();
-        for _ in 0..self.config.iterations.get() {
+        let started = Instant::now();
+        loop {
+            let exhausted = match self.config.budget {
+                SearchBudget::Iterations(n) => {
+                    diagnostics.completed_iterations >= u64::from(n.get())
+                }
+                SearchBudget::Time(t) => {
+                    diagnostics.completed_iterations > 0 && started.elapsed() >= t
+                }
+            };
+            if exhausted {
+                break;
+            }
+
             // This is the only world. It is dropped at the end of THIS iteration.
             let mut world = game
                 .sample_determinization(observation, observer, rng)

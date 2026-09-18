@@ -70,8 +70,11 @@ checked against the root observation, acting player and legal root action set.
 
 ## Configuration, diagnostics and limits
 
-Configuration consists of positive fixed `iterations` and finite nonnegative
-`exploration`. Search uses the caller's seeded RNG. No time budget is exposed yet.
+Configuration consists of positive `iterations` **or** positive `time_budget`
+(seconds per decision), and finite nonnegative `exploration`. Both families reuse
+the core `SearchBudget` type. Search uses the caller's seeded RNG. Timed search
+checks the deadline between iterations and completes at least one; one simulation
+may overrun the deadline. Fixed-iteration mode retains deterministic seeded behavior.
 Uniform rollout and MostVisited are fixed. Unsupported MCTS options are rejected.
 A simulation safety cap of 10,000 actions handles cycles with neutral cutoff utility;
 it is **not** a game horizon or a scored game termination.
@@ -86,7 +89,8 @@ diagnostics are available through `search()`.
 Single Observer uses one root perspective, including opponent turns. It does not
 solve the opponent-model limitations addressed by MO-ISMCTS or RIS-MCTS. There is
 no PIMC, redeterminization, heuristic rollout, RAVE, widening, bias, MAST, reuse,
-transpositions, parallel search or stochastic-node search. `study` does not configure this agent yet. The Lost Cities debug GUI supports
+transpositions, parallel search or stochastic-node search. `study` supports operating-budget calibration and exploration tuning; see
+[Lost Cities study](../../python/studies.md#lost-cities-and-the-so-ismcts-study-profile). The Lost Cities debug GUI supports
 SO-ISMCTS in either seat with separate iteration/exploration settings and an
 observation-only search boundary, while displaying both hands for inspection.
 

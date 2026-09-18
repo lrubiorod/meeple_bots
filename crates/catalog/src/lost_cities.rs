@@ -257,7 +257,7 @@ mod so_ismcts_tests {
 
     fn config() -> AgentConfig {
         AgentConfig::SoIsmcts(SoIsmctsConfig {
-            iterations: NonZeroU32::new(2).unwrap(),
+            budget: meeple_bots_core::SearchBudget::Iterations(NonZeroU32::new(2).unwrap()),
             exploration: 1.0,
         })
     }
@@ -293,7 +293,9 @@ mod so_ismcts_tests {
             if self.run_search {
                 let search = SoIsmctsAgent {
                     config: SoIsmctsConfig {
-                        iterations: NonZeroU32::new(2).unwrap(),
+                        budget: meeple_bots_core::SearchBudget::Iterations(
+                            NonZeroU32::new(2).unwrap(),
+                        ),
                         exploration: 1.0,
                     },
                 };
