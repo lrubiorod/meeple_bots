@@ -1,7 +1,7 @@
 """Open-hand Lost Cities debugging interface."""
 from pathlib import Path
 from ....gui.application import GuiApplication
-from ....gui.player import GuiPlayer
+from .player import parse_player
 from .controller import LostCitiesGui
 from .page import PAGE
 
@@ -14,9 +14,7 @@ class LostCitiesApplication(GuiApplication):
         players = []
         for name, default in (('first', 'human'), ('second', 'random')):
             raw = payload.get(name, {'kind': default})
-            if not isinstance(raw, dict) or raw.get('kind') not in ('human', 'random'):
-                raise ValueError('Lost Cities GUI supports human and random players only')
-            players.append(GuiPlayer(raw['kind']))
+            players.append(parse_player(raw))
         return self._start_match(*players, seed=payload.get('seed', 0),
             minimum_move_seconds=payload.get('minimum_move_seconds', .4),
             save_trace=payload.get('save_trace', False))

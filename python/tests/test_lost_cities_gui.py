@@ -114,6 +114,77 @@ class LostCitiesGuiTests(unittest.TestCase):
             self.assertEqual(s['current_player'], human)
             self.assertTrue(any(e['player'] != human for e in s['events']))
 
+    def test_so_players_finish_reproducibly_with_independent_settings(self):
+        for first, second in [('so_ismcts', 'random'), ('random', 'so_ismcts'), ('so_ismcts', 'so_ismcts')]:
+            payload = {'first': {'kind': first}, 'second': {'kind': second}, 'seed': 42, 'minimum_move_seconds': 0}
+            for seat, iterations in [('first', 2), ('second', 3)]:
+                if payload[seat]['kind'] == 'so_ismcts':
+                    payload[seat].update(iterations=iterations, exploration=.75)
+            self.app.start(payload)
+            state = self.wait(lambda s: s['status'] == 'finished')
+            self.assertEqual(len(state['deck']), 0)
+            self.assertEqual(sum(e['chance'] for e in state['events']), 44)
+            for e in state['events']:
+                seat = 'first' if e['player'] == 0 else 'second'
+                if not e['chance'] and payload[seat]['kind'] == 'so_ismcts':
+                    self.assertEqual(e['search']['completed_iterations'], payload[seat]['iterations'])
+                else:
+                    self.assertNotIn('search', e)
+            self.app.start(payload)
+            repeated = self.wait(lambda s: s['status'] == 'finished')
+            self.assertEqual(state['events'], repeated['events'])
+
+    def test_search_boundary_and_restart_while_thinking(self):
+        from threading import Event
+        from meeple_bots import SoIsmctsAgent, LostCitiesObservation
+        entered, release = Event(), Event()
+        calls = []
+        def blocked_search(agent, observation, legal_actions, *, seed):
+            calls.append((observation, legal_actions, seed))
+            entered.set()
+            release.wait(3)
+            return {'action': legal_actions[0], 'diagnostics': {'completed_iterations': agent.iterations}}
+        with patch.object(SoIsmctsAgent, 'search', blocked_search):
+            try:
+                self.app.start({'first': {'kind': 'so_ismcts', 'iterations': 2}, 'second': {'kind': 'human'}, 'seed': 42, 'minimum_move_seconds': 0})
+                self.assertTrue(entered.wait(2))
+                state = self.app.snapshot()  # Must not wait for the search lock.
+                observation, legal, seed = calls[0]
+                self.assertIsInstance(observation, LostCitiesObservation)
+                self.assertEqual(observation.observer, 0)
+                self.assertEqual(observation.hand, state['hands'][0])
+                self.assertFalse(hasattr(observation, 'deck'))
+                self.assertFalse(hasattr(observation, 'hands'))
+                self.assertFalse(hasattr(observation, '_position'))
+                old_worker = self.app._game._thread
+                self.start('human', 'human')
+                current = self.wait(lambda s: s['status'] == 'waiting_human')
+                self.assertNotEqual(state['session_id'], current['session_id'])
+            finally:
+                release.set()
+            old_worker.join(2)
+            self.assertFalse(old_worker.is_alive())
+            self.assertEqual(self.app.snapshot()['events'], [])
+
+    def test_human_so_both_seats_and_rejected_search_settings(self):
+        for first, second, human in [('human', 'so_ismcts', 0), ('so_ismcts', 'human', 1)]:
+            payload = {'first': {'kind': first}, 'second': {'kind': second}, 'seed': 42, 'minimum_move_seconds': 0}
+            for p in (payload['first'], payload['second']):
+                if p['kind'] == 'so_ismcts': p['iterations'] = 2
+            self.app.start(payload)
+            state = self.wait(lambda s: s['status'] == 'waiting_human')
+            self.assertEqual(state['current_player'], human)
+            self.move(state, 'discard')
+            draw = self.wait(lambda s: s['status'] == 'waiting_human' and s['phase'] == 'draw')
+            self.move(draw, 'draw_deck')
+            self.wait(lambda s: s['status'] == 'waiting_human' and s['phase'] == 'play')
+        before = self.app.snapshot()['session_id']
+        for fields in ({'iterations': 0}, {'iterations': True}, {'exploration': float('nan')},
+                       {'exploration': -1}, {'tree_reuse': True}, {'time_budget': 1}, {'progressive_widening': True}):
+            with self.assertRaises((ValueError, TypeError)):
+                self.app.start({'first': {'kind': 'so_ismcts', **fields}})
+            self.assertEqual(self.app.snapshot()['session_id'], before)
+
     def test_cli_dispatch_and_browser_syntax(self):
         self.assertEqual(build_parser().parse_args(['gui', '--game', 'lost_cities']).game, 'lost_cities')
         with patch('meeple_bots.gui.server.serve_gui') as serve:
@@ -146,6 +217,17 @@ global.fetch=async(path,options)=>{if(options)requests.push(JSON.parse(options.b
         assertions = r'''
 (async()=>{
  await new Promise(setImmediate);
+ $('first').value='so_ismcts';$('first').onchange();
+ $('first-iterations').value='17';$('first-exploration').value='0.8';
+ $('second').value='so_ismcts';$('second').onchange();
+ $('second-iterations').value='29';$('second-exploration').value='1.2';
+ assert.deepEqual(playerConfig('first'),{kind:'so_ismcts',iterations:17,exploration:0.8});
+ assert.deepEqual(playerConfig('second'),{kind:'so_ismcts',iterations:29,exploration:1.2});
+ assert.equal($('search-settings').children[0].hidden,false);
+ $('first').value='human';$('first').onchange();
+ assert.deepEqual(playerConfig('first'),{kind:'human'});
+ assert.equal($('search-settings').children[0].hidden,true);
+
  const s={session_id:'test',turn:3,status:'waiting_human',phase:'play',current_player:0,
  hands:[[[0,2],[1,0],[1,0]],[[2,3]]],players:[{kind:'human'},{kind:'random'}],scores:[0,0],
  expeditions:[[[],[],[],[],[]],[[],[],[],[],[]]],discards:[[],[],[],[],[]],deck:[],events:[],

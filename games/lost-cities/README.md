@@ -82,7 +82,7 @@ Authoritative positions, exact Chance distributions and saved match traces are
 engine/administrative data, **not player observations**; traces disclose private draws.
 Live match observers, study tuning, PIMC/MO-ISMCTS/RIS-MCTS and heuristics
 are intentionally not implemented. A separate administrative
-GUI supports human and random players (see below). Reports currently consist
+GUI supports human, random and SO-ISMCTS players (see below). Reports currently consist
 of CLI scores, tournament summaries and validated JSON traces; no game-specific
 HTML report or extraction analysis is provided.
 
@@ -108,7 +108,8 @@ assert world.legal_actions() == game.legal_actions(state)
 .venv/bin/python -m meeple_bots gui --game lost_cities
 ```
 
-Choose Human or Random independently for both seats. The GUI intentionally shows
+Choose Human, Random or SO-ISMCTS independently for both seats. SO-ISMCTS exposes
+iterations and exploration C per player; uniform rollout and MostVisited stay fixed. The GUI intentionally shows
 **both hands**, all expeditions and discard stacks, scores, remaining deck count,
 an expandable unordered deck pool, and a transition log including private draws.
 This is an administrative test interface, not a private player view or remote
@@ -117,11 +118,16 @@ multiplayer service. There is no handoff/reveal screen.
 Click a card in the active human hand to see its legal Play expedition / Discard
 options, then choose a draw source. Controls expose only Rust-generated legal actions. Random decisions choose uniformly from that same action list without
 inspecting hands or deck composition. Environment chance still runs through Rust,
-with a separate seeded RNG stream from each random policy. The GUI seed reproduces
+with a separate seeded RNG stream from each agent. SO-ISMCTS receives only its own
+observation and legal actions; the open-hand snapshot never enters search. The GUI seed reproduces
 GUI sessions; its Python orchestration does not promise identical random choices
-to native tournament execution. The debug GUI uses only real-game execution, never determinized simulation worlds.
+to native tournament execution. Real GUI transitions use the stochastic environment; SO-ISMCTS uses temporary
+determinized worlds only inside search. Its completed iterations appear in the log.
 
-New Match cancels the previous worker, including human waits; stale/duplicate moves
+New Match cancels the previous worker, including human waits. An in-flight search
+finishes its current search call before exiting; its result is discarded. Native
+search releases the GIL and runs outside the controller lock so polling and restarts
+remain responsive; stale/duplicate moves
 are rejected using session and decision tokens. Step delay controls inspection pace.
 A 10,000-decision execution safeguard reports an error without awarding a result.
 GUI trace-file saving is not provided; the current transition log is available in

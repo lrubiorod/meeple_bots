@@ -86,8 +86,9 @@ diagnostics are available through `search()`.
 Single Observer uses one root perspective, including opponent turns. It does not
 solve the opponent-model limitations addressed by MO-ISMCTS or RIS-MCTS. There is
 no PIMC, redeterminization, heuristic rollout, RAVE, widening, bias, MAST, reuse,
-transpositions, parallel search or stochastic-node search. `study` and the debug
-GUI do not configure this agent yet.
+transpositions, parallel search or stochastic-node search. `study` does not configure this agent yet. The Lost Cities debug GUI supports
+SO-ISMCTS in either seat with separate iteration/exploration settings and an
+observation-only search boundary, while displaying both hands for inspection.
 
 ## Python and CLI
 

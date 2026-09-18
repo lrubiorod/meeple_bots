@@ -354,14 +354,18 @@ pub fn lost_cities_so_ismcts_search(
             exploration,
         },
     };
-    let result = search
-        .search(
-            &LostCities,
-            &observation,
-            observation.observer,
-            &legal,
-            &mut SplitMix64::new(seed),
-        )
+    // The GUI worker must not hold Python's GIL while searching; polling/restarts
+    // remain responsive. All inputs here are owned values, without position handles.
+    let result = py
+        .detach(|| {
+            search.search(
+                &LostCities,
+                &observation,
+                observation.observer,
+                &legal,
+                &mut SplitMix64::new(seed),
+            )
+        })
         .map_err(error)?;
     let out = PyDict::new(py);
     out.set_item("action", action_dict(py, result.action)?)?;
