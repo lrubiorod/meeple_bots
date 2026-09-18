@@ -700,6 +700,18 @@ Older studies require a new output directory; their frozen phase/seed plans cann
 Older studies require a new output directory. Resume requires identical game
 counts, flags and compatible code/native build; it completes exactly the missing
 matches without replaying completed seats. Git commits alone do not invalidate it.
+If the code or native binary changed, strict `--resume` still refuses to mix engines.
+After reviewing the changes, `--resume --allow-engine-change` explicitly accepts a
+mixed-engine continuation. This does **not** certify behavioral or performance
+compatibility: even rebuilding identical sources can affect a time-budgeted search.
+Game counts, flags, profiles, workers, seeds and protocol must still match.
+The original request fingerprint stays intact. `engine_changes` records old/new
+fingerprints, UTC acceptance time and exact completed match IDs per trace; the
+checkpoint and reports mark `mixed_engines`. Existing matches are retained, so an
+unfinished comparison or seed pair can span engines. Future resumes check the last
+accepted engine and retain this warning. Restoring the original environment remains
+the option for maintaining a single-engine experiment.
+
 An optional `--budget` is cumulative: raise 2h to 2h30m to add 30 minutes, or omit
 it on resume to remove the time limit. Changing game counts requires a new study.
 

@@ -90,6 +90,67 @@ class StudyTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'configuration or engine changed'):
                         StudyRunner('tic-tac-toe', base, resume=True, **options)
 
+    def test_explicit_engine_change_preserves_games_and_records_boundary(self):
+        from meeple_bots.studies import run_matches as real_run
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / 'study'
+            base = MctsAgent(iterations=4, rollout_depth=9)
+            opts = dict(output=output, budget=60, decision_seconds=.00001,
+                        max_pairs=2, max_plies=9, progress=lambda _: None)
+            old = {'git_revision': 'old', 'python_sha256': 'old-python', 'native_sha256': 'old-native'}
+            new = {'git_revision': 'new', 'python_sha256': 'new-python', 'native_sha256': 'new-native'}
+            def interrupt(*args, **kwargs):
+                for result in real_run(*args, **kwargs):
+                    yield result
+                    raise RuntimeError('interruption')
+            with patch('meeple_bots.studies._fingerprint', return_value=old), patch('meeple_bots.studies.run_matches', side_effect=interrupt):
+                with self.assertRaisesRegex(RuntimeError, 'interruption'):
+                    StudyRunner('tic-tac-toe', base, **opts).run()
+            trace = output / 'traces/calibration-00.jsonl'
+            prefix = trace.read_bytes()
+            checkpoint = (output / 'study.json').read_bytes()
+            with patch('meeple_bots.studies._fingerprint', return_value=new):
+                with self.assertRaisesRegex(ValueError, 'engine hashes differ'):
+                    StudyRunner('tic-tac-toe', base, resume=True, **opts)
+                with self.assertRaisesRegex(ValueError, 'configuration differs'):
+                    StudyRunner('tic-tac-toe', base, resume=True, allow_engine_change=True, seed=99, **opts)
+                self.assertEqual((output / 'study.json').read_bytes(), checkpoint)
+                state = StudyRunner('tic-tac-toe', base, resume=True, allow_engine_change=True, **opts).run()
+                self.assertEqual(state['status'], 'complete')
+                self.assertEqual(state['request']['engine'], old)
+                self.assertEqual(state['active_engine'], new)
+                self.assertTrue(state['mixed_engines'])
+                event = state['engine_changes'][0]
+                self.assertEqual(event['previous_engine'], old)
+                self.assertEqual(event['new_engine'], new)
+                self.assertEqual(event['completed_matches_before_change'], {'traces/calibration-00.jsonl': [1]})
+                self.assertTrue(trace.read_bytes().startswith(prefix))
+                self.assertEqual(len(trace.read_bytes().splitlines()), 3)
+                summary = json.loads((output / 'summary.json').read_text())
+                self.assertTrue(summary['mixed_engines'])
+                self.assertIn('Mixed-engine study', (output / 'report.html').read_text())
+                # Future resumes use the latest accepted engine; don't require repeated consent.
+                resumed = StudyRunner('tic-tac-toe', base, resume=True, **opts).run()
+                self.assertEqual(len(resumed['engine_changes']), 1)
+                self.assertEqual(trace.read_bytes().splitlines()[1], prefix.splitlines()[1])
+            with patch('meeple_bots.studies._fingerprint', return_value=old):
+                with self.assertRaisesRegex(ValueError, 'engine hashes differ'):
+                    StudyRunner('tic-tac-toe', base, resume=True, **opts)
+
+    def test_engine_override_requires_existing_resume_and_cli_forwards_it(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'study'
+            for resume in (False, True):
+                with self.assertRaisesRegex(ValueError, 'requires --resume and an existing study'):
+                    StudyRunner('tic-tac-toe', output=path, resume=resume, allow_engine_change=True)
+                self.assertFalse(path.exists())
+            from contextlib import redirect_stdout
+            import io
+            with patch('meeple_bots.studies.run_study', return_value={'status': 'complete', 'spent_seconds': 0}) as run, redirect_stdout(io.StringIO()):
+                self.assertEqual(main(['study', '--game', 'tic-tac-toe', '--resume', '--allow-engine-change', '--json', '--output', str(path)]), 0)
+            self.assertTrue(run.call_args.kwargs['resume'])
+            self.assertTrue(run.call_args.kwargs['allow_engine_change'])
+
     def test_interruption_reuses_flushed_single_seat_and_budget_stops_before_promotion(self):
         from meeple_bots.studies import run_matches as real_run
         with TemporaryDirectory() as tmp:

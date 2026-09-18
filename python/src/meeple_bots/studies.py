@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import math
@@ -552,7 +553,9 @@ class StudyRunner:
                  heuristic: int | None = None, target_match_time: float = 60.0, rave_search: bool = False, pw_search: bool = False,
                  selection_search: bool = False, mechanism_search: bool = False, depth_search: bool = False, all_search: bool = False,
                  tune: str | None = None, second_pass: bool = False, widening_expansion_search: bool = False,
-                 workers: WorkerSetting = "auto", resume: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
+                 workers: WorkerSetting = "auto", resume: bool = False, allow_engine_change: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
+        if allow_engine_change and not resume:
+            raise ValueError("--allow-engine-change requires --resume and an existing study")
         if game in ("lost_cities", "lost-cities"):
             raise ValueError("Lost Cities SO-ISMCTS tuning is not supported by study")
         if game not in GAMES:
@@ -644,14 +647,33 @@ class StudyRunner:
             self.state = json.loads(self.path.read_text())
             if self.state["request"].get("version") != 22:
                 raise ValueError("old study protocol cannot resume with sibling PW calibration; use a new output directory")
-            # Git revision is provenance, not an execution compatibility key.
-            # Keep the original revision in the saved request.
             saved_request = self.state["request"]
-            compatible_request = {**request, "engine": {
-                **request["engine"], "git_revision": saved_request["engine"].get("git_revision")}}
-            if saved_request != compatible_request:
-                raise ValueError("study configuration or engine changed; use a new output directory")
+            # Permission to change binaries is never permission to change the frozen plan.
+            if {k: v for k, v in saved_request.items() if k != "engine"} != {k: v for k, v in request.items() if k != "engine"}:
+                raise ValueError("study configuration or engine changed: configuration differs; use a new output directory")
+            previous_engine = self.state.get("active_engine", saved_request["engine"])
+            current_engine = request["engine"]
+            # Git revision is provenance, not an execution compatibility key.
+            if {k: v for k, v in previous_engine.items() if k != "git_revision"} != {k: v for k, v in current_engine.items() if k != "git_revision"}:
+                if not allow_engine_change:
+                    raise ValueError("study configuration or engine changed: engine hashes differ; restore the original environment or explicitly use --resume --allow-engine-change to record a mixed-engine continuation")
+                completed = {}
+                for trace in sorted((self.output / "traces").glob("*.jsonl")):
+                    with trace.open() as handle:
+                        next(handle)  # Standard tournament header.
+                        completed[str(trace.relative_to(self.output))] = [json.loads(line)["match_number"] for line in handle]
+                self.state.setdefault("engine_changes", []).append({
+                    "accepted_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "previous_engine": previous_engine, "new_engine": current_engine,
+                    "completed_matches_before_change": completed,
+                })
+                self.state["active_engine"] = current_engine
+                self.state["mixed_engines"] = True
+            if self.state.get("mixed_engines"):
+                self.progress("Warning: mixed-engine study. Existing games are retained; code/build changes can affect search throughput and strength, especially with time budgets. See engine_changes in study.json.")
         else:
+            if allow_engine_change:
+                raise ValueError("--allow-engine-change requires --resume and an existing study")
             if self.output.exists() and any(self.output.iterdir()):
                 raise FileExistsError("study output directory must be empty")
             self.output.mkdir(parents=True, exist_ok=True)

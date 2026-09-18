@@ -410,6 +410,7 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--workers", type=_worker_setting, default="auto", help="parallel match workers, including equal-time comparisons (default: physical cores minus one)")
     study.add_argument("--max-plies", type=int, default=10000)
     study.add_argument("--resume", action="store_true", help="resume a frozen study; --budget may be increased")
+    study.add_argument("--allow-engine-change", action="store_true", help="with --resume, explicitly accept changed code/build and record mixed-engine provenance; configuration must still match")
     study.add_argument("--json", action="store_true")
 
     for command in (match, batch, analyze, study):
@@ -446,7 +447,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                games_per_comparison=args.games_per_comparison, stage_games=stage_games,
                                max_pairs=args.max_pairs, decision_seconds=args.decision_time,
                                screening_seconds=args.screening_time,
-                               max_plies=args.max_plies, workers=args.workers, resume=args.resume, game_params=args.game_params,
+                               max_plies=args.max_plies, workers=args.workers, resume=args.resume, allow_engine_change=args.allow_engine_change, game_params=args.game_params,
                                progress=lambda message: print(message, file=sys.stderr, flush=True))
             summary = {"status": result["status"], "spent_seconds": result["spent_seconds"],
                        "report": str(output.resolve() / "report.html"),

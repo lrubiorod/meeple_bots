@@ -448,6 +448,8 @@ def write_family_study_report(output, state):
         "Pilot length and random representative positions are preliminary estimates. Actual game costs can differ; target match time is not a match deadline.",
         "Fixed evidence per comparison. Budget screening can omit challengers explicitly; elapsed limits may overshoot by an in-flight match batch. Old study protocols require a new output directory.",
     ]
+    if state.get("mixed_engines"):
+        summary["limitations"].insert(0, "Mixed-engine study: an explicit resume accepted changed code/build. Games from different engines may occur within the same comparison or seed pair; throughput and strength may differ. Engine fingerprints and exact pre-change match IDs are recorded in engine_changes.")
     (output / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
     cal = state.get("calibration") or {}
     parts = ['<!doctype html><meta charset="utf-8"><title>MCTS family study</title>',
@@ -462,6 +464,8 @@ def write_family_study_report(output, state):
     parts.append(_table(['Sampled player decisions', 'Search ms', 'Iterations', 'Legal actions', 'Terminal / cutoff simulations'],
                         [(t['sampled_ply'], t['milliseconds'], t['iterations'], t['legal_actions'],
                           f"{t.get('terminal_simulations')} / {t.get('cutoff_simulations')}") for t in cal.get('position_timings', [])]))
+    if state.get("mixed_engines"):
+        parts.append('<p><strong>' + escape(summary["limitations"][0]) + '</strong></p>')
     if state.get('budget_limited'):
         parts.append('<p><strong>Budget limited: some challengers were not tested. See discarded comparisons below.</strong></p>')
     parts.append('<h2>Fixed game budgets</h2><pre>' + escape(json.dumps({k: state['request'].get(k) for k in ('games_per_comparison', 'stage_games')}, indent=2)) + '</pre>')
