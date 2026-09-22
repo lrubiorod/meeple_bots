@@ -2,6 +2,7 @@
 
 mod cant_stop;
 mod connect6;
+mod evaluation;
 mod lost_cities;
 mod splendor;
 
@@ -559,6 +560,10 @@ fn py_evaluate_game(
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
 
     let serialized = PyDict::new(py);
+    serialized.set_item(
+        "structural",
+        evaluation::structural_dict(py, &report.structural)?,
+    )?;
     serialized.set_item("samples", report.samples)?;
     serialized.set_item("max_depth", report.max_depth)?;
     serialized.set_item("terminal_rate", report.terminal_rate)?;
@@ -2597,6 +2602,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<splendor::PySplendorSession>()?;
     module.add_function(wrap_pyfunction!(py_game_search_capabilities, module)?)?;
     module.add_function(wrap_pyfunction!(py_evaluate_game, module)?)?;
+    module.add_function(wrap_pyfunction!(evaluation::analyze_structure, module)?)?;
+    module.add_function(wrap_pyfunction!(evaluation::benchmark_so_ismcts, module)?)?;
     module.add_function(wrap_pyfunction!(py_benchmark_mcts_agent, module)?)?;
     module.add_function(wrap_pyfunction!(py_run_match, module)?)?;
     module.add_function(wrap_pyfunction!(py_analyze_trace, module)?)?;

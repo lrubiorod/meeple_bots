@@ -157,6 +157,7 @@ class GameEvaluationReport:
     iterations_capped: bool
     milliseconds_per_iteration: float
     estimated_decision_time_ms: float
+    structural: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -956,6 +957,7 @@ def evaluate_game(
     )
     return GameEvaluationReport(
         game=game,
+        structural=raw.get("structural"),
         samples=raw["samples"],
         max_depth=raw["max_depth"],
         terminal_rate=raw["terminal_rate"],

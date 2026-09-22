@@ -5,7 +5,7 @@
 The evaluation crate separates two different questions:
 
 1. What does the sampled game tree look like?
-2. Which MCTS configurations fit practical decision-time budgets on this machine?
+2. How much work fits a practical decision-time budget for a compatible search family?
 
 It does not benchmark playing strength, select an optimal agent, or claim that any suggested
 configuration is strong. The suggestions are starting points for head-to-head experiments.
@@ -54,17 +54,20 @@ the iteration counts derived from them also depend on the machine, build profile
 
 ## Structural sampling
 
-Each sample starts at the initial state and chooses legal actions uniformly at random until it
-reaches a terminal position or `max_depth`.
+Each sample starts at the initial state and chooses player actions uniformly at random until it
+reaches a terminal position or `max_depth`. Chance events, including initial deals, use a separate
+environment RNG and are resolved without consuming player depth or contributing to branching.
+`chance_events_mean/p50/p95` include setup events; a complete Lost Cities round has 60 physical
+card draws (16 dealt cards plus 44 later deck draws).
 
 A ply is one call to `apply_action`. A player turn is a maximal consecutive block of plies whose
 states report the same `PlayerId`. Evaluation always reads `Game::status`; it does not assume that
 one action changes the player. A path containing action blocks of lengths `3, 2, 1` therefore has
 six plies, three player turns, and two player changes.
 
-These structural same-player-block metrics are not the explicit physical-turn boundary
-used for rollout cutoff. A player may receive another physical turn without changing
-identity.
+The legacy same-player-block metrics remain unchanged. Separate `physical_turns_p50/p95`
+use `Game::is_turn_boundary`, including another physical turn by the same player. A truncated
+sample counts the partial turn it entered. Neither turn metric uses depth parity.
 
 MCTS selection maximizes at every node controlled by the root player and
 minimizes at every node controlled by the opponent. Consecutive phases owned by one player do not
@@ -74,7 +77,7 @@ alternate maximize/minimize merely because tree depth increased.
 
 | Field | Meaning |
 | --- | --- |
-| `initial_legal_actions` | Exact number of choices in the initial position. |
+| `initial_legal_actions` | P50 initial player branching after setup; exact when the sampled min and max agree. |
 | `effective_branching_factor` | Geometric mean of sampled legal-action counts per tree node. |
 | `player_turn_choice_product_log10` | Mean sampled log10 product of legal-action counts within one same-player block. This is an observed interpretation aid, not an exact decision count. |
 | `depth_p50` / `estimated_depth` | P50 and P95 sampled path lengths in plies. `estimated_depth` remains the compatibility name for P95. |
@@ -120,17 +123,11 @@ does not make calibration run for that many seconds.
 | `target_time_seconds` | Requested per-decision target for suggested experiments. |
 | `suggested_experiments` | Fast, Balanced, Wide, and when available Deep starting points. |
 
-Fast, Balanced, and Wide keep the same medium rollout depth while increasing iterations. Deep uses
-the next longer calibrated horizon at approximately the Balanced time target. This creates a small
-experiment that distinguishes search-width gains from horizon gains:
-
-- If Wide improves over Balanced, additional search width still helps.
-- If Deep improves over Balanced at similar time, horizon or cutoff quality is likely the tighter
-  constraint.
-- If neither improves, test or improve a state heuristic before spending much more compute.
-
-These are experiment interpretations, not automatic diagnoses. Playing strength must be measured
-in matches, preferably with alternating sides, fixed seed sets, and equal wall-clock budgets.
+Fast, Balanced, and Wide retain the legacy operating points at a medium rollout depth.
+Deep uses the next longer calibrated horizon at approximately the Balanced time target.
+Their iteration counts describe different resource allocations. Analyze does not select a
+strongest operating point or infer a strategic improvement from additional compute.
+Use `study`, batch or tournaments for competitive evidence under an explicit fairness budget.
 
 ## Configured agent benchmarks
 
@@ -232,8 +229,11 @@ the practical iteration suggestions.
 
 `evaluate_game<G>` accepts an `EvaluationConfig` and returns `GameEvaluationReport`.
 `benchmark_mcts_agent<G, A>` measures an already configured agent on reproducibly sampled states.
-Both support deterministic, perfect-information, two-player, zero-sum games with cloneable states
-and actions. No game-specific phase API is required: player-turn blocks come from `Game::status`.
+`evaluate_game` preserves the deterministic perfect-information MCTS API and now includes its
+independent `structural` report. `benchmark_mcts_agent` also accepts compatible stochastic
+perfect-information agents. `analyze_structure<G: Game>` needs no search capability.
+`so_ismcts::benchmark` requires the imperfect-information/determinized-world contracts and
+passes only an owned observation, observer ID and legal actions to SO-ISMCTS.
 
 ### Rollout horizon interpretation
 
@@ -243,3 +243,84 @@ including completion of the current physical turn and mandatory Chance resolutio
 `approximate_player_turns` remains a nominal same-player-block estimate; it does not
 measure overshoot. Terminal/cutoff counts reflect the actual stopping outcome.
 Structural sampling's `max_depth` remains a separate hard sampling limit.
+
+
+## One analyze command, multiple search families
+
+The Python `analyze_game` coordinator returns `AnalysisReport` with independent `structural`,
+`search_calibration`, `configured_agent_benchmarks` and `properties` sections. The CLI preserves
+legacy flat MCTS JSON fields and rollout-depth experiments on deterministic games. SO-ISMCTS
+has no artificial rollout-depth fields. Family compatibility is shared with `study`, resolved
+from native capabilities, and can be explicit via `--search-family` or `--agent so_ismcts`.
+Perfect-information MCTS is rejected for hidden-information games before sampling.
+
+```bash
+.venv/bin/python -m meeple_bots analyze --game connect6 --game-param board_size=13 \
+  --samples 8 --max-depth 169 --target-time 500ms
+.venv/bin/python -m meeple_bots analyze --game lost_cities --samples 16 \
+  --max-depth 600 --target-time 500ms
+.venv/bin/python -m meeple_bots analyze --game lost_cities --search-family so_ismcts \
+  --samples 16 --max-depth 600 --target-match-time 60s --json
+.venv/bin/python -m meeple_bots analyze --game lost_cities --target-time 500ms \
+  --agent-config results/studies/lost-cities-so/candidates/best_agent.toml
+```
+
+`--agent-config` is repeatable. Each profile retains its exact resource budget and C. Comparisons
+report latency, throughput, nodes and root diagnostics, never wins or a strongest configuration.
+Legacy inline MCTS profiles and latency-ranked configured MCTS output remain supported.
+
+```python
+from meeple_bots import LostCities, SoIsmctsAgent, analyze_game, analyze_structure, benchmark_search_agent
+structure = analyze_structure(LostCities(), samples=16, max_depth=600, seed=42)
+report = analyze_game(LostCities(), samples=16, max_depth=600, target_time=.5, seed=42)
+fixed = benchmark_search_agent(LostCities(), SoIsmctsAgent(iterations=100),
+                               structure['depth_p50'], seed=42, target_time=.5)
+```
+
+Initial branching has sampled mean, P50, P95, min and max, reflecting setup/private hand
+variation. CLI output stays compact when min equals max. `estimated_tree_log10` is a rough
+physical **decision-tree** estimate: it excludes chance branching, is not a full enumeration,
+and is not an information-set tree size. Capped samples are explicitly lower bounds. Lost Cities
+has no finite rules-derived decision horizon; `max_depth` is only a sampling safety cap.
+
+### SO-ISMCTS calibration
+
+Representative early/mid/late decision states are generated with separate environment and policy
+RNG streams. The calibration adapter obtains the acting player's observation outside the agent
+boundary. Search receives that observation, never the authoritative hidden state. The same
+positions and seed schedule are used for configured profiles. Fixed iteration searches reproduce
+counts and root visits; wall-clock measurements and adaptive iteration counts are machine-dependent.
+
+The default calibration uses an eight-iteration probe followed by an adaptive fixed iteration
+measurement (aiming at at most 100 ms/position, capped at 4096 iterations). Even a tiny target
+runs at least one iteration. It reports completed iterations, determinizations, latency,
+information-tree nodes, action edges, root legal/visited actions, coverage, median/P10 visits,
+and mean edge availability and availability/node-visit ratio. Root diagnostics refer to actual
+measured work, **not** projected root visits at a different target time. Availability aggregates
+include edges of varying depth and age; they are descriptive, not quality scores.
+
+An isolated microbenchmark samples and drops 256 determinizations per representative observation,
+using its own seeded RNG. It reports mean cost and throughput without guessing an exact percentage
+of search time. No complete world or private card assignment is stored in reports. Current
+SO-ISMCTS samples one complete world per iteration, so iterations equal determinizations; both
+labels are retained because they describe different concepts.
+
+### Operating points and interpretation
+
+Target estimates multiply measured throughput by the decision budget. A short table includes
+100 ms, 250 ms, 500 ms, 1 s, 2 s and the requested target. These are linear cost estimates, not
+optimal iterations or a ranking of search strength. `--target-match-time` is mutually exclusive
+with `--target-time` and uses the same helper as study:
+
+```
+decision_seconds = target_match_seconds / (sampled_mean_player_decisions * 1.2)
+```
+
+Adequacy reuses the study diagnostic: median iterations / representative legal actions below
+1/10/100 is VERY LOW/LOW/MEDIUM, otherwise HIGH. Measured root coverage and visit counts provide
+additional context. The estimated target category uses projected iteration counts; shallow targets
+print a warning without silently increasing the budget. These labels are neither confidence levels
+nor strength guarantees. No percentage of possible hidden worlds covered is meaningful or reported.
+
+**Analyze** describes game structure and search cost. **Study** compares/tunes C and other genuine
+strategic parameters under equal compute. Batch/tournaments supply competitive evidence.

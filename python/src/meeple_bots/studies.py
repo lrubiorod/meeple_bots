@@ -20,6 +20,7 @@ from time import perf_counter
 from typing import Callable
 
 from . import _native
+from ._search_budget import decision_budget
 from ._concurrency import WorkerSetting, resolve_workers
 from ._agent_config import (
     ConditionalRollout, EpsilonGreedy, GameHeuristic, Greedy, Mast, MctsAgent,
@@ -833,7 +834,7 @@ class StudyRunner:
             work["pilot"] = pilot
             self.save()
         length = max(1, work["mean_plies"])
-        target = request["decision_seconds"] or (self.base.time_budget if request["baseline_supplied"] else None) or request["target_match_time"] / (length * request["safety_margin"])
+        target = request["decision_seconds"] or (self.base.time_budget if request["baseline_supplied"] else None) or decision_budget(request["target_match_time"], length, request["safety_margin"])
         fixed_iterations = self.base.iterations if request["baseline_supplied"] and request["decision_seconds"] is None else None
         if request["baseline_supplied"] and request.get("tune") != "cutoff-depth":
             work["horizon"] = {"depth": self.base.rollout_depth, "kind": "baseline", "samples": []}

@@ -136,6 +136,18 @@ _MAX_AGENTS_PER_TOURNAMENT_GRID = 256
 _MISSING_GRID_VALUE = object()
 
 
+def _analysis_duration(text):
+    """Analyze accepts fractional seconds and explicit ms/s/m/h suffixes."""
+    value = str(text).strip()
+    try:
+        for suffix, scale in (("ms", .001), ("s", 1.), ("m", 60.), ("h", 3600.)):
+            if value.endswith(suffix):
+                return float(value[:-len(suffix)]) * scale
+        return float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("expected seconds or a duration such as 500ms") from error
+
+
 def _game_tag(value: str) -> str:
     return "spotf" if value == "spirits-of-the-forest" else value
 
@@ -350,25 +362,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("--json", action="store_true", help="print summary as JSON")
 
-    analyze = commands.add_parser("analyze", help="measure game complexity and calibrate MCTS")
+    analyze = commands.add_parser("analyze", help="measure game structure and search-family cost")
     analyze.add_argument(
-        "--game", type=_game_tag, choices=[g for g in _PLAYABLE_GAMES if g not in ("splendor", "lost_cities")], required=True
+        "--game", type=_game_tag, choices=_PLAYABLE_GAMES, required=True
     )
     analyze.add_argument("--samples", type=int, default=128)
     analyze.add_argument("--max-depth", type=int, default=256)
     analyze.add_argument("--seed", type=int, default=0)
-    analyze.add_argument(
-        "--target-time",
-        type=float,
-        default=5.0,
-        help="target seconds per decision for suggested experiments (default: 5)",
-    )
+    analyze.add_argument("--target-time", type=_analysis_duration, default=None,
+                         help="target decision budget, e.g. 500ms or 1s (default: 5s)")
+    analyze.add_argument("--target-match-time", type=_analysis_duration,
+                         help="derive decision budget from sampled mean decisions and margin 1.2")
+    analyze.add_argument("--search-family", choices=("mcts", "so_ismcts"),
+                         help="compatible search family; otherwise inferred")
     analyze.add_argument(
         "--agent-config",
         type=Path,
         action="append",
         default=[],
-        help="benchmark an exact MCTS profile; repeat to compare any number of agents",
+        help="benchmark an exact compatible search profile; repeat to compare costs",
     )
     analyze.add_argument(
         "--agent",
@@ -378,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="SPEC",
         help=(
-            "benchmark an inline MCTS agent; repeat as needed, for example "
+            "select mcts/so_ismcts, or benchmark an inline MCTS profile; for example "
             "--agent 'i=5000,d=120,h=0'"
         ),
     )
@@ -483,42 +495,52 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         game = create_game(args.game, args.game_params)
         if args.command == "analyze":
-            profiles = _analyze_profiles(args.agent_config, args.agent, game)
-            report = evaluate_game(
-                game,
-                samples=args.samples,
-                max_depth=args.max_depth,
-                seed=args.seed,
-                target_time=args.target_time,
-            )
-            benchmarks = []
+            from .analysis import analyze_game, report_dict, print_analysis
+            from ._search_profiles import resolve_family
+            from .api import _native_game
+            inline = [x for x in args.agent if x not in ("mcts", "so_ismcts")]
+            families = [x for x in args.agent if x in ("mcts", "so_ismcts")]
+            if len(set(families + ([args.search_family] if args.search_family else []))) > 1:
+                raise ValueError("conflicting search families")
+            family = args.search_family or (families[0] if families else None)
+            profiles = _analyze_profiles(args.agent_config, inline, game)
+            family = resolve_family(_native_game(game), family, profiles[0].agent if profiles else None)
             for profile in profiles:
-                print(
-                    f"Benchmarking {profile.name}: "
-                    f"{_mcts_budget_description(profile.agent)}, "
-                    f"depth {profile.agent.rollout_depth}, "
-                    f"cutoff={_evaluator_name(profile.agent.cutoff_evaluator)}, "
-                    f"rollout={_rollout_policy_description(profile.agent)}, "
-                    "progressive_bias="
-                    f"{_progressive_bias_description(profile.agent.progressive_bias)}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                benchmarks.append(
-                    _ConfiguredMctsBenchmark(
-                        name=profile.name,
-                        benchmark=benchmark_mcts_agent(
-                            game,
-                            profile.agent,
-                            report.depth_p50,
-                            seed=args.seed,
-                        ),
-                    )
-                )
+                print(f"Benchmarking {profile.name}", file=sys.stderr, flush=True)
+            analysis = analyze_game(game, args.samples, args.max_depth, args.seed,
+                                    args.target_time, family,
+                                    [(p.name, p.agent) for p in profiles], args.target_match_time)
+            report = analysis.legacy_report
+            benchmarks = []
+            if report is not None:
+                from dataclasses import fields
+                from .api import SampledDecisionTiming
+                allowed = {f.name for f in fields(SampledDecisionTiming)}
+                for profile, measured in zip(profiles, analysis.configured_agent_benchmarks):
+                    benchmarks.append(_ConfiguredMctsBenchmark(profile.name, MctsAgentBenchmark(
+                        game=game, agent=profile.agent,
+                        sampled_positions=measured['sampled_positions'],
+                        decision_time_mean_ms=measured['decision_time_mean_ms'],
+                        decision_time_p50_ms=measured['decision_time_p50_ms'],
+                        decision_time_p95_ms=measured['decision_time_p95_ms'],
+                        decision_time_max_ms=max(t['milliseconds'] for t in measured['position_timings']),
+                        milliseconds_per_iteration=measured['milliseconds_per_iteration'],
+                        position_timings=tuple(SampledDecisionTiming(**{k:v for k,v in t.items() if k in allowed}) for t in measured['position_timings']))))
             if args.json:
-                print(json.dumps(_evaluation_dict(report, benchmarks), indent=2))
+                data = report_dict(analysis)
+                if report is not None:
+                    legacy = _evaluation_dict(report, benchmarks)
+                    # Preserve configured MCTS benchmark schema; add generic diagnostics separately.
+                    legacy.update({k:v for k,v in data.items() if k != 'configured_agent_benchmarks'})
+                    details = {row['name']: row for row in data['configured_agent_benchmarks']}
+                    for row in legacy['configured_agent_benchmarks']:
+                        row['search_diagnostics'] = details[row['name']]
+                    data = legacy
+                print(json.dumps(data, indent=2))
             else:
-                _print_evaluation(report, benchmarks)
+                if report is not None:
+                    _print_evaluation(report, benchmarks)
+                print_analysis(analysis, include_structure=report is None)
             return 0
         if args.command == "batch":
             return _run_batch(args, game)
@@ -1153,7 +1175,11 @@ def _analyze_profiles(
     inline_specs: Sequence[str],
     game: TicTacToe | ConnectFour | Boop | SpiritsOfTheForest,
 ) -> tuple[_MctsProfile, ...]:
-    profiles = tuple(_load_mcts_profile(path) for path in paths) + tuple(
+    from ._search_profiles import load_search_profile
+    from types import SimpleNamespace
+    import tomllib
+    profiles = tuple(SimpleNamespace(name=tomllib.loads(path.read_text()).get("name", path.stem),
+                                     agent=load_search_profile(path)) for path in paths) + tuple(
         _parse_inline_mcts_profile(spec) for spec in inline_specs
     )
     names = [profile.name for profile in profiles]
@@ -1929,29 +1955,7 @@ def _print_evaluation(
             f"{closest['name']} ({closest['decision_time_mean_ms'] / 1_000:.3f}s mean)."
         )
     print()
-    balanced = next(
-        experiment
-        for experiment in report.suggested_experiments
-        if experiment.label == "Balanced"
-    )
-    comparison_iterations = " / ".join(
-        f"{experiment.iterations:,}"
-        for experiment in report.suggested_experiments
-        if experiment.label in {"Fast", "Balanced", "Wide"}
-    )
-    print("Next experiment:")
-    print(
-        f"  Compare {comparison_iterations} iterations at depth "
-        f"{balanced.rollout_depth}."
-    )
-    print(
-        "  If extra iterations stop improving results, compare the Deep point; "
-        "if that also plateaus, introduce or improve the state heuristic."
-    )
-    print(
-        "  If Deep beats Balanced at similar time, the game is more horizon/heuristic "
-        "constrained; if only Wide improves, it is more search-width constrained."
-    )
+    print("Operating points describe compute cost. Use study for equal-compute competitive tuning.")
     if report.depth_is_lower_bound:
         print(
             "  Some samples did not finish: increase --max-depth before treating "

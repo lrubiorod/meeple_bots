@@ -74,8 +74,10 @@ version = "0.1.0"
 dependencies = [
  "meeple_bots_connect_four",
  "meeple_bots_core",
+ "meeple_bots_lost_cities",
  "meeple_bots_mcts_agent",
  "meeple_bots_simulation",
+ "meeple_bots_so_ismcts",
  "meeple_bots_tic_tac_toe",
 ]
 
@@ -109,6 +111,7 @@ dependencies = [
  "meeple_bots_connect6",
  "meeple_bots_connect_four",
  "meeple_bots_core",
+ "meeple_bots_evaluation",
  "meeple_bots_lost_cities",
  "meeple_bots_mcts_agent",
  "meeple_bots_simulation",

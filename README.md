@@ -13,7 +13,7 @@ workflow.
 | Agents | Interactive human input, uniform random play, configurable MCTS, and [SO-ISMCTS for Lost Cities](agents/so-ismcts/README.md). |
 | Interfaces | Typed Python API, command-line commands, and local browser playrooms. |
 | Experiments | Reproducible batches, round-robin tournaments, trace extraction, and generic, Boop and SPOTF reports. |
-| Analysis | Structural game sampling and local MCTS cost estimation. |
+| Analysis | Structural/chance sampling and MCTS or SO-ISMCTS search-cost calibration. |
 
 Matches use seeded, independent random streams and return complete move histories, utilities, final
 boards, and game-specific state such as Boop piece pools.
@@ -76,7 +76,7 @@ rebuild the native extension with `maturin develop --release`.
 | Search-agent calibration | `meeple-bots study` | [Budgeted diagnosis](python/studies.md#automatic-mcts-diagnosis) |
 | Configured study | `meeple-bots tournament` | [Study workflow](python/studies.md#run-a-study) |
 | Build study artifacts | `extract`, then `report` | [Artifacts](python/studies.md#study-artifacts) |
-| Estimate search cost | `analyze` or `evaluate_game` | [Evaluation](crates/evaluation/README.md) |
+| Estimate search cost | `analyze` or `analyze_game` | [Evaluation](crates/evaluation/README.md) |
 
 Use `meeple-bots COMMAND --help` for the options installed in the active environment.
 

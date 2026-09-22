@@ -1,4 +1,6 @@
-//! Structural game analysis and local MCTS cost estimation.
+//! Game-independent structural sampling and search-family cost calibration.
+
+pub mod so_ismcts;
 
 use std::{
     error::Error,
@@ -93,6 +95,7 @@ pub struct MctsAgentBenchmark {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameEvaluationReport {
+    pub structural: StructuralReport,
     pub samples: u32,
     pub max_depth: u32,
     pub terminal_rate: f64,
@@ -146,7 +149,7 @@ impl fmt::Display for EvaluationError {
                 formatter.write_str("a non-terminal position has no legal actions")
             }
             Self::IllegalAction(error) => write!(formatter, "sampled action was rejected: {error}"),
-            Self::Agent(error) => write!(formatter, "MCTS calibration failed: {error}"),
+            Self::Agent(error) => write!(formatter, "search calibration failed: {error}"),
             Self::MissingSearchStats => {
                 formatter.write_str("configured MCTS agent did not report search statistics")
             }
@@ -182,6 +185,7 @@ where
     }
 
     let sampled = sample_game_tree(game, config)?;
+    let structural = structural_report(&sampled, config);
     let estimated_depth = sampled.p95_depth.max(1);
     let calibration_states =
         sample_calibration_states(game, sampled.p50_depth, config.seed ^ 0xD1B5_4A32_D192_ED03)?;
@@ -226,6 +230,7 @@ where
         + f64::from(estimated_depth.saturating_sub(1)) * sampled.effective_branching_factor.log10();
 
     Ok(GameEvaluationReport {
+        structural,
         samples: config.samples.get(),
         max_depth: config.max_depth.get(),
         terminal_rate: f64::from(sampled.completed_samples) / f64::from(config.samples.get()),
@@ -337,6 +342,90 @@ where
     })
 }
 
+/// Random-policy physical decision structure; never an information-set tree estimate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StructuralReport {
+    pub physical_turns_p50: u32,
+    pub physical_turns_p95: u32,
+    pub samples: u32,
+    pub max_depth: u32,
+    pub terminal_rate: f64,
+    pub initial_legal_actions: u32,
+    pub initial_legal_actions_mean: f64,
+    pub initial_legal_actions_p50: u32,
+    pub initial_legal_actions_p95: u32,
+    pub initial_legal_actions_min: u32,
+    pub initial_legal_actions_max: u32,
+    pub chance_events_mean: f64,
+    pub chance_events_p50: u32,
+    pub chance_events_p95: u32,
+    pub decisions_mean: f64,
+    pub effective_branching_factor: f64,
+    pub player_turn_choice_product_log10: f64,
+    pub depth_p50: u32,
+    pub estimated_depth: u32,
+    pub player_turn_depth_p50: u32,
+    pub player_turn_depth_p95: u32,
+    pub player_changes_p50: u32,
+    pub player_changes_p95: u32,
+    pub actions_per_player_turn_mean: f64,
+    pub actions_per_player_turn_p95: u32,
+    pub actions_per_player_turn_max: u32,
+    pub depth_is_lower_bound: bool,
+    pub estimated_tree_log10: f64,
+}
+
+pub fn analyze_structure<G: Game>(
+    game: &G,
+    config: EvaluationConfig,
+) -> Result<StructuralReport, EvaluationError> {
+    let s = sample_game_tree(game, config)?;
+    Ok(structural_report(&s, config))
+}
+
+fn structural_report(s: &SampledMetrics, config: EvaluationConfig) -> StructuralReport {
+    let initial = s.initial_branches.first().copied().unwrap_or(0);
+    let mean = |values: &[u32]| {
+        values.iter().map(|&x| f64::from(x)).sum::<f64>() / values.len().max(1) as f64
+    };
+    StructuralReport {
+        physical_turns_p50: percentile(&s.physical_turns, 50),
+        physical_turns_p95: percentile(&s.physical_turns, 95),
+        samples: config.samples.get(),
+        max_depth: config.max_depth.get(),
+        terminal_rate: f64::from(s.completed_samples) / f64::from(config.samples.get()),
+        initial_legal_actions: percentile(&s.initial_branches, 50),
+        initial_legal_actions_mean: mean(&s.initial_branches),
+        initial_legal_actions_p50: percentile(&s.initial_branches, 50),
+        initial_legal_actions_p95: percentile(&s.initial_branches, 95),
+        initial_legal_actions_min: initial,
+        initial_legal_actions_max: s.initial_branches.last().copied().unwrap_or(0),
+        chance_events_mean: mean(&s.chance_events),
+        chance_events_p50: percentile(&s.chance_events, 50),
+        chance_events_p95: percentile(&s.chance_events, 95),
+        decisions_mean: s.mean_depth,
+        effective_branching_factor: s.effective_branching_factor,
+        player_turn_choice_product_log10: s.player_turn_choice_product_log10,
+        depth_p50: s.p50_depth,
+        estimated_depth: s.p95_depth,
+        player_turn_depth_p50: s.p50_player_turn_depth,
+        player_turn_depth_p95: s.p95_player_turn_depth,
+        player_changes_p50: s.p50_player_changes,
+        player_changes_p95: s.p95_player_changes,
+        actions_per_player_turn_mean: s.actions_per_player_turn_mean,
+        actions_per_player_turn_p95: s.p95_actions_per_player_turn,
+        actions_per_player_turn_max: s.max_actions_per_player_turn,
+        depth_is_lower_bound: s.completed_samples < config.samples.get(),
+        estimated_tree_log10: s
+            .initial_branches
+            .iter()
+            .map(|&x| f64::from(x.max(1)).log10())
+            .sum::<f64>()
+            / s.initial_branches.len().max(1) as f64
+            + f64::from(s.p95_depth.saturating_sub(1)) * s.effective_branching_factor.log10(),
+    }
+}
+
 struct SampledMetrics {
     completed_samples: u32,
     effective_branching_factor: f64,
@@ -350,6 +439,10 @@ struct SampledMetrics {
     actions_per_player_turn_mean: f64,
     p95_actions_per_player_turn: u32,
     max_actions_per_player_turn: u32,
+    initial_branches: Vec<u32>,
+    chance_events: Vec<u32>,
+    mean_depth: f64,
+    physical_turns: Vec<u32>,
 }
 
 fn sample_game_tree<G>(
@@ -357,9 +450,13 @@ fn sample_game_tree<G>(
     config: EvaluationConfig,
 ) -> Result<SampledMetrics, EvaluationError>
 where
-    G: DeterministicGame,
+    G: Game,
 {
     let mut rng = SplitMix64::new(config.seed);
+    let mut environment = SplitMix64::new(config.seed ^ 0x8EBC_6AF0_9C88_C6E3);
+    let mut physical_turns = Vec::new();
+    let mut initial_branches = Vec::new();
+    let mut chance_events = Vec::new();
     let mut branch_counts = Vec::new();
     let mut depths = Vec::with_capacity(config.samples.get() as usize);
     let mut player_turn_depths = Vec::with_capacity(config.samples.get() as usize);
@@ -370,6 +467,8 @@ where
 
     for _ in 0..config.samples.get() {
         let mut state = game.initial_state();
+        let mut physical_turn_count = 0;
+        let mut events = 0;
         let mut depth = 0;
         let mut current_player = None;
         let mut current_turn_actions = 0;
@@ -413,6 +512,9 @@ where
                         );
                         break;
                     }
+                    if depth == 0 || game.is_turn_boundary(&state) {
+                        physical_turn_count += 1;
+                    }
                     if current_player.is_some_and(|active| active != player) {
                         finish_player_turn(
                             &mut current_turn_actions,
@@ -427,6 +529,9 @@ where
                     let action_index = rng
                         .index(actions.len())
                         .ok_or(EvaluationError::NoLegalActions)?;
+                    if depth == 0 {
+                        initial_branches.push(actions.len() as u32);
+                    }
                     branch_counts.push(actions.len() as u32);
                     current_turn_actions += 1;
                     current_turn_choice_log += (actions.len() as f64).ln();
@@ -434,12 +539,19 @@ where
                         .map_err(EvaluationError::IllegalAction)?;
                     depth += 1;
                 }
-                PositionStatus::Chance => return Err(EvaluationError::UnexpectedChance),
+                PositionStatus::Chance => {
+                    events += resolve_calibration_chance(game, &mut state, &mut environment)?;
+                }
                 _ => return Err(EvaluationError::UnexpectedChance),
             }
         }
+        chance_events.push(events);
+        physical_turns.push(physical_turn_count);
     }
 
+    physical_turns.sort_unstable();
+    initial_branches.sort_unstable();
+    chance_events.sort_unstable();
     depths.sort_unstable();
     player_turn_depths.sort_unstable();
     player_changes.sort_unstable();
@@ -453,9 +565,13 @@ where
 
     Ok(SampledMetrics {
         completed_samples,
-        effective_branching_factor: (log_branch_sum / branch_samples).exp(),
+        initial_branches,
+        physical_turns,
+        chance_events,
+        mean_depth: depths.iter().map(|&n| f64::from(n)).sum::<f64>() / depths.len() as f64,
+        effective_branching_factor: (log_branch_sum / branch_samples.max(1.0)).exp(),
         player_turn_choice_product_log10: player_turn_choice_logs.iter().sum::<f64>()
-            / player_turn_count
+            / player_turn_count.max(1.0)
             / 10_f64.ln(),
         p50_depth: percentile(&depths, 50),
         p95_depth: percentile(&depths, 95),
@@ -467,7 +583,7 @@ where
             .iter()
             .map(|value| f64::from(*value))
             .sum::<f64>()
-            / player_turn_count,
+            / player_turn_count.max(1.0),
         p95_actions_per_player_turn: percentile(&actions_per_player_turn, 95),
         max_actions_per_player_turn: actions_per_player_turn.last().copied().unwrap_or(0),
     })
@@ -564,15 +680,17 @@ fn resolve_calibration_chance<G: Game>(
     game: &G,
     state: &mut G::State,
     rng: &mut SplitMix64,
-) -> Result<(), EvaluationError> {
+) -> Result<u32, EvaluationError> {
+    let mut events = 0;
     while game.status(state) == PositionStatus::Chance {
         let outcome = game
             .sample_chance(state, rng)
             .map_err(EvaluationError::IllegalAction)?;
         game.apply_chance_outcome(state, &outcome)
             .map_err(EvaluationError::IllegalAction)?;
+        events += 1;
     }
-    Ok(())
+    Ok(events)
 }
 
 fn candidate_rollout_depths(p95_depth: u32) -> Vec<u32> {
@@ -738,6 +856,9 @@ fn make_experiment(
 }
 
 fn percentile(sorted: &[u32], percentage: usize) -> u32 {
+    if sorted.is_empty() {
+        return 0;
+    }
     let rank = (percentage * sorted.len()).div_ceil(100).max(1);
     sorted[rank - 1]
 }
@@ -993,3 +1114,6 @@ mod tests {
         assert_eq!(metrics.player_turn_choice_product_log10, 0.0);
     }
 }
+
+#[cfg(test)]
+mod structural_tests;

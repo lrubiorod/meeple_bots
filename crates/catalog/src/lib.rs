@@ -409,7 +409,7 @@ impl fmt::Display for CatalogError {
             Self::AnalysisUnavailable(game) => {
                 write!(
                     formatter,
-                    "tournament analysis is not available for {}",
+                    "analysis is not available for {}",
                     game_name(*game)
                 )
             }
@@ -435,6 +435,41 @@ impl From<MatchError> for CatalogError {
 impl From<EvaluationError> for CatalogError {
     fn from(error: EvaluationError) -> Self {
         Self::Evaluation(error)
+    }
+}
+
+/// Structural sampling is independent of search-family compatibility.
+pub fn analyze_structure(
+    game: GameId,
+    config: EvaluationConfig,
+) -> Result<meeple_bots_evaluation::StructuralReport, CatalogError> {
+    use meeple_bots_evaluation::analyze_structure as sample;
+    Ok(match game {
+        GameId::LostCities => sample(&meeple_bots_lost_cities::LostCities, config),
+        GameId::Splendor => sample(&splendor::game(config.seed), config),
+        GameId::Boop => sample(&Boop, config),
+        GameId::Connect6(size) => sample(&connect6_game(size)?, config),
+        GameId::ConnectFour => sample(&ConnectFour, config),
+        GameId::SpiritsOfTheForest => sample(&spirits_of_the_forest_game(config.seed), config),
+        GameId::TicTacToe => sample(&TicTacToe, config),
+    }?)
+}
+
+/// Concrete registration for the generic observation-only calibration backend.
+pub fn benchmark_so_ismcts(
+    game: GameId,
+    config: meeple_bots_so_ismcts::SoIsmctsConfig,
+    median_depth: u32,
+    seed: u64,
+) -> Result<Vec<meeple_bots_evaluation::so_ismcts::SoIsmctsTiming>, CatalogError> {
+    match game {
+        GameId::LostCities => Ok(meeple_bots_evaluation::so_ismcts::benchmark(
+            &meeple_bots_lost_cities::LostCities,
+            config,
+            median_depth,
+            seed,
+        )?),
+        _ => Err(CatalogError::AnalysisUnavailable(game)),
     }
 }
 

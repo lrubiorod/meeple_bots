@@ -67,6 +67,7 @@ from .api import (
 )
 
 __all__ = [
+    "AnalysisReport", "analyze_game", "analyze_structure", "benchmark_search_agent",
     "Connect6", "Connect6Action", "Connect6State", "create_game",
     "LostCities", "LostCitiesAction", "LostCitiesState", "LostCitiesObservation", "LostCitiesChanceEvent", "LostCitiesSimulationWorld",
     "SplendorSession",
@@ -146,3 +147,5 @@ from .connect6 import Connect6, Connect6Action, Connect6State
 from .game_config import create_game
 
 from .lost_cities import LostCities, LostCitiesAction, LostCitiesState, LostCitiesObservation, LostCitiesChanceEvent, LostCitiesSimulationWorld
+
+from .analysis import AnalysisReport, analyze_game, analyze_structure, benchmark_search_agent

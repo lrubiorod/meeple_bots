@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+meeple_bots_so_ismcts = { path = "../../agents/so-ismcts" }
 meeple_bots_core = { path = "../core" }
 meeple_bots_mcts_agent = { path = "../../agents/mcts" }
 meeple_bots_simulation = { path = "../simulation" }
 
 [dev-dependencies]
+meeple_bots_lost_cities = { path = "../../games/lost-cities" }
 meeple_bots_connect_four = { path = "../../games/connect-four" }
 meeple_bots_tic_tac_toe = { path = "../../games/tic-tac-toe" }
