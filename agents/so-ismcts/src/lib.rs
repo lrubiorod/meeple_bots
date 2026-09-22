@@ -77,16 +77,9 @@ pub struct SearchResult<A, O> {
     pub diagnostics: Diagnostics,
     pub nodes: Vec<Node<A, O>>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SoIsmctsAgent {
     pub config: SoIsmctsConfig,
-}
-impl Default for SoIsmctsAgent {
-    fn default() -> Self {
-        Self {
-            config: SoIsmctsConfig::default(),
-        }
-    }
 }
 fn error(e: impl ToString) -> AgentError {
     AgentError::message(e.to_string())

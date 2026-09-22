@@ -15,12 +15,13 @@ mod stochastic_reuse;
 pub use stochastic::StochasticMctsAgent;
 pub use stochastic_reuse::ReusableStochasticMctsAgent;
 
+#[cfg(test)]
+use std::num::NonZeroU32;
 use std::{
     cmp::Ordering,
     collections::HashMap,
     fmt,
     hash::Hash,
-    num::NonZeroU32,
     time::{Duration, Instant},
 };
 
