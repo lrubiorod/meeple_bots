@@ -312,6 +312,23 @@ labels are retained because they describe different concepts.
 
 ### Operating points and interpretation
 
+The budget table also shows `mean game` and `p95 game`: estimated accumulated search
+time if **both players** use the row's decision budget at every decision. The JSON
+fields are `estimated_mean_game_search_seconds` and `estimated_p95_game_search_seconds`:
+
+```
+estimated_mean_game_search_seconds = seconds * structural.decisions_mean
+estimated_p95_game_search_seconds = seconds * structural.estimated_depth
+```
+
+`estimated_depth` is the sampled p95 of player decisions. These statistics already
+include both seats; do not multiply by two or substitute physical turns. No additional
+games are sampled. Missing or invalid statistics produce null fields / `N/A`.
+Durations display hundredths of a second, adding minutes at 60 seconds (`1m 11.68s`).
+These are estimates, not wall-clock limits: they exclude engine/Python overhead,
+scheduling, serialization, rendering and iteration deadline overshoot. Capped
+structural samples retain the report's existing lower-bound caveat.
+
 Target estimates multiply measured throughput by the decision budget. A short table includes
 100 ms, 250 ms, 500 ms, 1 s, 2 s and the requested target. These are linear cost estimates, not
 optimal iterations or a ranking of search strength. `--target-match-time` is mutually exclusive

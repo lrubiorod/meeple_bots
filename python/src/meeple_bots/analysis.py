@@ -72,6 +72,27 @@ def operating_points(iterations_per_second, target_time, family):
                  target=t == target_time) for t in budgets]
 
 
+def _add_game_search_estimates(budget_table, structural):
+    """Use existing player-decision samples, summed across both seats, not turns."""
+    for row in budget_table:
+        for statistic, field in (
+            ('decisions_mean', 'estimated_mean_game_search_seconds'),
+            ('estimated_depth', 'estimated_p95_game_search_seconds'),
+        ):
+            decisions = structural.get(statistic)
+            valid = (isinstance(decisions, (int, float)) and not isinstance(decisions, bool)
+                     and isfinite(decisions) and decisions >= 0)
+            row[field] = row['seconds'] * decisions if valid else None
+
+
+def _format_game_search_seconds(seconds):
+    if seconds is None:
+        return 'N/A'
+    # Round before splitting so minute boundaries never render as "60.00s".
+    minutes, remainder = divmod(round(seconds * 100), 6000)
+    return (f'{minutes}m ' if minutes else '') + f'{remainder / 100:.2f}s'
+
+
 def summarize_search(timings, target_time, family):
     elapsed = sum(t['milliseconds'] for t in timings) / 1000
     iterations = sum(t['iterations'] for t in timings)
@@ -181,6 +202,8 @@ def analyze_game(game, samples=128, max_depth=256, seed=0, target_time=None,
     calibration['expected_decisions'] = structural['decisions_mean']
     benchmarks = tuple({'name': name, **benchmark_search_agent(game, agent, depth, seed, target)}
                        for name, agent in profiles)
+    for result in (calibration, *benchmarks):
+        _add_game_search_estimates(result['budget_table'], structural)
     return AnalysisReport(structural, calibration, benchmarks,
         dict(game=_native_game(game), players=caps['players'], stochastic=caps.get('stochastic', False),
              imperfect_information=caps.get('imperfect_information', False), search_family=family,
@@ -231,9 +254,12 @@ def print_analysis(report, include_structure=True):
         print(f"  Target decision time: {row['target_time_seconds']*1000:.2f} ms; estimated iterations: {row['estimated_iterations_at_target']:,}")
         if row.get('target_match_time'):
             print(f"  Derived from {row['target_match_time']}s / ({row['expected_decisions']:.1f} decisions × {row['safety_margin']})")
-        print('  Budget table (linear estimates): seconds | iterations' + (' | determinizations' if row['family'] == 'so_ismcts' else ''))
+        print('  Budget table (linear estimates): decision | iterations' + (' | determinizations' if row['family'] == 'so_ismcts' else '') + ' | mean game | p95 game')
         for b in row['budget_table']:
-            print(f"    {b['seconds']:g}s | {b['iterations']:,}" + (f" | {b['determinizations']:,}" if 'determinizations' in b else '') + (' <- target' if b['target'] else ''))
+            game_times = ' | '.join(_format_game_search_seconds(b.get(field)) for field in
+                                  ('estimated_mean_game_search_seconds', 'estimated_p95_game_search_seconds'))
+            print(f"    {b['seconds']:g}s | {b['iterations']:,}" + (f" | {b['determinizations']:,}" if 'determinizations' in b else '') + f' | {game_times}' + (' <- target' if b['target'] else ''))
+        print('  Game columns estimate accumulated search time with both players using this decision budget; not wall-clock limits.')
         for warning in row['warnings']:
             print('  WARNING: ' + warning)
     print('\nRoot diagnostics describe measured probes; target operating points are estimates.')

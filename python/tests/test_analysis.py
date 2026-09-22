@@ -9,13 +9,66 @@ from unittest.mock import patch
 
 from meeple_bots import (LostCities, Connect6, TicTacToe, Splendor, MctsAgent, SoIsmctsAgent,
                          analyze_game, analyze_structure, benchmark_search_agent)
-from meeple_bots.analysis import operating_points, summarize_search, print_analysis
+from meeple_bots.analysis import (operating_points, summarize_search, print_analysis,
+                                 _add_game_search_estimates, _format_game_search_seconds)
 from meeple_bots.cli import main
 from meeple_bots._search_budget import decision_budget
 from meeple_bots import _native
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_game_search_estimates_use_decisions_and_preserve_operating_points(self):
+        for family in ('mcts', 'so_ismcts', 'future_family'):
+            with self.subTest(family=family):
+                rows = operating_points(2000, .1, family)
+                original = [dict(row) for row in rows]
+                _add_game_search_estimates(rows, dict(decisions_mean=100, estimated_depth=150,
+                                                      physical_turns_p50=50, physical_turns_p95=75))
+                target = next(row for row in rows if row['target'])
+                self.assertEqual(target['estimated_mean_game_search_seconds'], 10)
+                self.assertEqual(target['estimated_p95_game_search_seconds'], 15)
+                for before, after in zip(original, rows):
+                    self.assertEqual(before, {key: after[key] for key in before})
+
+    def test_unavailable_game_search_statistics(self):
+        for invalid in (None, -1, float('nan'), float('inf'), '100', True):
+            rows = operating_points(2000, .1, 'mcts')
+            _add_game_search_estimates(rows, {'decisions_mean': invalid})
+            self.assertIsNone(rows[0]['estimated_mean_game_search_seconds'])
+            self.assertIsNone(rows[0]['estimated_p95_game_search_seconds'])
+        rows = operating_points(2000, .1, 'mcts')
+        _add_game_search_estimates(rows, {'decisions_mean': 100})
+        self.assertEqual(rows[0]['estimated_mean_game_search_seconds'], 10)
+        self.assertIsNone(rows[0]['estimated_p95_game_search_seconds'])
+
+    def test_game_search_duration_format(self):
+        for seconds, expected in ((None, 'N/A'), (0, '0.00s'), (.125, '0.12s'),
+                                  (2.87, '2.87s'), (28.67, '28.67s'),
+                                  (71.68, '1m 11.68s'), (3601.25, '60m 1.25s'),
+                                  (59.999, '1m 0.00s')):
+            with self.subTest(seconds=seconds):
+                self.assertEqual(_format_game_search_seconds(seconds), expected)
+
+    def test_game_columns_reuse_structural_samples_for_all_profiles(self):
+        with patch('meeple_bots.analysis.analyze_structure', wraps=analyze_structure) as sample:
+            report = analyze_game(LostCities(), samples=2, max_depth=500, target_time=.1,
+                                  profiles=[('fixed', SoIsmctsAgent(iterations=2))])
+            sample.assert_called_once()
+        for calibration in (report.search_calibration, *report.configured_agent_benchmarks):
+            target = next(row for row in calibration['budget_table'] if row['target'])
+            self.assertAlmostEqual(target['estimated_mean_game_search_seconds'],
+                                   .1 * report.structural['decisions_mean'])
+            self.assertAlmostEqual(target['estimated_p95_game_search_seconds'],
+                                   .1 * report.structural['estimated_depth'])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            print_analysis(report)
+        self.assertIn('determinizations | mean game | p95 game', output.getvalue())
+        targets = [line.strip() for line in output.getvalue().splitlines() if '<- target' in line]
+        self.assertEqual(len(targets), 2)
+        self.assertTrue(all(line.startswith('0.1s |') for line in targets))
+        self.assertIn('not wall-clock limits', output.getvalue())
+
     def test_structural_chance_and_random_initial_distribution(self):
         a = analyze_structure(LostCities(), samples=32, max_depth=2000, seed=42)
         self.assertEqual(a, analyze_structure(LostCities(), samples=32, max_depth=2000, seed=42))
@@ -146,6 +199,16 @@ class AnalysisTests(unittest.TestCase):
         self.assertTrue(r.legacy_report.rollout_costs)
         self.assertEqual(r.structural['initial_legal_actions_min'],9)
         self.assertEqual(r.configured_agent_benchmarks[0]['agent']['iterations'],2)
+        for calibration in (r.search_calibration, *r.configured_agent_benchmarks):
+            target = next(row for row in calibration['budget_table'] if row['target'])
+            self.assertAlmostEqual(target['estimated_mean_game_search_seconds'],
+                                   .001 * r.structural['decisions_mean'])
+            self.assertAlmostEqual(target['estimated_p95_game_search_seconds'],
+                                   .001 * r.structural['estimated_depth'])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            print_analysis(r)
+        self.assertIn('decision | iterations | mean game | p95 game', output.getvalue())
 
 
 if __name__ == '__main__':
