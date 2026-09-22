@@ -142,6 +142,20 @@ Time-budget searches retain seeded randomness but are not exactly reproducible: 
 speed change how many iterations finish. Match traces record the actual decision time, completed
 iterations, and created nodes.
 
+### Shared bandit policies
+
+`BanditPolicy` and `SelectionStats` in `crates/core/src/selection.rs` implement UCT
+and UCB1-Tuned once for deterministic MCTS, public-chance MCTS and SO-ISMCTS.
+The engines supply an already actor-oriented mean, arm variance on the `[-1, 1]`
+utility scale, action visits and opportunities. The policy knows neither players,
+depth, games nor search engines; it allocates no memory when scoring an arm.
+
+MCTS supplies parent visits as opportunities. SO-ISMCTS supplies action availability:
+the same UCT mathematics therefore gives IS-UCT without a separate implementation.
+Engines retain legal-action filtering, unvisited expansion, tie-breaking and backup.
+Progressive Bias remains an additive MCTS concern. Transposition MCTS preserves its
+existing shared-child mean for UCT and edge-local moments for UCB1-Tuned.
+
 ### UCB1-Tuned
 
 `selection_policy="ucb1_tuned"` enables the variance-aware rule from

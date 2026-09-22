@@ -237,9 +237,15 @@ impl<C, P, B> StochasticMctsAgent<C, P, B> {
                             )
                         } else {
                             let mean = e.total / f64::from(e.visits);
-                            (if active == owner { mean } else { -mean })
-                                + self.config.exploration
-                                    * (f64::from(n.visits.max(1)).ln() / f64::from(e.visits)).sqrt()
+                            meeple_bots_core::BanditPolicy::Uct.score(
+                                meeple_bots_core::SelectionStats {
+                                    mean: if active == owner { mean } else { -mean },
+                                    variance: 0.0,
+                                    action_visits: u64::from(e.visits),
+                                    opportunities: f64::from(n.visits.max(1)),
+                                },
+                                self.config.exploration,
+                            )
                         };
                         base + edge_bias(e, bias_weight, active == owner)
                     };

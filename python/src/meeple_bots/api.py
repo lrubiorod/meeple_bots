@@ -1231,7 +1231,7 @@ def _native_agent(agent: Agent, game: Game):
     if isinstance(agent, RandomAgent):
         return _native.AgentConfig.random()
     if isinstance(agent, SoIsmctsAgent):
-        return _native.AgentConfig.so_ismcts(agent.iterations, agent.exploration, agent.time_budget)
+        return _native.AgentConfig.so_ismcts(agent.iterations, agent.exploration, agent.time_budget, agent.selection_policy)
     if isinstance(agent, MctsAgent):
         (
             policy,

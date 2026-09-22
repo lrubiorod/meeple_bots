@@ -61,15 +61,17 @@ struct PyAgentConfig {
 #[pymethods]
 impl PyAgentConfig {
     #[staticmethod]
-    #[pyo3(signature = (iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None))]
+    #[pyo3(signature = (iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None, selection_policy="uct"))]
     fn so_ismcts(
         iterations: Option<u32>,
         exploration: f64,
         time_budget: Option<f64>,
+        selection_policy: &str,
     ) -> PyResult<Self> {
         let config = meeple_bots_so_ismcts::SoIsmctsConfig {
             budget: parse_search_budget(iterations, time_budget)?,
             exploration,
+            selection_policy: parse_bandit_policy(selection_policy)?,
         };
         config
             .validate()
@@ -2657,4 +2659,14 @@ fn parse_progressive_widening(
     };
     pw.validate().map_err(PyValueError::new_err)?;
     Ok(enabled.then_some(pw))
+}
+
+fn parse_bandit_policy(value: &str) -> PyResult<meeple_bots_core::BanditPolicy> {
+    match value {
+        "uct" => Ok(meeple_bots_core::BanditPolicy::Uct),
+        "ucb1_tuned" => Ok(meeple_bots_core::BanditPolicy::Ucb1Tuned),
+        _ => Err(PyValueError::new_err(
+            "SO-ISMCTS selection_policy must be uct or ucb1_tuned",
+        )),
+    }
 }

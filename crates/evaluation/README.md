@@ -134,7 +134,8 @@ Use `study`, batch or tournaments for competitive evidence under an explicit fai
 Repeat `--agent-config PATH` to measure scalar profiles from the compatible MCTS or
 SO-ISMCTS family. Each runs with its exact iteration/time budget and exploration
 constant on the same seeded positions. MCTS also preserves rollout depth and evaluators;
-SO-ISMCTS retains uniform rollout and MostVisited root selection. Profile names must be unique. Measurements run sequentially so one compared
+SO-ISMCTS accepts `selection_policy = "uct"` or `"ucb1_tuned"`, retaining uniform
+rollout and MostVisited root selection. UCB1-Tuned ignores exploration C. Profile names must be unique. Measurements run sequentially so one compared
 agent does not compete with another benchmark for CPU time.
 
 Each path uses the [reusable scalar profile format](../../agents/README.md#reusable-profiles), not

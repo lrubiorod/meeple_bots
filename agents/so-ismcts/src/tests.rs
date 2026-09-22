@@ -105,6 +105,7 @@ impl ImperfectInformationGame for Toy {
 fn agent(n: u32) -> SoIsmctsAgent {
     SoIsmctsAgent {
         config: SoIsmctsConfig {
+            selection_policy: meeple_bots_core::BanditPolicy::Uct,
             budget: meeple_bots_core::SearchBudget::Iterations(NonZeroU32::new(n).unwrap()),
             exploration: 1.,
         },
@@ -140,7 +141,7 @@ fn fresh_world_each_iteration_shares_history_tree() {
     assert_eq!(r.action, A::Wait);
     assert_eq!(r.diagnostics.cutoff_simulations, 0);
     // O=u8 and A contain no World or hidden flag; tree diagnostic output cannot reveal red.
-    assert!(!format!("{:?}", r.nodes).contains("red"));
+    assert!(!format!("{:?}", r.nodes).contains("red:"));
 }
 #[test]
 fn availability_counts_all_legal_actions_including_unexpanded() {
@@ -156,7 +157,7 @@ fn availability_counts_all_legal_actions_including_unexpanded() {
             vec![A::Common]
         };
         let indices = available(&mut n, &legal);
-        let chosen = choose(&n, &indices, 1., true, &mut rng);
+        let chosen = choose(&n, &indices, 1., BanditPolicy::Uct, true, &mut rng);
         assert!(legal.contains(&n.edges[chosen].action));
         n.edges[chosen].visits += 1;
     }
@@ -174,6 +175,7 @@ fn is_uct_uses_availability_and_actual_actor() {
                 visits: 10,
                 availability: 100,
                 total_utility: 0.,
+                total_squared_utility: 0.,
                 outcomes: vec![],
             },
             Edge {
@@ -181,11 +183,22 @@ fn is_uct_uses_availability_and_actual_actor() {
                 visits: 2,
                 availability: 2,
                 total_utility: 0.,
+                total_squared_utility: 0.,
                 outcomes: vec![],
             },
         ],
     };
-    assert_eq!(choose(&n, &[0, 1], 1., true, &mut SplitMix64::new(1)), 0); // parent ln(1000) would choose Rare
+    assert_eq!(
+        choose(
+            &n,
+            &[0, 1],
+            1.,
+            BanditPolicy::Uct,
+            true,
+            &mut SplitMix64::new(1)
+        ),
+        0
+    ); // parent ln(1000) would choose Rare
     assert!(is_uct(8., 10, 10, 0., true) > is_uct(2., 10, 10, 0., true));
     assert!(is_uct(8., 10, 10, 0., false) < is_uct(2., 10, 10, 0., false));
 }
@@ -430,27 +443,31 @@ impl ImperfectInformationGame for MicroGame {
 }
 #[test]
 fn selection_and_backup_follow_actor_across_microturns() {
-    for next_player in [PlayerId::FIRST, PlayerId::SECOND] {
-        let game = MicroGame { next_player };
-        let r = agent(40)
-            .search(
-                &game,
-                &0,
-                PlayerId::FIRST,
-                &[A::Wait],
-                &mut SplitMix64::new(1),
-            )
-            .unwrap();
-        let child = r.nodes[0].edges[0].outcomes[0].1;
-        let edges = &r.nodes[child].edges;
-        let positive = edges.iter().find(|e| e.action == A::Rare).unwrap();
-        let negative = edges.iter().find(|e| e.action == A::Common).unwrap();
-        assert_eq!(positive.mean_utility(), 1.);
-        assert_eq!(negative.mean_utility(), -1.);
-        if next_player == PlayerId::FIRST {
-            assert!(positive.visits > negative.visits);
-        } else {
-            assert!(negative.visits > positive.visits);
+    for policy in [BanditPolicy::Uct, BanditPolicy::Ucb1Tuned] {
+        for next_player in [PlayerId::FIRST, PlayerId::SECOND] {
+            let game = MicroGame { next_player };
+            let mut search = agent(40);
+            search.config.selection_policy = policy;
+            let r = search
+                .search(
+                    &game,
+                    &0,
+                    PlayerId::FIRST,
+                    &[A::Wait],
+                    &mut SplitMix64::new(1),
+                )
+                .unwrap();
+            let child = r.nodes[0].edges[0].outcomes[0].1;
+            let edges = &r.nodes[child].edges;
+            let positive = edges.iter().find(|e| e.action == A::Rare).unwrap();
+            let negative = edges.iter().find(|e| e.action == A::Common).unwrap();
+            assert_eq!(positive.mean_utility(), 1.);
+            assert_eq!(negative.mean_utility(), -1.);
+            if next_player == PlayerId::FIRST {
+                assert!(positive.visits > negative.visits);
+            } else {
+                assert!(negative.visits > positive.visits);
+            }
         }
     }
 }
@@ -476,4 +493,103 @@ fn time_budget_completes_whole_iterations_and_at_least_one_world() {
     assert_eq!(result.diagnostics.determinizations_sampled, 1);
     search.config.budget = SearchBudget::Time(Duration::ZERO);
     assert!(search.config.validate().is_err());
+}
+
+#[test]
+fn both_policies_filter_legality_and_count_opportunities_once() {
+    for policy in [BanditPolicy::Uct, BanditPolicy::Ucb1Tuned] {
+        let mut n: Node<A, u8> = Node {
+            visits: 0,
+            edges: vec![],
+        };
+        let mut rng = SplitMix64::new(7);
+        for i in 0..10 {
+            let legal = if i < 4 {
+                vec![A::Common, A::Rare, A::Rare]
+            } else {
+                vec![A::Common]
+            };
+            let indices = available(&mut n, &legal);
+            let selected = choose(&n, &indices, 1., policy, false, &mut rng);
+            assert!(legal.contains(&n.edges[selected].action));
+            n.edges[selected].record(1., policy);
+            n.visits += 1;
+        }
+        assert_eq!(n.visits, 10);
+        let rare = &n.edges[1];
+        assert_eq!(rare.availability, 4);
+        assert_eq!(rare.selection_stats(false, policy).opportunities, 4.);
+        assert!(rare.visits <= rare.availability);
+        assert_eq!(n.edges[0].availability, 10);
+    }
+}
+
+#[test]
+fn tuned_moments_are_edge_local_and_orientation_changes_only_mean() {
+    let mut edge: Edge<A, u8> = Edge {
+        action: A::Wait,
+        visits: 0,
+        availability: 10,
+        total_utility: 0.,
+        total_squared_utility: 0.,
+        outcomes: vec![],
+    };
+    let mut uct = edge.clone();
+    for utility in [1., -1., 1., 0.] {
+        edge.record(utility, BanditPolicy::Ucb1Tuned);
+        uct.record(utility, BanditPolicy::Uct);
+    }
+    assert_eq!(edge.visits, 4);
+    assert_eq!(edge.total_utility, 1.);
+    assert_eq!(edge.total_squared_utility, 3.);
+    assert_eq!(uct.total_squared_utility, 0.);
+    let root = edge.selection_stats(true, BanditPolicy::Ucb1Tuned);
+    let opponent = edge.selection_stats(false, BanditPolicy::Ucb1Tuned);
+    assert_eq!(root.mean, 0.25);
+    assert_eq!(opponent.mean, -0.25);
+    assert_eq!(root.variance, 0.6875);
+    assert_eq!(opponent.variance, root.variance);
+    let ratio = 10.0_f64.ln() / 4.;
+    assert_eq!(
+        BanditPolicy::Ucb1Tuned.score(root, 1.),
+        0.25 + 2. * (ratio * 0.25).sqrt()
+    );
+}
+
+#[test]
+fn tuned_selection_uses_availability_not_node_visits() {
+    let n: Node<A, u8> = Node {
+        visits: 1000,
+        edges: vec![
+            Edge {
+                action: A::Common,
+                visits: 10,
+                availability: 100,
+                total_utility: 0.,
+                total_squared_utility: 0.,
+                outcomes: vec![],
+            },
+            Edge {
+                action: A::Rare,
+                visits: 2,
+                availability: 2,
+                total_utility: 0.,
+                total_squared_utility: 0.,
+                outcomes: vec![],
+            },
+        ],
+    };
+    for policy in [BanditPolicy::Uct, BanditPolicy::Ucb1Tuned] {
+        assert_eq!(
+            choose(&n, &[0, 1], 1., policy, true, &mut SplitMix64::new(1)),
+            0
+        );
+        // If both opportunities were 1000, the less-visited Rare would win.
+        let score = |i: usize| {
+            let mut stats = n.edges[i].selection_stats(true, policy);
+            stats.opportunities = n.visits as f64;
+            policy.score(stats, 1.)
+        };
+        assert!(score(1) > score(0));
+    }
 }

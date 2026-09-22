@@ -41,6 +41,8 @@ def assert_frozen(base, candidate, dimension):
 def validate_tuner(dimension, base, selectors):
     from ._agent_config import SoIsmctsAgent
     if isinstance(base, SoIsmctsAgent):
+        if base.selection_policy == 'ucb1_tuned':
+            raise ValueError('UCB1-Tuned does not use exploration')
         if dimension != 'exploration':
             raise ValueError('SO-ISMCTS supports only exploration tuning')
         return

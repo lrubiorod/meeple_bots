@@ -147,9 +147,7 @@ pub fn game_search_capabilities(game: GameId) -> GameSearchCapabilities {
             }
         },
         turn_phase_conditions: supports_turn_phase_conditions(game),
-        selection_policies: if matches!(game, GameId::LostCities) {
-            vec![]
-        } else if matches!(game, GameId::Splendor) {
+        selection_policies: if matches!(game, GameId::LostCities | GameId::Splendor) {
             vec!["uct", "ucb1_tuned"]
         } else {
             vec!["uct", "ucb1_tuned", "uct_rave"]

@@ -15,6 +15,7 @@ mod stochastic_reuse;
 pub use stochastic::StochasticMctsAgent;
 pub use stochastic_reuse::ReusableStochasticMctsAgent;
 
+use meeple_bots_core::{BanditPolicy, SelectionStats};
 #[cfg(test)]
 use std::num::NonZeroU32;
 use std::{
@@ -2588,13 +2589,21 @@ fn graph_selection_score<S, A>(
     }
     let child_mean = nodes[edge.child].mean_utility();
     let exploitation = if maximizing { child_mean } else { -child_mean };
-    let exploration_term = exploration * (parent_visits.ln() / f64::from(edge.visits)).sqrt();
+    let base = BanditPolicy::Uct.score(
+        SelectionStats {
+            mean: exploitation,
+            variance: 0.0,
+            action_visits: u64::from(edge.visits),
+            opportunities: parent_visits,
+        },
+        exploration,
+    );
     let bias = if bias_weight == 0.0 {
         0.0
     } else {
         graph_progressive_bias_term(edge, maximizing, bias_weight)
     };
-    exploitation + exploration_term + bias
+    base + bias
 }
 
 fn graph_progressive_bias_term<A>(edge: &GraphEdge<A>, maximizing: bool, weight: f64) -> f64 {
@@ -2642,11 +2651,15 @@ fn tuned_score(visits: u32, total: f64, squared: f64, parent_visits: f64, maximi
     }
     let count = f64::from(visits);
     let mean = total / count;
-    let variance = ((squared / count - mean * mean) / 4.0).clamp(0.0, 0.25);
-    let log_ratio = parent_visits.max(1.0).ln() / count;
-    let bound = (variance + (2.0 * log_ratio).sqrt()).min(0.25);
-    let signed_mean = if maximizing { mean } else { -mean };
-    signed_mean + 2.0 * (log_ratio * bound).sqrt()
+    BanditPolicy::Ucb1Tuned.score(
+        SelectionStats {
+            mean: if maximizing { mean } else { -mean },
+            variance: squared / count - mean * mean,
+            action_visits: u64::from(visits),
+            opportunities: parent_visits,
+        },
+        0.0,
+    )
 }
 
 fn progressive_bias_term<A>(node: &Node<A>, maximizing: bool, weight: f64) -> f64 {
@@ -2668,7 +2681,15 @@ fn uct_score<A>(node: &Node<A>, parent_visits: f64, maximizing: bool, exploratio
     } else {
         -node.mean_utility()
     };
-    exploitation + exploration * (parent_visits.ln() / f64::from(node.visits)).sqrt()
+    BanditPolicy::Uct.score(
+        SelectionStats {
+            mean: exploitation,
+            variance: 0.0,
+            action_visits: u64::from(node.visits),
+            opportunities: parent_visits,
+        },
+        exploration,
+    )
 }
 
 #[cfg(test)]

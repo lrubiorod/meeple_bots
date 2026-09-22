@@ -28,7 +28,7 @@ class LostCitiesTests(unittest.TestCase):
         self.assertEqual(state, game.initial_state(42))
         caps = game_search_capabilities('lost_cities')
         self.assertEqual((caps['players'], caps['stochastic'], caps['imperfect_information']), (2, True, True))
-        self.assertEqual(caps['selection_policies'], [])
+        self.assertEqual(caps['selection_policies'], ['uct', 'ucb1_tuned'])
         with self.assertRaises(ValueError):
             create_game('lost_cities', {'rounds': 3})
 

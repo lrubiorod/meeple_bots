@@ -6,6 +6,8 @@ mod error;
 mod game;
 mod player;
 mod random;
+mod selection;
+pub use selection::{BanditPolicy, SelectionStats};
 
 pub use agent::{Agent, AgentDecisionStats, DecisionContext, RootActionStats, TreeReuseStats};
 pub use capabilities::{

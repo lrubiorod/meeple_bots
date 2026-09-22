@@ -805,6 +805,12 @@ from competitive uncertainty and from the absence of independent confirmation.
 
 ### Lost Cities and the SO-ISMCTS study profile
 
+This profile currently tunes UCT exploration only. SO-ISMCTS supports experimental
+`selection_policy="ucb1_tuned"` in matches and configured `analyze` benchmarks, but
+`study` rejects that baseline because UCB1-Tuned ignores C. Selection-policy tuning
+is deferred; exported UCT profiles explicitly retain `selection_policy="uct"`.
+
+
 `study` selects a registered compatible search family using catalog metadata. Lost
 Cities currently defaults to `so_ismcts`; `--agent so_ismcts` makes that choice
 explicit. Ordinary MCTS is rejected for this imperfect-information game. Other

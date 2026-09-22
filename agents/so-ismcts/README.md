@@ -42,7 +42,7 @@ produces the same observer observation and shares the child.
 Sampling remains uniform using Lost Cities' existing observation snapshot; this
 baseline does not add inference or a cross-decision private-history model.
 
-## Availability and IS-UCT
+## Availability and shared selection policies
 
 At each selection/expansion visit, obtain the legal actions in the current world.
 Record every legal action, including unexpanded ones, and increment its availability
@@ -60,6 +60,27 @@ IS-UCT = actor_sign * Q + C * sqrt(ln(availability) / visits)
 actor_sign = +1 for the root player, -1 for their opponent
 ```
 
+The engine orients Q before calling the shared `BanditPolicy` in core. It supplies
+`opportunities = edge.availability`; MCTS supplies parent visits instead. The
+legacy Rust `is_uct` helper delegates to this same scoring policy.
+
+`selection_policy="ucb1_tuned"` enables an experimental availability-aware variant.
+For each selected edge, backup accumulates root utility and its square from the
+same samples counted by visits. Population variance is `sum_squared / visits - Q²`;
+opponent orientation flips only the mean. With `r = ln(availability) / visits`,
+the shared score on the `[-1, 1]` scale is:
+
+```text
+oriented_Q + 2 * sqrt(r * min(1/4, variance/4 + sqrt(2*r)))
+```
+
+Numerical variance is clamped to its normalized `[0, 1/4]` range. UCB1-Tuned ignores
+exploration C; finite nonnegative C remains accepted for configuration compatibility.
+UCT is still the default and skips second-moment accumulation. Neither policy
+changes MostVisited root selection. UCB1-Tuned's stationary-bandit assumptions do
+not perfectly describe evolving tree-search statistics; no strength improvement
+is implied.
+
 Visits count actual selections. Availability counts opportunities to select that
 action, not all parent visits: an opponent card action available in 4 of 10 worlds
 gets availability 4. Actual player IDs determine perspective, including consecutive
@@ -71,7 +92,8 @@ checked against the root observation, acting player and legal root action set.
 ## Configuration, diagnostics and limits
 
 Configuration consists of positive `iterations` **or** positive `time_budget`
-(seconds per decision), and finite nonnegative `exploration`. Both families reuse
+(seconds per decision), finite nonnegative `exploration`, and `selection_policy`
+(`uct` by default or `ucb1_tuned`). Both families reuse
 the core `SearchBudget` type. Search uses the caller's seeded RNG. Timed search
 checks the deadline between iterations and completes at least one; one simulation
 may overrun the deadline. Fixed-iteration mode retains deterministic seeded behavior.
@@ -89,7 +111,9 @@ diagnostics are available through `search()`.
 Single Observer uses one root perspective, including opponent turns. It does not
 solve the opponent-model limitations addressed by MO-ISMCTS or RIS-MCTS. There is
 no PIMC, redeterminization, heuristic rollout, RAVE, widening, bias, MAST, reuse,
-transpositions, parallel search or stochastic-node search. `study` supports operating-budget calibration and exploration tuning; see
+transpositions, parallel search or stochastic-node search. `study` currently supports
+UCT operating-budget calibration and exploration tuning only. It rejects tuned
+baselines rather than racing an ignored C; selection tuning is deferred. See
 [Lost Cities study](../../python/studies.md#lost-cities-and-the-so-ismcts-study-profile). The Lost Cities debug GUI supports
 SO-ISMCTS in either seat with separate iteration/exploration settings and an
 observation-only search boundary, while displaying both hands for inspection.
@@ -101,6 +125,24 @@ observation-only search boundary, while displaying both hands for inspection.
   --first so_ismcts --second random --so-ismcts-iterations 1000 \
   --so-ismcts-exploration 1.0 --seed 42
 ```
+
+Add `--so-ismcts-selection-policy ucb1_tuned` for tuned selection (or `uct` for
+IS-UCT). Python and scalar TOML profiles expose the same field:
+
+```python
+agent = SoIsmctsAgent(time_budget=0.1, selection_policy="ucb1_tuned")
+```
+
+```toml
+agent = "so_ismcts"
+time_budget = 0.1
+selection_policy = "ucb1_tuned"
+rollout = "uniform"
+root_selection = "most_visited"
+```
+
+Configured `analyze --agent-config PATH` benchmarks support both selectors.
+The debugging GUI currently retains its UCT iteration/exploration controls.
 
 Use `--second so_ismcts` for self-play. Both seats use the supplied search settings,
 but each searches from its own observation with its own search RNG.

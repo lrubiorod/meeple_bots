@@ -93,7 +93,7 @@ def policy_values(policy) -> dict:
 
 def profile_values(agent: MctsAgent | SoIsmctsAgent) -> dict:
     if isinstance(agent, SoIsmctsAgent):
-        return {"agent": "so_ismcts", "exploration": agent.exploration,
+        return {"agent": "so_ismcts", "exploration": agent.exploration, "selection_policy": agent.selection_policy,
                 "rollout": "uniform", "root_selection": "most_visited",
                 **({"iterations": agent.iterations} if agent.iterations is not None else {"time_budget": agent.time_budget})}
     values = {"iterations": agent.iterations} if agent.iterations is not None else {"time_budget": agent.time_budget}
@@ -604,6 +604,8 @@ class StudyRunner:
             if tune is not None and (tune != "exploration" or baseline is None or decision_seconds is not None or selection_search):
                 raise ValueError("SO-ISMCTS --tune exploration requires --agent-config and freezes its search budget")
             baseline = baseline or SoIsmctsAgent()
+            if baseline.selection_policy != "uct":
+                raise ValueError("SO-ISMCTS study currently tunes exploration only; UCB1-Tuned ignores C. Use analyze or matches for this policy.")
             specs = self.profile.specs()
             self.phase_names = (*specs, "confirmation")
             selectors, pw_supported = [], False

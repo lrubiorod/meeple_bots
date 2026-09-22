@@ -25,14 +25,17 @@ class RandomAgent:
 
 @dataclass(frozen=True, slots=True)
 class SoIsmctsAgent:
-    """Single-observer ISMCTS: complete worlds, IS-UCT, uniform rollout, MostVisited."""
+    """Single-observer ISMCTS: complete worlds, availability-aware selection, uniform rollout, MostVisited."""
 
     iterations: int | None = None
     exploration: float = sqrt(2.0)
 
     time_budget: float | None = None
+    selection_policy: str = "uct"
 
     def __post_init__(self) -> None:
+        if self.selection_policy not in ("uct", "ucb1_tuned"):
+            raise ValueError("SO-ISMCTS selection_policy must be uct or ucb1_tuned")
         if self.iterations is None and self.time_budget is None:
             object.__setattr__(self, "iterations", 1000)
         if self.iterations is not None and self.time_budget is not None:
@@ -60,7 +63,7 @@ class SoIsmctsAgent:
             raise TypeError("search requires a LostCitiesObservation")
         result = _native.lost_cities_so_ismcts_search(
             observation.to_dict(), [a.to_dict() for a in legal_actions],
-            self.iterations, self.exploration, seed, self.time_budget,
+            self.iterations, self.exploration, seed, self.time_budget, self.selection_policy,
         )
         result["action"] = LostCitiesAction.from_dict(result["action"])
         return result

@@ -131,7 +131,7 @@ mod tests {
     fn registration_replay_and_search_rejection() {
         let caps = game_search_capabilities(GameId::LostCities);
         assert!(caps.imperfect_information && caps.stochastic);
-        assert!(caps.selection_policies.is_empty());
+        assert_eq!(caps.selection_policies, vec!["uct", "ucb1_tuned"]);
         let report = run_match_with_trace(
             GameId::LostCities,
             AgentConfig::Random,
@@ -257,6 +257,7 @@ mod so_ismcts_tests {
 
     fn config() -> AgentConfig {
         AgentConfig::SoIsmcts(SoIsmctsConfig {
+            selection_policy: meeple_bots_core::BanditPolicy::Uct,
             budget: meeple_bots_core::SearchBudget::Iterations(NonZeroU32::new(2).unwrap()),
             exploration: 1.0,
         })
@@ -293,6 +294,7 @@ mod so_ismcts_tests {
             if self.run_search {
                 let search = SoIsmctsAgent {
                     config: SoIsmctsConfig {
+                        selection_policy: meeple_bots_core::BanditPolicy::Uct,
                         budget: meeple_bots_core::SearchBudget::Iterations(
                             NonZeroU32::new(2).unwrap(),
                         ),

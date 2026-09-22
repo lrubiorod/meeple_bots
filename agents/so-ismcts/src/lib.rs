@@ -1,10 +1,11 @@
 //! Single-observer ISMCTS. Search accepts an observation, never an authoritative state.
 //! No lifecycle implementation: the catalog adapter must not forward hidden callbacks.
-pub use meeple_bots_core::SearchBudget;
+use meeple_bots_core::SelectionStats;
 use meeple_bots_core::{
     AgentError, DeterminizedWorld, Game, ImperfectInformationGame, PlayerId, PositionStatus,
     RandomSource, TwoPlayerZeroSumGame,
 };
+pub use meeple_bots_core::{BanditPolicy, SearchBudget};
 use std::time::Instant;
 
 /// Safety cutoff for cyclic games, not a game horizon. Cutoffs back up neutral utility.
@@ -13,12 +14,14 @@ pub const MAX_SIMULATION_ACTIONS: usize = 10_000;
 pub struct SoIsmctsConfig {
     pub budget: SearchBudget,
     pub exploration: f64,
+    pub selection_policy: BanditPolicy,
 }
 impl Default for SoIsmctsConfig {
     fn default() -> Self {
         Self {
             budget: SearchBudget::default(),
             exploration: std::f64::consts::SQRT_2,
+            selection_policy: BanditPolicy::Uct,
         }
     }
 }
@@ -60,9 +63,32 @@ pub struct Edge<A, O> {
     pub visits: u64,
     pub availability: u64,
     pub total_utility: f64,
+    pub total_squared_utility: f64,
     pub outcomes: Vec<(O, usize)>,
 }
 impl<A, O> Edge<A, O> {
+    fn selection_stats(&self, root_turn: bool, policy: BanditPolicy) -> SelectionStats {
+        debug_assert!(self.visits > 0 && self.visits <= self.availability);
+        let mean = self.mean_utility();
+        SelectionStats {
+            mean: if root_turn { mean } else { -mean },
+            variance: if policy == BanditPolicy::Ucb1Tuned {
+                self.total_squared_utility / self.visits as f64 - mean * mean
+            } else {
+                0.0
+            },
+            action_visits: self.visits,
+            opportunities: self.availability as f64,
+        }
+    }
+    fn record(&mut self, utility: f64, policy: BanditPolicy) {
+        self.visits += 1;
+        self.total_utility += utility;
+        if policy == BanditPolicy::Ucb1Tuned {
+            self.total_squared_utility += utility * utility;
+        }
+        debug_assert!(self.visits <= self.availability);
+    }
     pub fn mean_utility(&self) -> f64 {
         if self.visits == 0 {
             0.
@@ -94,8 +120,15 @@ pub fn is_uct(
     root_turn: bool,
 ) -> f64 {
     assert!(visits > 0 && availability >= visits);
-    (if root_turn { 1. } else { -1. }) * total / visits as f64
-        + exploration * ((availability as f64).ln() / visits as f64).sqrt()
+    BanditPolicy::Uct.score(
+        SelectionStats {
+            mean: (if root_turn { 1. } else { -1. }) * total / visits as f64,
+            variance: 0.0,
+            action_visits: visits,
+            opportunities: availability as f64,
+        },
+        exploration,
+    )
 }
 fn available<A: Clone + Eq, O>(node: &mut Node<A, O>, legal: &[A]) -> Vec<usize> {
     let mut indices = Vec::new();
@@ -108,6 +141,7 @@ fn available<A: Clone + Eq, O>(node: &mut Node<A, O>, legal: &[A]) -> Vec<usize>
                 visits: 0,
                 availability: 0,
                 total_utility: 0.,
+                total_squared_utility: 0.,
                 outcomes: vec![],
             });
             node.edges.len() - 1
@@ -124,6 +158,7 @@ fn choose<A, O, R: RandomSource + ?Sized>(
     node: &Node<A, O>,
     legal: &[usize],
     c: f64,
+    policy: BanditPolicy,
     root_turn: bool,
     rng: &mut R,
 ) -> usize {
@@ -139,7 +174,7 @@ fn choose<A, O, R: RandomSource + ?Sized>(
     let mut ties = Vec::new();
     for &i in legal {
         let e = &node.edges[i];
-        let score = is_uct(e.total_utility, e.visits, e.availability, c, root_turn);
+        let score = policy.score(e.selection_stats(root_turn, policy), c);
         if score > best {
             best = score;
             ties.clear();
@@ -255,6 +290,7 @@ impl SoIsmctsAgent {
                     &nodes[node],
                     &indices,
                     self.config.exploration,
+                    self.config.selection_policy,
                     player == observer,
                     rng,
                 );
@@ -298,8 +334,7 @@ impl SoIsmctsAgent {
                 nodes[n].visits += 1;
             }
             for (n, e) in path {
-                nodes[n].edges[e].visits += 1;
-                nodes[n].edges[e].total_utility += utility;
+                nodes[n].edges[e].record(utility, self.config.selection_policy);
             }
             diagnostics.completed_iterations += 1;
         }
