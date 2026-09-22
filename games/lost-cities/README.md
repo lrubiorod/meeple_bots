@@ -82,9 +82,12 @@ Authoritative positions, exact Chance distributions and saved match traces are
 engine/administrative data, **not player observations**; traces disclose private draws.
 Live match observers, PIMC/MO-ISMCTS/RIS-MCTS and heuristics
 are intentionally not implemented. A separate administrative
-GUI supports human, random and SO-ISMCTS players (see below). Reports currently consist
-of CLI scores, tournament summaries and validated JSON traces; no game-specific
-HTML report or extraction analysis is provided.
+GUI supports human, random and SO-ISMCTS players (see below). `study` generates its
+normal HTML report, and `analyze` provides structural/search-cost output. Tournament
+artifacts include summaries and validated JSON traces, but no Lost Cities tournament
+HTML report or extraction analysis is provided. Python `Batch` and `TournamentAgent`
+accept SO-ISMCTS; the CLI batch options and tournament TOML parser still accept only
+MCTS/random profiles, leaving Random as their compatible Lost Cities agent.
 
 ```bash
 .venv/bin/python -m meeple_bots match --game lost_cities \
@@ -102,7 +105,16 @@ assert world.observation(0) == observation
 assert world.legal_actions() == game.legal_actions(state)
 ```
 
-SO-ISMCTS calibration is available through the shared `study` command; see
+Search-cost analysis and competitive tuning use the shared commands:
+
+```bash
+meeple-bots analyze --game lost_cities --samples 16 --target-time 500ms
+meeple-bots study --game lost_cities --budget 2h --target-match-time 60s \
+  --output results/studies/lost-cities-so
+```
+
+Both resolve SO-ISMCTS automatically. `analyze` measures cost, while `study` compares
+exploration C under equal compute. For local C retuning, see
 [study usage and local C retuning](../../python/studies.md#lost-cities-and-the-so-ismcts-study-profile).
 
 ## Open-hand debugging GUI
@@ -134,4 +146,4 @@ remain responsive; stale/duplicate moves
 are rejected using session and decision tokens. Step delay controls inspection pace.
 A 10,000-decision execution safeguard reports an error without awarding a result.
 GUI trace-file saving is not provided; the current transition log is available in
-this debug view. Use native random tournaments for persisted validated match traces.
+this debug view. Use native matches or Python tournaments for persisted validated match traces.

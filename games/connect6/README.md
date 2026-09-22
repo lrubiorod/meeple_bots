@@ -52,8 +52,10 @@ are not pickleable; game configurations are. Existing parameterless games keep
 their defaults and reject unsupported parameters.
 
 The existing deterministic MCTS reads the active player from each state, including
-consecutive decisions by one player. UCT, UCB1-Tuned, tree reuse and transpositions
-need no Connect6-specific search code. Utility is +1 / 0 / −1. No heuristic, RAVE or symmetry reduction is provided.
+consecutive decisions by one player. UCT, UCB1-Tuned, Classic UCT-RAVE, Progressive
+Widening with random or RAVE-guided admission, tree reuse and transpositions need no
+Connect6-specific search code. Utility is +1 / 0 / −1. No game-specific heuristic
+or symmetry reduction is provided.
 
 ## Browser play
 
@@ -65,7 +67,7 @@ Choose board size in the settings (default 19), then click an empty intersection
 to place each stone. The status displays the active color and remaining placements.
 Each seat supports human, random or MCTS; MCTS controls appear only for MCTS seats.
 The initial MCTS settings come from [`connect6-baseline.toml`](../../configs/mcts/connect6-baseline.toml), a
-provisional one-second profile calibrated on 13x13. This profile does not set the board size;
+provisional one-second UCT-RAVE profile with RAVE-guided PW, calibrated on 13x13. This profile does not set the board size;
 select 13 explicitly to use its intended board size. Configure iterations/time, selector,
 exploration, depth, tree reuse and transpositions independently for each player.
 The interface includes move history, last-move marking, pacing, seeded restarts

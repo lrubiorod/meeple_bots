@@ -120,6 +120,21 @@ print(search['action'], search['diagnostics'])
 print(search['nodes'][0]['edges'])
 ```
 
+For cost calibration and competitive C tuning, use the same commands as other
+search families:
+
+```bash
+meeple-bots analyze --game lost_cities --agent so_ismcts --samples 16 --target-time 500ms
+meeple-bots study --game lost_cities --agent so_ismcts --budget 2h \
+  --target-match-time 60s --output results/studies/lost-cities-so
+```
+
+`analyze` reports iterations/determinizations, latency, tree size and root coverage,
+including isolated determinization cost. `study` races exploration C under equal
+compute and uses fresh-seed confirmation. Neither treats hidden-world enumeration
+as a search target. See [analysis](../../crates/evaluation/README.md) and
+[study/local retuning](../../python/studies.md#lost-cities-and-the-so-ismcts-study-profile).
+
 Python `Batch` and `TournamentAgent` also accept `SoIsmctsAgent`; the CLI tournament
 TOML parser and batch profile loader retain their existing MCTS/random configuration
 formats. Administrative match traces still contain real private draws and must not

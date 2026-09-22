@@ -131,9 +131,10 @@ Use `study`, batch or tournaments for competitive evidence under an explicit fai
 
 ## Configured agent benchmarks
 
-Repeat `--agent-config PATH` to measure any number of scalar MCTS profiles. Every profile is run
-with its exact iteration or time budget, rollout depth, exploration constant, and evaluators on the
-same seeded positions. Profile names must be unique. Measurements run sequentially so one compared
+Repeat `--agent-config PATH` to measure scalar profiles from the compatible MCTS or
+SO-ISMCTS family. Each runs with its exact iteration/time budget and exploration
+constant on the same seeded positions. MCTS also preserves rollout depth and evaluators;
+SO-ISMCTS retains uniform rollout and MostVisited root selection. Profile names must be unique. Measurements run sequentially so one compared
 agent does not compete with another benchmark for CPU time.
 
 Each path uses the [reusable scalar profile format](../../agents/README.md#reusable-profiles), not
@@ -185,10 +186,12 @@ reproducible experimental artifact.
 
 The shared positions are the initial state and, when reachable, states near one third and two
 thirds of the sampled median game depth. This gives a small early/middle/late latency check without
-making `analyze` run a long match suite. The output ranks every supplied profile from fastest to
-slowest; comparison is not limited to two agents.
+making `analyze` run a long match suite. Legacy deterministic MCTS output ranks
+supplied profiles from fastest to slowest; comparison is not limited to two agents.
+Family-specific configured benchmarks also accept SO-ISMCTS TOMLs for compatible
+games (see below), reporting search cost without competitive matches.
 
-Each configured benchmark reports:
+Each legacy MCTS configured benchmark reports:
 
 - exact agent configuration and sampled position count;
 - mean, p50, p95, and maximum isolated decision latency;
@@ -209,7 +212,7 @@ higher per-decision latency because multiple single-threaded MCTS searches share
 benchmarks on an otherwise idle system for stable isolated comparisons, or under intentional load
 when that load represents deployment.
 
-A `time_budget` targets approximate total agent cost, deducting measured pending maintenance and
+For MCTS, a `time_budget` targets approximate total agent cost, deducting measured pending maintenance and
 reserving the previous decision's finalization cost. Preparation counts toward the allowance.
 The search checks its remaining allowance between complete iterations; at least one always runs.
 Indivisible operations, estimation error and final match cleanup can exceed the requested time. Seeded time-budget
@@ -220,7 +223,9 @@ searches are not exactly reproducible because system load changes the completed 
 `recommended_rollout_depth`, `recommended_iterations`, `iterations_capped`,
 `milliseconds_per_iteration`, and `estimated_decision_time_ms` remain available. They are aliases
 for the Balanced experiment and its calibrated depth, not structural tree-size recommendations.
-New integrations should prefer `rollout_costs` and `suggested_experiments`.
+For deterministic MCTS these are superseded by `rollout_costs` and
+`suggested_experiments`. New multi-family integrations should use `analyze_game`
+and its independent `structural` and `search_calibration` sections.
 
 The tree-size estimate is still an order-of-magnitude structural description. It no longer drives
 the practical iteration suggestions.

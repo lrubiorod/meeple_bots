@@ -56,14 +56,15 @@ Use `None` for a human seat. When `waiting_human` is true, call `step(index)` wi
 legal player actions. Snapshots contain no RNG state. A session is sequential; use separate
 sessions for concurrent matches.
 
-This first stochastic integration exposes the GUI, Python session API and typed Rust simulator.
-The generic Python `Match`/`Batch`, tournament CLI, `analyze`, and historical extractors still
-support the four deterministic games. They must first gain explicit chance-event transport and
-replay validation before accepting `cant-stop`; they do not silently omit its dice history.
+Can't Stop exposes the GUI, Python session API and typed Rust simulator. It is not
+registered in generic Python `Match`/`Batch`, tournament CLI, public `analyze`/`study`,
+or tournament extraction. Other stochastic games already use those shared paths;
+Can't Stop still needs its own catalog/transport integration. Its session traces
+are a separate format and retain dice history.
 
 ## Engine integration
 
-- `Game::sample_chance` samples an event from a supplied RNG; `apply_action` applies it.
+- `Game::sample_chance` samples an event from a supplied RNG; `apply_chance_outcome` is the environment transition entry point.
   `PositionStatus::Chance` is separate from `PlayerTurn`.
 - The simulator has a third seeded RNG stream for actual events, independent of both agents.
   More search simulations cannot consume or reveal future real dice.
@@ -161,6 +162,6 @@ session = CantStopSession(
 )
 ```
 
-This completes mechanism support for public-chance sessions, not tournament/analysis transport
-or strength calibration. Generic `Match`/`Batch` and historical extractors remain restricted as
-explained above.
+These mechanisms are available through Can't Stop sessions. Generic match, tournament
+and public analysis integration for this game remains outside that session API, as
+explained above; the available mechanisms are not evidence of playing strength.

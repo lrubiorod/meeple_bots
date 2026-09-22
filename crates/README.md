@@ -25,7 +25,7 @@ runtime catalog
 | `crates/simulation` | Reproducible matches, batches, observers, and typed traces. |
 | `games/*` | Concrete state, action, legal-action, and transition rules. |
 | `agents/*` | Search and selection policies generic over core contracts. |
-| `crates/evaluation` | Structural sampling and local MCTS cost calibration. |
+| `crates/evaluation` | Structural/chance sampling and MCTS/SO-ISMCTS cost calibration. |
 | `crates/catalog` | Runtime identifiers mapped to concrete generic calls. |
 | `crates/python-bindings` | PyO3 conversion between Rust and the public Python model. |
 
@@ -83,7 +83,9 @@ Capability traits state additional guarantees required by algorithms:
 - `DeterministicGame`: the game never requests a chance transition.
 - `PerfectInformationGame`: every player can observe the authoritative state.
 - `ImperfectInformationGame`: optionally sample a complete hidden assignment from a
-  player observation and an explicit RNG, preserving that observation exactly.
+  player observation and an explicit RNG, preserving that observation exactly. Its
+  `DeterminizedWorld` supports deterministic simulated decisions and observations;
+  it is separate from the stochastic authoritative environment state.
 - `HeuristicGame`: the game exposes one or more indexed state evaluators.
 - `TwoPlayerZeroSumGame`: the current two-seat adversarial model.
 
@@ -100,14 +102,16 @@ The lifecycle methods `on_match_start`, `on_action_applied` and `on_match_end` r
 `G::State` without that bound. An agent could retain private information received there; supplying
 a filtered `observation()` alone would not prevent this. Simulation observers also receive full
 state. The legacy lifecycle does not enforce hidden-information isolation. Lost Cities
-registers only the audited RandomAgent (legal actions only, no-op callbacks); future
-hidden-information searches require an observation-safe lifecycle. Lost Cities does
+registers audited Random and SO-ISMCTS adapters with no-op lifecycle callbacks.
+The SO-ISMCTS search object receives only the owned player observation, root legal
+actions, observer and RNG; the adapter never forwards authoritative state. Lost Cities does
 not implement `PerfectInformationGame`, so both MCTS backends are excluded by type
 bounds as well as runtime catalog validation.
 
 Randomness is explicit through `RandomSource`. The simulation crate derives a separate
 deterministic stream for each seat from the match seed, avoiding accidental coupling between the
-two agents' random choices.
+two agents' random choices. Environment chance has its own stream, independent of
+search RNG consumption; seeded setup is likewise separate.
 
 ## Static and runtime dispatch
 
@@ -119,7 +123,8 @@ concrete game. `ConfiguredAgent<M>` in `catalog/src/participant.rs` represents R
 configured, game-compatible MCTS type; each seat is built independently from `AgentConfig`.
 It delegates selection, diagnostics and every lifecycle hook. Variant dispatch occurs at those
 boundaries, not within MCTS iterations. Batch factories clone unplayed participant templates.
-SPOTF continues to construct a seeded game for every match.
+Lost Cities uses a separate observation-safe participant adapter for Random and
+SO-ISMCTS. SPOTF continues to construct a seeded game for every match.
 
 The bindings use one generic `PythonParticipant<M>` to add human selectors and their callbacks.
 Observed and unobserved matches share participant construction, so adding a variant does not
@@ -137,7 +142,8 @@ explicitly re-exported at the crate root, preserving existing Rust and binding i
 ## Search capability metadata
 
 `game_search_capabilities(GameId)` exposes the heuristic indices and their named parameter
-schemas (default, minimum and maximum), plus support for turn-phase conditions. Heuristic
+schemas (default, minimum and maximum), supported search families and selectors,
+player count, stochastic/imperfect-information flags and turn-phase conditions. Heuristic
 metadata comes directly from `HeuristicGame`; condition support shares the catalog validator's
 predicate. When adding a game, register this descriptor alongside its configured constructor.
 
@@ -151,7 +157,9 @@ Rebuild the extension after changing a game's schema or catalog registration.
 ## Trace validation
 
 `analyze_seeded_trace` dispatches to the game-specific Boop/SPOTF analyzers or to a generic
-`Game` replay for Connect Four and tic-tac-toe. Generic replay checks the active player before
+`Game` replay for Connect6, Connect Four and tic-tac-toe. Stochastic replay for
+Splendor and Lost Cities additionally applies recorded setup/draw outcomes rather
+than resampling them; Python extraction support is registered separately by game. Generic replay checks the active player before
 each accepted transition, rejects actions after termination and requires a terminal final state.
 Its terminal utilities are returned to the extractor, which checks the declared outcome.
 The binding only converts actions; legality remains in the Rust game implementation.
@@ -181,7 +189,7 @@ The binding only converts actions; legality remains in the Rust game implementat
 4. Add typed action/state conversion and human callbacks at the PyO3 boundary. In Python,
    register game/action types, native conversion, serialization and CLI identifiers. Export
    public values through `meeple_bots`; reuse shared GUI/report machinery when adding a UI.
-5. Verify Random/MCTS and supported human pairings, observed versus retained traces,
+5. Verify compatible agent and supported human pairings, observed versus retained traces,
    invalid replay rejection, batch seat swaps, diagnostics and capability metadata. Rebuild
    the extension before running Python integration tests.
 6. Document identifiers, supported options, action encoding and extraction guarantees in
@@ -191,6 +199,8 @@ The binding only converts actions; legality remains in the Rust game implementat
 
 1. Implement `Agent<G>` in `agents/<agent>` against core contracts. Declare actual capability
    bounds; do not import individual game crates into reusable production logic.
+   Hidden-information search should use an observation-only API and a trusted catalog
+   adapter, as SO-ISMCTS does, rather than accepting legacy authoritative callbacks.
 2. Implement or deliberately retain defaults for all lifecycle hooks and decision statistics.
    Test legal selection, seeded behavior and state reset/reuse across matches.
 3. Extend catalog configuration and participant construction/delegation. Handle selection,
@@ -217,9 +227,10 @@ observations.
 
 Lost Cities separates owned observations, stochastic environment states and complete
 simulation worlds. Determinization samples an opponent hand plus an ordered deck;
-simulation draws consume that order without resampling, while real draws use Chance. It implements no search agent, belief model or
-information-set tree. Before registering SO-ISMCTS, provide an observation-safe
-agent lifecycle and review action visibility, retained memory and observer access.
+simulation draws consume that order without resampling, while real draws use Chance.
+The separate SO-ISMCTS agent samples a fresh world per iteration and shares statistics
+through root-observer history/observation nodes. It does not retain sampled worlds
+in the tree or implement a belief model, MO-ISMCTS or RIS-MCTS.
 See [Lost Cities](../games/lost-cities/README.md) for the exact variant, observation
 fields, conservation/roundtrip invariants and currently supported interfaces.
 

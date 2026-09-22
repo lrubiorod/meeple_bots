@@ -9,14 +9,16 @@ workflow.
 
 | Area | Available features |
 | --- | --- |
-| Games | [Connect6](games/connect6/README.md), Tic-tac-toe, Connect Four, boop., two-player Spirits of the Forest, [public stochastic Splendor](games/splendor/README.md), and [imperfect-information Lost Cities](games/lost-cities/README.md). |
+| Games | [Connect6](games/connect6/README.md), Tic-tac-toe, Connect Four, boop., two-player Spirits of the Forest, [public stochastic Splendor](games/splendor/README.md), [imperfect-information Lost Cities](games/lost-cities/README.md), and [Can't Stop sessions](games/cant-stop/README.md). |
 | Agents | Interactive human input, uniform random play, configurable MCTS, and [SO-ISMCTS for Lost Cities](agents/so-ismcts/README.md). |
 | Interfaces | Typed Python API, command-line commands, and local browser playrooms. |
 | Experiments | Reproducible batches, round-robin tournaments, trace extraction, and generic, Boop and SPOTF reports. |
 | Analysis | Structural/chance sampling and MCTS or SO-ISMCTS search-cost calibration. |
 
 Matches use seeded, independent random streams and return complete move histories, utilities, final
-boards, and game-specific state such as Boop piece pools.
+boards, and game-specific state such as Boop piece pools. Exact seeded search
+reproducibility requires fixed iteration budgets; timed searches also depend on CPU load.
+Game guides document which experiment and reporting interfaces each game supports.
 
 ## Quick start
 
@@ -39,6 +41,8 @@ python -m meeple_bots gui --game boop
 python -m meeple_bots gui --game spotf
 python -m meeple_bots gui --game cant-stop
 python -m meeple_bots gui --game splendor
+python -m meeple_bots gui --game connect6
+python -m meeple_bots gui --game lost_cities
 ```
 
 Run one terminal match:
@@ -73,7 +77,7 @@ rebuild the native extension with `maturin develop --release`.
 | Play or watch a game | `meeple-bots gui` | [Python interface](python/usage.md#play-or-watch) |
 | Run a match | `meeple-bots match` or `Match` | [Python API](python/usage.md#run-one-match) |
 | Compare agents | `batch` or `Batch` | [Python API](python/usage.md#compare-two-agents) |
-| Search-agent calibration | `meeple-bots study` | [Budgeted diagnosis](python/studies.md#automatic-mcts-diagnosis) |
+| Search-agent calibration | `meeple-bots study` | [Budgeted diagnosis](python/studies.md#incremental-mcts-study) |
 | Configured study | `meeple-bots tournament` | [Study workflow](python/studies.md#run-a-study) |
 | Build study artifacts | `extract`, then `report` | [Artifacts](python/studies.md#study-artifacts) |
 | Estimate search cost | `analyze` or `analyze_game` | [Evaluation](crates/evaluation/README.md) |
@@ -85,7 +89,7 @@ Use `meeple-bots COMMAND --help` for the options installed in the active environ
 Start with the guide that matches the question:
 
 - [Games](games/README.md): rulesets, identifiers, actions, and input conventions.
-- [Agents](agents/README.md): Random, MCTS, heuristics, profiles, and search budgets.
+- [Agents](agents/README.md): Random, MCTS, SO-ISMCTS, heuristics, profiles, and search budgets.
 - [Python interface](python/README.md): installation, public API, CLI, GUI, and studies.
 - [Rust architecture](crates/README.md): workspace layers, generic contracts, and dispatch.
 - [Game evaluation](crates/evaluation/README.md): structural metrics, timing, and limitations.
@@ -106,7 +110,8 @@ Personal scripts and experiments belong under `local/`; tournament definitions u
 `configs/tournaments/`; generated traces, tables, and reports under `results/`.
 Personal configurations and generated data are ignored by Git. Shared references
 remain versioned: `configs/mcts/template.toml`, `boop-baseline.toml`,
-`spotf-baseline.toml`, `cant-stop-baseline.toml`, `tic-tac-toe-baseline.toml`, `connect-four-baseline.toml`, and
+`spotf-baseline.toml`, `cant-stop-baseline.toml`, `tic-tac-toe-baseline.toml`, `connect-four-baseline.toml`,
+`configs/mcts/splendor-baseline.toml`, `configs/mcts/connect6-baseline.toml`, and
 `configs/tournaments/template-study.toml`.
 Game rules, agents, reusable tournament/extraction/report tools, and their regression
 tests remain versioned. See [the Python guide](python/studies.md#1-configure-and-run-the-tournament)

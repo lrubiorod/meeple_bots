@@ -30,7 +30,10 @@ configuration and seed reproduce the same decisions.
 
 ## Monte Carlo Tree Search
 
-`MctsAgent` supports deterministic, perfect-information, two-player, zero-sum games. By default it
+The Rust `MctsAgent` supports deterministic, perfect-information, two-player, zero-sum games.
+The public Python `MctsAgent` configuration also dispatches to public-chance MCTS
+for compatible stochastic games (see below); hidden-information games use a separate
+[SO-ISMCTS agent](so-ismcts/README.md). By default deterministic MCTS
 builds a new tree for every real decision and repeats four steps:
 
 1. Select children with UCT until reaching a node with an unexpanded action.
@@ -84,6 +87,10 @@ result = Match(first=agent, second=RandomAgent(), seed=42).run()
 | `rollout_depth` | `256` | Soft limit in player decisions; complete the current physical turn before cutoff. |
 | `cutoff_evaluator` | `NeutralEvaluator()` | Evaluator used only when a rollout reaches its depth cutoff. |
 | `rollout_policy` | `UniformRandom()` | Policy used to select simulated actions outside the tree. |
+| `progressive_widening` | `false` | Limit expanded actions in deterministic MCTS. |
+| `progressive_widening_k` | `1.5` | Positive widening coefficient. |
+| `progressive_widening_alpha` | `0.5` | Widening exponent in `(0, 1]`. |
+| `progressive_widening_expansion` | `"random"` | Admission policy: `random` or `rave`. |
 | `progressive_bias` | `None` | Optional decaying heuristic prior added to UCT tree selection. |
 | `root_diagnostics` | `false` | Record visits, utility, cached heuristic, and bias for expanded root actions. |
 | `tree_reuse` | `false` | Retain the reachable subtree across decisions in the same match. |
@@ -135,12 +142,12 @@ Time-budget searches retain seeded randomness but are not exactly reproducible: 
 speed change how many iterations finish. Match traces record the actual decision time, completed
 iterations, and created nodes.
 
-### Tree reuse
+### UCB1-Tuned
 
 `selection_policy="ucb1_tuned"` enables the variance-aware rule from
 [Auer, Cesa-Bianchi and Fischer (2002)](https://doi.org/10.1023/A:1013689704352).
 It uses the canonical formula, without an additional exploration multiplier; `exploration` is
-used only by UCT. For parent visits `N`, action visits `n`, empirical reward mean `m` and
+used by UCT and Classic UCT-RAVE. For parent visits `N`, action visits `n`, empirical reward mean `m` and
 population variance `v` on `[0, 1]`, its score is:
 
 ```text
@@ -166,6 +173,8 @@ The setting works in profiles, inline analysis agents, tournament grids, Python 
 GUI selection controls. CLI matches also accept `--mcts-selection-policy ucb1_tuned`.
 The original bandit model assumes stationary rewards; MCTS samples evolve with tree search, so
 this is an experimental selection alternative, not a guarantee of better play.
+
+### Tree reuse
 
 Tree reuse is deliberately optional. The unwrapped baseline `MctsAgent` keeps the original search
 path and supports non-cloneable actions. The enabled reuse wrapper requires the concrete
@@ -310,7 +319,7 @@ See [agent timing in studies](../python/studies.md#1-configure-and-run-the-tourn
 `cutoff_evaluator` defaults to neutral, `rollout_policy` defaults to uniform random, and
 `tree_reuse` and `transpositions` default to false. Evaluator
 kinds currently supported by the catalog are `neutral` and `game_heuristic`. Rollout policy kinds
-are `uniform_random`, `greedy`, `epsilon_greedy`, and `mast`. The legacy `use_heuristic`,
+are `uniform_random`, `greedy`, `epsilon_greedy`, `conditional`, and `mast`. The legacy `use_heuristic`,
 `heuristic_index`, `rollout_heuristic_index`, and flat rollout fields remain accepted.
 
 MAST (Move-Average Sampling Technique) learns a mean utility for each exact action and
@@ -364,8 +373,9 @@ candidate agents at equal wall-clock time whenever possible. The
 
 ### Current limits and future work
 
-The current implementation does not support chance transitions, hidden information, parallel
-search, or learned policies and values. Tree reuse and exact-state transpositions are optional for
+The deterministic MCTS backend does not handle chance or hidden information.
+Public-chance MCTS and observation-only SO-ISMCTS are separate implementations.
+Parallel search and learned policies/values are not provided. Tree reuse and exact-state transpositions are optional for
 compatible perfect-information games. The possible development stages are recorded in the
 [MCTS roadmap](MCTS_ROADMAP.md) and its
 [Spanish translation](MCTS_ROADMAP.es.md).
@@ -579,5 +589,12 @@ stats and Python benchmark position timings expose the same counters as
 `widening_expansions = (total, random, rave_guided, no_amaf_fallbacks)`.
 These distinguish configured guidance from actual use of sampled AMAF evidence.
 Profiles, study candidates and extracted agent configuration retain the policy.
-Study PW tuning preserves it; it does not automatically compare expansion
-policies or assume random PW's optimal k/alpha transfer to guided PW.
+The study PW family screen compares no PW, random PW and RAVE-guided PW before
+rejecting the family. Guided PW does not depend on random PW winning: surviving
+policies refine k/alpha independently with separate histories. AMAF collection can
+be enabled by guided admission even with UCT/UCB1-Tuned selection. Limited budgets
+reduce parameter breadth before dropping an applicable expansion policy.
+
+Local `--tune widening-expansion` requires PW enabled and directly compares random
+and RAVE-guided admission with k, alpha and all other agent fields frozen. See the
+[study guide](../python/studies.md#incremental-mcts-study).

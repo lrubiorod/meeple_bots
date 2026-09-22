@@ -39,8 +39,9 @@ reserved cards do not count as bonuses or receive an independent reward.
 
 Select `cutoff_evaluator = { kind = "game_heuristic", index = 1 }` in a MCTS TOML,
 `MctsAgent(heuristic=1)` in Python, or H1 in the GUI. H0 and baseline defaults are
-unchanged. The automatic study includes neutral, H0 and H1 cutoffs by default;
-no custom baseline is required.
+independent choices. `study` starts neutral unless an explicit `--heuristic` or
+`--baseline` selects a cutoff evaluator; it does not automatically race neutral,
+H0 and H1. Compare those evaluator families in separate controlled experiments.
 
 These fixed weights are an experimental starting point, not a calibrated improvement.
 H1 does not evaluate market affordability, tactical denial, reservation plans or races
@@ -107,7 +108,8 @@ The browser GUI supports human, Random and MCTS seats, including UCT/UCB1-Tuned,
 iteration/time budgets, rollout depth, exploration, neutral/H0/H1 cutoff, root diagnostics,
 tree reuse and transpositions. Default MCTS values come from
 [`configs/mcts/splendor-baseline.toml`](../../configs/mcts/splendor-baseline.toml) at process
-startup, including installed wheels. This is a provisional `tuned1-balanced` candidate,
+startup, including installed wheels. The provisional `splendor-baseline` uses
+10,000 iterations, UCT C=0.5, depth 16, H1, uniform rollout, reuse and transpositions; it is
 not a verified strongest agent. Restart the GUI after editing the TOML; manual overrides
 do not change the file. MCTS controls are hidden for human and Random seats. It displays the bank, market,
 public reserves, bonuses and nobles. Click a colored development card to buy or reserve it, or click supply tokens to
@@ -130,17 +132,21 @@ meeple-bots study --game splendor --budget 2h --workers auto \
   --seed 42 --output results/studies/splendor-generic
 ```
 
-It starts with a generic prestige/uniform profile unless `--baseline` is supplied, compares
-neutral, H0 and H1 cutoffs before tuning selector, depth, exploration, iteration
-budgets and reuse/transpositions, and exports candidate
-TOMLs and the standard study report. Protocol 10 uses cheap screening (by default at most
-one quarter of the target time), target-time checks, one primary final comparison capped
-at 32 paired seeds and auxiliary comparisons capped independently at 4. Use
-`--decision-time 1` for one-second target checks/finals, or add `--screening-time 1` to
-also screen at that time. Plans adapt to the total budget; completion is not proof of
-superiority. Start a new output directory for protocol 10. Calibration resolves chance outside agent timing with
-an independent RNG and samples decision positions only. Resume using the same arguments,
-`--resume`, and a larger **total** budget. See [automatic studies](../../python/studies.md#automatic-mcts-diagnosis).
+Without a supplied baseline, the study starts from a neutral, uniform-rollout MCTS
+profile. Choose `--heuristic 0` or `--heuristic 1` explicitly for heuristic cutoff
+experiments. The shared study runner calibrates an operating budget and races
+compatible candidates under equal decision-time budgets; RAVE and PW are not
+supported by public-chance MCTS. See the [study reference](../../python/studies.md#incremental-mcts-study)
+for stage selection and local retuning.
+
+Protocol 22 uses fixed evidence per comparison (`--games-per-comparison`, default
+50 games / 25 paired seeds). Limited budget reduces candidate breadth, not that
+evidence. `--screening-time` is no longer supported. Calibration resolves chance
+outside agent timing with an independent RNG and samples decision positions only.
+MCTS study results remain provisional; validate improvements separately with fresh
+paired matches. Resume with the same configuration and `--resume`; the total budget
+may be increased. A changed engine requires explicit `--allow-engine-change` and
+is recorded as mixed-engine evidence; incompatible protocol checkpoints are rejected.
 
 Tournament extraction is supported:
 
@@ -154,5 +160,6 @@ Player metrics exclude environment events. Every completed game is replayed thro
 missing or invalid refills, inconsistent final states, scores and outcomes are rejected.
 Partial tournament files can be extracted and are marked incomplete.
 No live match observer or Splendor report generator is registered. Use the extracted
-CSV tables or the public replay API to inspect stochastic traces. The existing complexity evaluator requires `DeterministicGame`;
-Splendor deliberately does not claim that capability.
+CSV tables or the public replay API to inspect stochastic traces. `analyze --game splendor`
+supports structural chance sampling and public-chance MCTS cost calibration. Only the
+legacy `evaluate_game` complexity API still requires `DeterministicGame`.

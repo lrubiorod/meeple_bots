@@ -15,7 +15,8 @@ scenarios, or the three- and four-player rules.
 
 The match seed shuffles 48 face-up tiles into four rows of twelve. The shuffle uses a separate
 random stream from both agents, so an identical match configuration and seed reproduces the forest
-and automated decisions.
+and, with fixed-iteration agents, automated decisions. Time-budget searches also
+depend on runtime scheduling.
 
 Players collect spirit symbols and Fire, Moon, and Sun icons. For each of the nine spirits and
 three power sources, the player with the majority scores their symbol count. Tied majorities score

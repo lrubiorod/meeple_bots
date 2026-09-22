@@ -14,6 +14,8 @@ the rules.
 | Connect Four | `connect-four` | `ConnectFour` | `column` |
 | boop. | `boop` | `Boop` | `k/c row column` |
 | Spirits of the Forest | `spotf` | `SpiritsOfTheForest` | legal action index |
+| [Connect6](connect6/README.md) | `connect6` | `Connect6` | GUI board intersection |
+| [Splendor](splendor/README.md) | `splendor` | `Splendor` | GUI legal actions |
 | [Lost Cities](lost-cities/README.md) | `lost_cities` | `LostCities` | Debug GUI legal actions (both hands visible) |
 | [Can't Stop](cant-stop/README.md) | `cant-stop` (GUI) | `CantStopSession` | GUI action index |
 
@@ -91,7 +93,7 @@ public types.
 
 A new game begins as an independent Rust crate under `games/`:
 
-1. Define its complete `State`, one-turn `Action`, and legal-action iterator.
+1. Define its complete `State`, player-decision `Action` (including micro-actions within a turn), and legal-action iterator.
 2. Implement `Game`, including observation, transitions, and terminal utility.
 3. Implement only the capability traits that the rules genuinely satisfy.
 4. Add catalog dispatch and Python binding conversions.
