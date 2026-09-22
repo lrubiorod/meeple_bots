@@ -805,11 +805,26 @@ from competitive uncertainty and from the absence of independent confirmation.
 
 ### Lost Cities and the SO-ISMCTS study profile
 
-This profile currently tunes UCT exploration only. SO-ISMCTS supports experimental
-`selection_policy="ucb1_tuned"` in matches and configured `analyze` benchmarks, but
-`study` rejects that baseline because UCB1-Tuned ignores C. Selection-policy tuning
-is deferred; exported UCT profiles explicitly retain `selection_policy="uct"`.
+Study tools are registered by **agent family** in `_study_profiles.py`. The game
+catalog determines compatible families; backend restrictions can further reduce
+the family's tools (for example, stochastic MCTS does not support RAVE/PW).
 
+| Family | Exploration | Selection | Tree reuse | RAVE | PW | Transpositions |
+| --- | --- | --- | --- | --- | --- | --- |
+| MCTS | UCT C | UCT/UCB1-Tuned (also UCT-RAVE where supported) | yes | deterministic backend | deterministic backend | yes |
+| SO-ISMCTS | IS-UCT C | UCT/UCB1-Tuned | no | no | no | no |
+
+SO-ISMCTS tree reuse is not integrated in the current public agent, so this profile
+does not advertise it. MCTS retains its four-way reuse/transpositions mechanism
+stage; `--tune tree-reuse` changes only reuse on an MCTS baseline.
+
+`--selection-search` adds UCT exploration calibration and selector comparison for
+SO-ISMCTS. `--all-search` resolves to these currently supported stages; it does not
+invent RAVE, PW, transposition or reuse support. Without these flags, the original
+bounded exploration plan remains unchanged. UCB1-Tuned baselines are now accepted;
+`--tune exploration` rejects them because C is inactive. `--tune selection` works
+from either selector, freezing C and the resource budget. Full selection search
+from a tuned incumbent also evaluates UCT C challengers against that incumbent.
 
 `study` selects a registered compatible search family using catalog metadata. Lost
 Cities currently defaults to `so_ismcts`; `--agent so_ismcts` makes that choice
@@ -829,7 +844,7 @@ Use a release native build for timing experiments (`maturin develop --release`).
 that fact. `--budget` limits cumulative elapsed study time, with checks between
 batches. An in-flight match may overrun the limit.
 
-The SO-ISMCTS profile has four bounded stages:
+The default SO-ISMCTS UCT profile has four bounded stages:
 
 1. A paired Random-vs-Random structural pilot estimates total **player decisions**,
    counting Play and Draw separately. Three representative legal decision positions
@@ -912,3 +927,49 @@ Resume uses the identical command plus `--resume`. Family, baseline, game parame
 phase plan, seeds and resource settings are frozen; changing MCTS into SO-ISMCTS is
 never an engine-compatibility override. The normal explicit `--allow-engine-change`
 option retains its mixed-engine provenance rules.
+
+
+### Optional descriptive Random baseline
+
+`--vs-random` defaults to false. After competitive tuning and confirmation, it
+compares **only the final retained champion** against Random. Results never
+participate in ranking, promotion, selector choice or confirmation. Console,
+`summary.json`, and HTML label this explicitly as diagnostic only. The structural
+Random-vs-Random pilot remains a separate calibration step.
+
+The comparison uses `--games-per-comparison` (subject to the existing minimum
+paired evidence), fresh environment seeds in its own namespace, both seats for
+each seed, and the existing independent search RNG streams and worker pool.
+Reported metrics include games, paired seeds, W/D/L, `(wins + draws/2)/games` and
+the shared paired 95% interval. Search configuration and decision budget are not
+changed to compensate for Random's lower cost.
+
+This is the lowest-priority stage: it uses only remaining study budget, and is
+explicitly skipped if full evidence cannot fit. An interrupted comparison resumes
+only missing games from its trace. The checkpoint freezes family/profile version,
+resolved tuners, stage plan and `vs_random`; changing these on resume is rejected.
+A supplied agent config plus `--vs-random`, without tuning flags, calibrates and
+exports that unchanged agent rather than adding competitive tuning.
+
+```bash
+# Initial SO-ISMCTS calibration, selectors, and a descriptive strength reference.
+python -m meeple_bots study --game lost_cities --agent so_ismcts \
+  --all-search --vs-random --budget 3h --target-match-time 40s \
+  --games-per-comparison 100 --workers 7 \
+  --output results/studies/lost-cities-so-first
+
+# Local selector comparison; Random is optional and omitted here.
+python -m meeple_bots study --game lost_cities --agent-config strong.toml \
+  --tune selection --budget 1h --games-per-comparison 100 \
+  --output results/studies/lost-cities-selection
+```
+
+With several workers, timed searches share CPU (`shared_cpu` provenance); the
+configured compute conditions remain symmetric within each paired comparison.
+
+
+SO-ISMCTS tournament TOML entries use `kind = "so_ismcts"`, with either
+`time_budget` (seconds per decision) or `iterations`, plus `selection_policy`
+(`uct` or `ucb1_tuned`) and optional `exploration`. C only affects UCT.
+The loader validates game compatibility and rejects unsupported MCTS mechanisms.
+Use `seat_mode = "paired"` and an even `matches_per_pair` for swapped-seat seeds.

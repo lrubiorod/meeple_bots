@@ -7,12 +7,57 @@ from ._search_budget import decision_budget
 from ._search_profiles import resolve_family, load_search_profile, so_from_values
 
 
+class MctsStudyProfile:
+    name = 'mcts'
+    version = 1
+    supported_tuners = ('exploration', 'selection', 'structure', 'tree-reuse', 'rave',
+        'progressive-widening', 'progressive-widening-k', 'progressive-widening-alpha',
+        'widening-expansion', 'cutoff-depth')
+    mechanisms = ('tree_reuse', 'transpositions', 'rave', 'progressive_widening')
+
+    def plan(self, *, tune=None, admission=False, second_pass=False):
+        from .studies import PHASES, tuning_specs
+        specs = tuning_specs(tune) if tune else {}
+        if not tune and admission:
+            specs.update(tuning_specs('widening-expansion', prefix='admission'))
+        if second_pass:
+            for dimension in ('exploration', 'rave', 'progressive-widening'):
+                specs.update(tuning_specs(dimension, prefix='second'))
+        return specs, tuple(specs) if tune else (*PHASES, *specs)
+
+    def resolved_tuners(self, caps):
+        return tuple(t for t in self.supported_tuners if 'uct_rave' in caps['selection_policies']
+                     or t not in ('rave', 'progressive-widening', 'progressive-widening-k',
+                                  'progressive-widening-alpha', 'widening-expansion'))
+
+
 class SoIsmctsStudyProfile:
     name = 'so_ismcts'
+    version = 2
+    supported_tuners = ('exploration', 'selection')
+    mechanisms = ()
 
-    def specs(self):
-        return {name: {'dimension': 'exploration', 'round': i, 'chain': 'exploration', 'coarse': i == 0}
-                for i, name in enumerate(('exploration_coarse', 'exploration_refine_1', 'exploration_refine_2'))}
+    def resolved_tuners(self, caps):
+        return self.supported_tuners
+
+    def specs(self, base=None, *, tune=None, selection=False, mechanisms=False,
+              second_pass=False, fixed=False):
+        from .studies import tuning_specs
+        if tune:
+            if tune == 'exploration':
+                return self.specs()
+            return tuning_specs(tune)
+        specs = {}
+        if not fixed and (base is None or base.selection_policy == 'uct' or selection):
+            specs.update({name: {'dimension': 'exploration', 'round': i, 'chain': 'exploration', 'coarse': i == 0}
+                for i, name in enumerate(('exploration_coarse', 'exploration_refine_1', 'exploration_refine_2'))})
+        if selection:
+            specs.update(tuning_specs('selection', prefix='selector'))
+        for dimension in self.mechanisms if mechanisms else ():
+            specs.update(tuning_specs(dimension.replace('_', '-'), prefix='mechanism'))
+        if second_pass:
+            specs.update(tuning_specs('exploration', prefix='second'))
+        return specs
 
     def calibrate(self, runner):
         from .studies import _study_budget, profile_values
@@ -87,21 +132,38 @@ class SoIsmctsStudyProfile:
         runner.progress(f'Estimated decisions/game: {cal["estimated_game_decisions"]:.1f}; decision budget: ' +
                         (f'{cal["fixed_iterations"]} iterations' if cal['fixed_iterations'] else f'{cal["decision_seconds"]:.6f}s'))
         runner.progress(f'Median iterations/decision: {cal["median_iterations_per_decision"]}; determinizations/decision: {cal["median_determinizations_per_decision"]}; search adequacy: {cal["search_adequacy"]["category"]}')
-        runner.progress('Planned stages: calibration, exploration coarse race, bounded local refinement, fresh-seed confirmation')
+        runner.progress('Planned stages: calibration, ' + ', '.join(runner.phase_names))
         if runner.state['request']['tune']:
-            runner.progress('Tuning: exploration. Frozen: search budget, uniform rollout, most_visited, game configuration.')
+            runner.progress('Tuning: ' + runner.state['request']['tune'] + '. All other agent fields and game configuration are frozen.')
 
     def build_phase(self, name, state, base):
         from .studies import _build_tuning_phase
         if name != 'confirmation':
+            # Full selection searches include UCT C challengers even from a tuned incumbent.
+            spec = state['request']['tuner_specs'][name]
+            selected = state.get('selected_candidate', {}).get('profile', {})
+            if (spec['dimension'] == 'exploration' and selected.get('selection_policy', 'uct') == 'ucb1_tuned'
+                    and state['request'].get('selection_search') and not state['request'].get('tune')):
+                from dataclasses import replace
+                from .studies import agent_from_values, profile_values
+                temporary = {**state, 'selected_candidate': {'profile': profile_values(replace(
+                    agent_from_values(selected), selection_policy='uct'))}}
+                phase = _build_tuning_phase(name, temporary, base)
+                # Every challenge remains head-to-head against the frozen tuned incumbent.
+                phase['agents']['incumbent'] = selected
+                return phase
             return _build_tuning_phase(name, state, base)
         original = state['operating_baseline']
         finalist = state.get('selected_candidate', {}).get('profile', original)
         return {'name': name, 'agents': {'incumbent': original, 'finalist': finalist},
                 'groups': {'main': ['incumbent', 'finalist']}, 'accept': True, 'incremental': True,
                 'evidence_policy': 'confirmation', 'tie_priority': {'incumbent': [0], 'finalist': [1]},
-                'contrasts': [] if original == finalist else [{'a': 'incumbent', 'b': 'finalist', 'primary': True, 'factor': 'exploration'}],
+                'contrasts': [] if original == finalist else [{'a': 'incumbent', 'b': 'finalist', 'primary': True, 'factor': state['request'].get('tune') or 'configuration'}],
                 'status': 'pending', 'skip_reason': 'no_supported_improvement'}
 
 
-PROFILES = {'so_ismcts': SoIsmctsStudyProfile()}
+PROFILES = {'mcts': MctsStudyProfile(), 'so_ismcts': SoIsmctsStudyProfile()}
+
+def profile_for_agent(agent):
+    from ._agent_config import SoIsmctsAgent
+    return PROFILES['so_ismcts' if isinstance(agent, SoIsmctsAgent) else 'mcts']

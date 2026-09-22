@@ -401,6 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--game", choices=tuple(_PLAYABLE_GAMES), required=True)
     study.add_argument("--baseline", "--agent-config", dest="baseline", type=Path, help="initial incumbent; preserves its evaluator, parameters and search budget")
     from ._study_tuners import TUNING_FIELDS
+    study.add_argument("--vs-random", action="store_true", help="final champion vs Random; descriptive only, never used for selection")
     study.add_argument("--tune", choices=tuple(TUNING_FIELDS), help="retune only this dimension; requires --agent-config/--baseline")
     study.add_argument("--second-pass", action="store_true", help="append local C/RAVE/PW retuning on the final incumbent")
     study.add_argument("--heuristic", type=lambda v: int(v.lower().removeprefix("h")), help="cutoff heuristic for a generated baseline; must match an explicit baseline")
@@ -457,7 +458,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = run_study(args.game, output=output, budget=duration_seconds(args.budget) if args.budget else None,
                                baseline=args.baseline, agent_family=args.agent, seed=args.seed, tune=args.tune, second_pass=args.second_pass, widening_expansion_search=args.widening_expansion_search,
                                heuristic=args.heuristic, rave_search=args.rave_search, pw_search=args.pw_search,
-                               selection_search=args.selection_search, mechanism_search=args.mechanism_search, depth_search=args.depth_search, all_search=args.all_search, target_match_time=duration_seconds(args.target_match_time),
+                               selection_search=args.selection_search, mechanism_search=args.mechanism_search, depth_search=args.depth_search, all_search=args.all_search, vs_random=args.vs_random, target_match_time=duration_seconds(args.target_match_time),
                                games_per_comparison=args.games_per_comparison, stage_games=stage_games,
                                max_pairs=args.max_pairs, decision_seconds=args.decision_time,
                                screening_seconds=args.screening_time,
@@ -781,8 +782,8 @@ def _load_tournament_agents(
     if not isinstance(name, str) or not name.strip():
         raise ValueError(f"tournament agent {index} name must be a non-empty string")
     kind = values.get("kind")
-    if kind not in {"mcts", "random"}:
-        raise ValueError(f"tournament agent {name} kind must be mcts or random")
+    if kind not in {"mcts", "random", "so_ismcts"}:
+        raise ValueError(f"tournament agent {name} kind must be mcts, so_ismcts or random")
     self_play = values.get("self_play", False)
     if not isinstance(self_play, bool):
         raise TypeError(f"tournament agent {name} self_play must be a boolean")
@@ -826,6 +827,14 @@ def _load_tournament_agents(
                 grid_position=(),
             ),
         )
+
+    if kind == "so_ismcts":
+        from ._search_profiles import resolve_family, so_from_values
+        resolve_family(_game_name(game), "so_ismcts")
+        agent = so_from_values({k: v for k, v in values.items()
+                                if k not in ("kind", "self_play")})
+        return (_TournamentAgent(name=name.strip(), agent=agent, self_play=self_play,
+                                 template_index=index, grid_position=()),)
 
     missing = sorted({"rollout_depth"} - values.keys())
     if missing:

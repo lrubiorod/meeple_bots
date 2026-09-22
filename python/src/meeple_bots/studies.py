@@ -512,7 +512,7 @@ def tuning_specs(dimension, prefix="local"):
     axes = ["progressive-widening-k", "progressive-widening-alpha", "progressive-widening-k"] if dimension == "progressive-widening" else [dimension]
     specs = {}
     for step, axis in enumerate(axes):
-        rounds = 1 if axis in ("selection", "structure", "widening-expansion") or step == 2 else 6
+        rounds = 1 if axis in ("selection", "structure", "tree-reuse", "widening-expansion") or step == 2 else 6
         chain = f"{prefix}-{step}-{axis}"
         for round_index in range(rounds):
             specs[f"{chain}-{round_index}"] = {"dimension": axis, "round": round_index, "chain": chain}
@@ -562,11 +562,12 @@ class StudyRunner:
                  heuristic: int | None = None, target_match_time: float = 60.0, rave_search: bool = False, pw_search: bool = False,
                  selection_search: bool = False, mechanism_search: bool = False, depth_search: bool = False, all_search: bool = False,
                  tune: str | None = None, second_pass: bool = False, widening_expansion_search: bool = False,
-                 agent_family: str | None = None, workers: WorkerSetting = "auto", resume: bool = False, allow_engine_change: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
+                 agent_family: str | None = None, vs_random: bool = False, workers: WorkerSetting = "auto", resume: bool = False, allow_engine_change: bool = False, game_params: dict | None = None, progress: Callable[[str], None] = print):
         if allow_engine_change and not resume:
             raise ValueError("--allow-engine-change requires --resume and an existing study")
         self.family = resolve_family(game, agent_family, baseline)
-        self.profile = PROFILES.get(self.family)
+        self.family_profile = PROFILES[self.family]
+        self.profile = self.family_profile if self.family != "mcts" else None
         if game not in GAMES:
             raise ValueError("automatic studies require generic tournament transport; supported: " + ", ".join(GAMES))
         if budget is not None and (not math.isfinite(budget) or budget <= 0):
@@ -596,19 +597,36 @@ class StudyRunner:
         if heuristic is not None and (type(heuristic) is not int or heuristic not in heuristic_indices(game)):
             raise ValueError(f"unknown cutoff heuristic H{heuristic} for {game}")
         supplied = baseline is not None
+        for name, value in dict(vs_random=vs_random, all_search=all_search, selection_search=selection_search,
+                                mechanism_search=mechanism_search, second_pass=second_pass).items():
+            if type(value) is not bool:
+                raise ValueError(f"{name} must be a boolean")
         if self.profile:
-            if any((rave_search, pw_search, mechanism_search, depth_search, all_search, second_pass, widening_expansion_search)) or heuristic is not None or reference is not None:
-                raise ValueError("unsupported stages/options for SO-ISMCTS; only exploration tuning is available")
-            if stage_games.keys() - {"selection"}:
-                raise ValueError("SO-ISMCTS supports only --stage-games selection=GAMES")
-            if tune is not None and (tune != "exploration" or baseline is None or decision_seconds is not None or selection_search):
-                raise ValueError("SO-ISMCTS --tune exploration requires --agent-config and freezes its search budget")
+            for flag, dimension in ((rave_search, 'rave'), (pw_search, 'progressive-widening'),
+                                    (depth_search, 'cutoff-depth'), (widening_expansion_search, 'widening-expansion')):
+                if flag:
+                    raise ValueError(f"tuner '{dimension}' is not supported by agent family '{self.family}'")
+            if heuristic is not None or reference is not None:
+                raise ValueError('SO-ISMCTS does not support heuristic/reference options')
+            if stage_games.keys() - {'selection', 'mechanisms'}:
+                raise ValueError('SO-ISMCTS supports stage-games selection and mechanisms')
             baseline = baseline or SoIsmctsAgent()
-            if baseline.selection_policy != "uct":
-                raise ValueError("SO-ISMCTS study currently tunes exploration only; UCB1-Tuned ignores C. Use analyze or matches for this policy.")
-            specs = self.profile.specs()
-            self.phase_names = (*specs, "confirmation")
-            selectors, pw_supported = [], False
+            selectors = game_search_capabilities(game)['selection_policies']
+            if tune is not None:
+                if not supplied or decision_seconds is not None:
+                    raise ValueError('--tune requires --agent-config and freezes its search budget')
+                if any((selection_search, mechanism_search, all_search, second_pass)):
+                    raise ValueError('--tune cannot be combined with full-study stage flags')
+                validate_tuner(tune, baseline, selectors)
+            selection_search = selection_search or all_search
+            if mechanism_search and not self.profile.mechanisms:
+                raise ValueError(f"mechanism search is not supported by agent family '{self.family}'")
+            mechanism_search = mechanism_search or (all_search and bool(self.profile.mechanisms))
+            fixed = supplied and vs_random and not any((tune, selection_search, mechanism_search, second_pass))
+            specs = self.profile.specs(baseline, tune=tune, selection=selection_search,
+                                       mechanisms=mechanism_search, second_pass=second_pass, fixed=fixed)
+            self.phase_names = (*specs, 'confirmation')
+            pw_supported = False
         else:
             if tune is not None:
                 if baseline is None:
@@ -636,13 +654,8 @@ class StudyRunner:
                     raise ValueError(f"{name} must be a boolean")
             rave_search, pw_search, selection_search, mechanism_search, depth_search = [
                 all_search or value for value in (rave_search, pw_search, selection_search, mechanism_search, depth_search)]
-            specs = tuning_specs(tune) if tune else {}
-            if not tune and (widening_expansion_search or all_search):
-                specs.update(tuning_specs("widening-expansion", prefix="admission"))
-            if second_pass:
-                for dimension in ("exploration", "rave", "progressive-widening"):
-                    specs.update(tuning_specs(dimension, prefix="second"))
-            self.phase_names = tuple(specs) if tune else (*PHASES, *specs)
+            specs, self.phase_names = self.family_profile.plan(
+                tune=tune, admission=widening_expansion_search or all_search, second_pass=second_pass)
             if seed >= 2**64 - (len(self.phase_names)+1)*SEED_STRIDE:
                 raise ValueError("seed leaves insufficient room for tuning phases")
             # Current catalog exposes UCT-RAVE exactly for deterministic search backends.
@@ -651,6 +664,13 @@ class StudyRunner:
                 raise ValueError("PW requires a deterministic backend")
             if reference is not None:
                 raise ValueError("--reference was removed with confirmation; compare it in a separate tournament")
+        if supplied and vs_random and not any((tune, all_search, selection_search, mechanism_search,
+                rave_search, pw_search, depth_search, second_pass, widening_expansion_search)):
+            self.phase_names = ('confirmation',) if self.profile else ()
+        if vs_random:
+            self.phase_names = (*self.phase_names, 'random_baseline')
+        if seed >= 2**64 - (len(self.phase_names)+1)*SEED_STRIDE:
+            raise ValueError('seed leaves insufficient room for tuning and random baseline')
         worker_count = resolve_workers(workers)
         self.game = create_game(game, game_params)
         self.base, self.reference = baseline, reference
@@ -663,8 +683,11 @@ class StudyRunner:
                    "seed": seed, "max_pairs": max_pairs,
                    "decision_seconds": decision_seconds, "screening_seconds": screening_seconds,
                    "max_plies": max_plies, "workers": worker_count, "engine": _fingerprint()}
+        request.update(agent_family=self.family, family_profile_version=self.family_profile.version,
+                       supported_tuners=list(self.family_profile.resolved_tuners(game_search_capabilities(game))),
+                       vs_random=vs_random, all_search=all_search)
         if self.profile:
-            request.update(agent_family=self.family, mode="information_set")
+            request.update(mode="information_set")
         self.path = self.output / "study.json"
         if self.path.exists():
             if not resume:
@@ -740,9 +763,35 @@ class StudyRunner:
                 "result": "IMPROVED" if modified else "INCONCLUSIVE",
                 "message": "Supported exploratory improvement found." if modified else "No sufficiently supported improvement found."}
             self.state.setdefault("selected_candidate", {"phase": None, "name": "incumbent", "profile": profile_values(self.base)})
+        self.state.update(game=self.state["request"]["game"], agent_family=self.family)
         self.state["spent_seconds"] = self.spent
         self.state.update(study_diagnostics(self.state))
+        self.state["random_baseline"] = self._random_summary()
         _save(self.path, self.state)
+
+    def _random_summary(self):
+        phase = self.state['phases'].get('random_baseline', {})
+        contrast = next(iter(phase.get('contrasts', [])), {})
+        r = contrast.get('result', {})
+        return {'enabled': self.state['request'].get('vs_random', False),
+                'status': ('skipped' if phase.get('completion_reason') == 'insufficient_budget' else
+                    phase.get('status', 'pending' if self.state['request'].get('vs_random') else 'disabled')),
+                'reason': phase.get('completion_reason') or ('insufficient_budget' if self.state.get('status') == 'budget_exhausted' else None), 'champion': phase.get('frozen_champion'),
+                'games': r.get('games', 0), 'unpaired_games': r.get('unpaired_games', 0),
+                'paired_seeds': r.get('seed_pairs', 0), 'verdict': r.get('verdict', 'not_measured'),
+                'wins': r.get('wins_b', 0), 'draws': r.get('draws', 0), 'losses': r.get('losses_b', 0),
+                'score': r.get('score_b'), 'ci95': r.get('ci95_b'),
+                'interpretation': 'Diagnostic only. Not used for candidate selection.'}
+
+    def _random_phase(self):
+        champion = self.state.get('selected_candidate', {}).get('profile')
+        if champion is None:
+            champion = profile_values(_study_budget(self.base, self.state['calibration']))
+            self.state['selected_candidate'] = {'phase': None, 'name': 'incumbent', 'profile': champion}
+        return {'name': 'random_baseline', 'agents': {'random': None, 'champion': champion},
+                'groups': {}, 'accept': False, 'descriptive': True, 'evidence_policy': 'descriptive',
+                'frozen_champion': champion, 'status': 'pending',
+                'contrasts': [{'a': 'random', 'b': 'champion', 'factor': 'random_reference'}]}
 
     def _trace_config(self, phase: dict, index: int, *, pilot=False):
         contrast = phase["contrasts"][index]
@@ -800,7 +849,7 @@ class StudyRunner:
             rows = [json.loads(line) for line in config.output.read_text().splitlines()[1:]]
             contrast = phase["contrasts"][index]
             contrast["result"] = summarize_contrast(rows)
-            if phase.get("evidence_policy") != "confirmation":
+            if phase.get("evidence_policy") not in ("confirmation", "descriptive"):
                 contrast["result"]["verdict"] = "exploratory"
             contrast["trace"] = str(config.output.relative_to(self.output))
             rows_by_index[index] = rows
@@ -919,7 +968,7 @@ class StudyRunner:
         cal = self.state["calibration"]
         return cal["mean_plies"] * sum(
             (phase["agents"][c[role]].get("time_budget") or phase["agents"][c[role]]["iterations"] * cal["seconds_per_iteration"])
-            for c in phase["contrasts"] for role in ("a", "b"))
+            for c in phase["contrasts"] for role in ("a", "b") if phase["agents"][c[role]] is not None)
 
     def _recover(self):
         duration = 0.0
@@ -940,7 +989,8 @@ class StudyRunner:
                     pass
                 rows = [json.loads(line) for line in config.output.read_text().splitlines()[1:]]
                 contrast["result"] = summarize_contrast(rows)
-                contrast["result"]["verdict"] = "exploratory"
+                if phase.get("evidence_policy") not in ("confirmation", "descriptive"):
+                    contrast["result"]["verdict"] = "exploratory"
                 duration += sum(row["duration_seconds"] for row in rows) / config.workers
         # A process can terminate after flushing a match but before saving the state.
         # Never forget the elapsed time already represented by durable results.
@@ -963,16 +1013,16 @@ class StudyRunner:
                 r = c.get("result", {})
                 seconds = sum(r.get(t, {}).get("total_seconds", 0) for t in ("timing_a", "timing_b"))
                 if r.get("seed_pairs", 0) >= 2 and seconds:
-                    budgets = sum(previous["agents"][c[role]].get("time_budget", 0) for role in ("a", "b"))
+                    budgets = sum((previous["agents"][c[role]] or {}).get("time_budget", 0) for role in ("a", "b"))
                     if budgets:
                         lengths.append(seconds / r["seed_pairs"] / budgets)
             if lengths:
-                return 1.2 * median(lengths) * sum(phase["agents"][contrast[role]]["time_budget"] for role in ("a", "b"))
+                return 1.2 * median(lengths) * sum((phase["agents"][contrast[role]] or {}).get("time_budget", 0) for role in ("a", "b"))
         return self._estimated_round_seconds({**phase, "contrasts": [contrast]})
 
     def _plan_phase(self, phase, index):
         request = self.state["request"]
-        stage = {"exploration": "selection", "selection": "selection", "rave": "rave", "structure": "mechanisms", "cutoff-depth": "depth"}.get(phase.get("tuner"), "pw" if phase.get("tuner") else stage_for_phase(phase["name"]))
+        stage = {"exploration": "selection", "selection": "selection", "rave": "rave", "structure": "mechanisms", "tree-reuse": "mechanisms", "cutoff-depth": "depth"}.get(phase.get("tuner"), "pw" if phase.get("tuner") else stage_for_phase(phase["name"]))
         default_pairs = request["max_pairs"]
         for ci, contrast in enumerate(phase["contrasts"]):
             pairs = max(4, request.get("stage_games", {}).get(stage, 2 * default_pairs) // 2)
@@ -1009,6 +1059,16 @@ class StudyRunner:
                      allocation_mode="fixed_games")
 
     def _announce_plan(self):
+        self.progress(f"Game: {self.state['request']['game']}; Agent family: {self.family}")
+        self.progress('Supported study dimensions: ' + ', '.join(self.state['request']['supported_tuners']))
+        self.progress('Resolved stages: calibration, ' + ', '.join(self.phase_names))
+        self.progress('Selection policies: ' + ', '.join(self.state['request']['selection_policies']))
+        unsupported = sorted({'tree_reuse', 'transpositions', 'rave', 'progressive_widening'}
+                             - set(self.family_profile.mechanisms))
+        if unsupported:
+            self.progress('Unsupported for this family: ' + ', '.join(unsupported))
+        if self.state['request'].get('vs_random'):
+            self.progress('Random baseline: final retained champion vs Random; diagnostic only, after competitive stages.')
         if self.profile:
             return self.profile.announce(self)
         self.progress("Agent family: MCTS")
@@ -1047,13 +1107,17 @@ class StudyRunner:
                 if self.budget is not None and self.spent >= self.budget:
                     break
                 if phase is None:
-                    phase = self.profile.build_phase(name, self.state, self.base) if self.profile else _build_phase(name, self.state, self.base, self.reference)
+                    phase = (self._random_phase() if name == 'random_baseline' else
+                             self.profile.build_phase(name, self.state, self.base) if self.profile else
+                             _build_phase(name, self.state, self.base, self.reference))
                     self._plan_phase(phase, index)
                     self.state["phases"][name] = phase
                     self.save()
                 if not phase["contrasts"] or not phase["planned_pairs"]:
                     phase["status"] = "complete"
                     phase["completion_reason"] = "insufficient_budget" if phase.get("discarded_comparisons") else phase.get("skip_reason", "no_changed_parameters")
+                    if name == 'random_baseline':
+                        self.progress('Random baseline skipped: ' + phase['completion_reason'])
                     self.save()
                     continue
                 phase["status"] = "running"
@@ -1070,9 +1134,10 @@ class StudyRunner:
                     raise RuntimeError(f"{name}: fixed comparison games remain incomplete")
                 phase["status"] = "complete"
                 phase["completion_reason"] = "fixed_games_finished"
-                phase["winner"] = next(iter(_group_leaders(phase).values()))
-                control = phase["contrasts"][0]["a"]
-                phase["outcome"] = "IMPROVED" if phase["winner"] != control else "INCONCLUSIVE"
+                if not phase.get('descriptive'):
+                    phase["winner"] = next(iter(_group_leaders(phase).values()))
+                    control = phase["contrasts"][0]["a"]
+                    phase["outcome"] = "IMPROVED" if phase["winner"] != control else "INCONCLUSIVE"
                 self.save()
             complete = all(self.state["phases"].get(n, {}).get("status") == "complete" for n in self.phase_names)
             self.state["status"] = "complete" if complete else "budget_exhausted"
@@ -1086,6 +1151,8 @@ class StudyRunner:
             self.save()
             self.export_candidates()
             write_study_report(self.output, self.state)
+            if self.state['request'].get('vs_random'):
+                self.progress('RANDOM BASELINE: ' + json.dumps(self._random_summary(), sort_keys=True))
             if self.state.get("local_retune"):
                 self.progress(self.state["local_retune"]["message"])
                 self.progress("Changed fields: " + json.dumps(self.state["local_retune"]["changed_fields"], sort_keys=True))
@@ -1094,7 +1161,7 @@ class StudyRunner:
     def export_candidates(self):
         profiles = {}
         for phase in self.state["phases"].values():
-            if phase["status"] == "complete":
+            if phase["status"] == "complete" and not phase.get('descriptive'):
                 for leader in _group_leaders(phase).values():
                     profiles[f"{phase['name']}-{leader}"] = phase["agents"][leader]
         selected = self.state.get("selected_candidate")

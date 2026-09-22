@@ -13,6 +13,7 @@ TUNING_FIELDS = {
     'progressive-widening-alpha': ('progressive_widening_alpha',),
     'widening-expansion': ('progressive_widening_expansion',),
     'structure': ('tree_reuse', 'transpositions'),
+    'tree-reuse': ('tree_reuse',),
     'cutoff-depth': ('rollout_depth',),
 }
 
@@ -39,15 +40,10 @@ def assert_frozen(base, candidate, dimension):
 
 
 def validate_tuner(dimension, base, selectors):
-    from ._agent_config import SoIsmctsAgent
-    if isinstance(base, SoIsmctsAgent):
-        if base.selection_policy == 'ucb1_tuned':
-            raise ValueError('UCB1-Tuned does not use exploration')
-        if dimension != 'exploration':
-            raise ValueError('SO-ISMCTS supports only exploration tuning')
-        return
-    if dimension not in TUNING_FIELDS:
-        raise ValueError('unknown tuning dimension: ' + str(dimension))
+    from ._study_profiles import profile_for_agent
+    profile = profile_for_agent(base)
+    if dimension not in profile.supported_tuners:
+        raise ValueError(f"tuner '{dimension}' is not supported by agent family '{profile.name}'")
     if dimension.startswith('progressive-widening') or dimension == 'widening-expansion':
         if not base.progressive_widening:
             raise ValueError(f'{dimension} requires PW already enabled; local tuning never enables it implicitly')
@@ -77,6 +73,8 @@ def proposals(dimension, base, *, selectors=(), horizon=None, tested=(), coarse=
     """Return challengers only. The coordinator always retains the incumbent."""
     if dimension == 'selection':
         candidates = [replace(base, selection_policy=s) for s in selectors]
+    elif dimension == 'tree-reuse':
+        candidates = [replace(base, tree_reuse=r) for r in (False, True)]
     elif dimension == 'structure':
         candidates = [replace(base, tree_reuse=r, transpositions=t) for r, t in product((False, True), repeat=2)]
     elif dimension == 'widening-expansion':

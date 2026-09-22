@@ -398,6 +398,8 @@ def family_study_diagnostics(state):
     effects = []
     costs = []
     for name, phase in phases.items():
+        if phase.get('descriptive'):
+            continue
         for c in phase.get("contrasts", []):
             a, b = (phase["agents"][c[role]] for role in ("a", "b"))
             r = c.get("result", {})
@@ -426,7 +428,8 @@ def family_study_diagnostics(state):
             cost["median_determinizations_per_decision"] = cost["median_iterations_per_decision"]
             cost["determinizations_per_second"] = cost["iterations_per_second"]
         return {"agent_family": "so_ismcts", "mode": state["request"]["mode"],
-                "search_complete": state.get("status") == "complete",
+                "search_complete": all(phases.get(n, {}).get("status") == "complete"
+                    for n in state["request"]["phase_names"] if n != "random_baseline"),
                 "final_selection": {"candidate": selected.get("name"), "phase": selected.get("phase"),
                     "status": "confirmed" if confirmed else "provisional",
                     "competitive_confidence": verdict if complete and tested else "not_measured",
@@ -437,7 +440,8 @@ def family_study_diagnostics(state):
                 "improvement_comparisons": effects, "candidate_search_costs": costs}
     if state["request"].get("version", 0) >= 20:
         selected = state.get("selected_candidate", {})
-        return {"mode": state["request"]["mode"], "search_complete": state.get("status") == "complete",
+        return {"mode": state["request"]["mode"], "search_complete": all(phases.get(n, {}).get("status") == "complete"
+                    for n in state["request"]["phase_names"] if n != "random_baseline"),
                 "final_selection": {"candidate": selected.get("name"), "phase": selected.get("phase"),
                                     "status": "provisional", "competitive_confidence": "not_independently_confirmed",
                                     "interpretation": "Retained incumbent after completed stages and any requested local pass; no independent confirmation."},
@@ -513,6 +517,8 @@ def write_family_study_report(output, state):
     parts.extend('<p>Warning: ' + escape(w) + '</p>' for w in cal.get('warnings', []))
     if state.get('local_retune'):
         parts.append('<h2>LOCAL RETUNE: frozen fields and changes</h2><pre>' + escape(json.dumps(state['local_retune'], indent=2)) + '</pre>')
+    if state['request'].get('vs_random'):
+        parts.append('<h2>RANDOM BASELINE</h2><p>Diagnostic only. Not used for candidate selection.</p><pre>' + escape(json.dumps(state.get('random_baseline', {}), indent=2)) + '</pre>')
     parts.append('<h2>Selection evidence</h2><pre>' + escape(json.dumps(summary['final_selection'], indent=2)) + '</pre>')
     for name, phase in state['phases'].items():
         if phase.get('discarded_comparisons') or phase.get('skip_reason'):

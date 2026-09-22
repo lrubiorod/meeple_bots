@@ -76,5 +76,5 @@ class SelectionRegressionTests(unittest.TestCase):
                 SoIsmctsAgent(selection_policy=value)
         with self.assertRaisesRegex(ValueError, 'selection_policy'):
             _native.AgentConfig.so_ismcts(selection_policy='uct_rave')
-        with TemporaryDirectory() as tmp, self.assertRaisesRegex(ValueError, 'ignores C'):
-            StudyRunner('lost_cities', SoIsmctsAgent(selection_policy='ucb1_tuned'), output=Path(tmp))
+        with TemporaryDirectory() as tmp, self.assertRaisesRegex(ValueError, 'does not use exploration'):
+            StudyRunner('lost_cities', SoIsmctsAgent(selection_policy='ucb1_tuned'), output=Path(tmp), tune='exploration')
