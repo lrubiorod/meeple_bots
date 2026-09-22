@@ -2,12 +2,14 @@
 # This agent profile does not configure the board size.
 name = "connect6-baseline"
 time_budget = 1.0
-rollout_depth = 169
+rollout_depth = 361
 exploration = 0.125
 selection_policy = "uct_rave"
 rave_equivalence = 10000
-cutoff_evaluator = { kind = "neutral" }
-rollout_policy = { kind = "uniform_random" }
 tree_reuse = true
 transpositions = true
 root_diagnostics = false
+progressive_widening = true
+progressive_widening_k = 1.5
+progressive_widening_alpha = 0.3125
+progressive_widening_expansion = "rave"
