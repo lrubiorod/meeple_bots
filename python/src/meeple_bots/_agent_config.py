@@ -32,8 +32,11 @@ class SoIsmctsAgent:
 
     time_budget: float | None = None
     selection_policy: str = "uct"
+    tree_reuse: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.tree_reuse, bool):
+            raise TypeError("tree_reuse must be a boolean")
         if self.selection_policy not in ("uct", "ucb1_tuned"):
             raise ValueError("SO-ISMCTS selection_policy must be uct or ucb1_tuned")
         if self.iterations is None and self.time_budget is None:
@@ -56,6 +59,7 @@ class SoIsmctsAgent:
         """Search from player information only; return action and inspectable statistics.
 
         No authoritative position or simulation world is accepted at this boundary.
+        Standalone calls are fresh: reuse requires the native match lifecycle.
         """
         from . import _native
         from .lost_cities import LostCitiesObservation, LostCitiesAction
@@ -63,7 +67,7 @@ class SoIsmctsAgent:
             raise TypeError("search requires a LostCitiesObservation")
         result = _native.lost_cities_so_ismcts_search(
             observation.to_dict(), [a.to_dict() for a in legal_actions],
-            self.iterations, self.exploration, seed, self.time_budget, self.selection_policy,
+            self.iterations, self.exploration, seed, self.time_budget, self.selection_policy, self.tree_reuse,
         )
         result["action"] = LostCitiesAction.from_dict(result["action"])
         return result

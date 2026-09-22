@@ -1,7 +1,9 @@
 //! Random and observation-only SO-ISMCTS registration. Authoritative replay is an engine/admin API.
 use crate::{AgentConfig, CatalogAction, CatalogError, CatalogMatchReport, RecordedMove};
 use meeple_bots_core::{Game, PlayerId, PositionStatus};
-use meeple_bots_lost_cities::{LostCities, LostCitiesAction, LostCitiesState};
+use meeple_bots_lost_cities::{
+    LostCities, LostCitiesAction, LostCitiesObservation, LostCitiesState,
+};
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{MatchConfig, TracedChance, TracedMatchResult, play_match_with_trace};
 pub const SEARCH_UNAVAILABLE: &str = "Lost Cities has imperfect information: standard MCTS is not compatible; use SO-ISMCTS or RandomAgent";
@@ -174,12 +176,15 @@ mod tests {
 use meeple_bots_core::{
     Agent, AgentDecisionStats, AgentError, DecisionContext, RandomSource, RootActionStats,
 };
-use meeple_bots_so_ismcts::SoIsmctsAgent;
-/// Trusted environment adapter. It has NO lifecycle overrides and never passes
-/// authoritative states/chance events to the search object, even after opponent moves.
+use meeple_bots_so_ismcts::{ReusableSoIsmcts, SoIsmctsAgent};
+use std::time::Instant;
+/// Trusted adapter: converts real transitions to owner observations outside search.
+/// Private chance events and authoritative states never cross the search boundary.
 pub struct LostCitiesParticipant {
     search: Option<SoIsmctsAgent>,
     stats: AgentDecisionStats,
+    reuse: Option<ReusableSoIsmcts<LostCities, LostCitiesObservation>>,
+    pending_draw: Option<(PlayerId, LostCitiesAction)>,
 }
 impl LostCitiesParticipant {
     pub fn new(config: AgentConfig) -> Result<Self, CatalogError> {
@@ -195,10 +200,26 @@ impl LostCitiesParticipant {
                 return Err(CatalogError::InvalidMctsConfig(SEARCH_UNAVAILABLE));
             }
         };
+        let reuse = search
+            .as_ref()
+            .filter(|s| s.config.tree_reuse)
+            .map(|s| ReusableSoIsmcts::new(s.config.clone()));
         Ok(Self {
             search,
+            reuse,
+            pending_draw: None,
             stats: AgentDecisionStats::default(),
         })
+    }
+}
+impl Clone for LostCitiesParticipant {
+    fn clone(&self) -> Self {
+        Self {
+            search: self.search.clone(),
+            reuse: self.reuse.clone(),
+            pending_draw: None,
+            stats: AgentDecisionStats::default(),
+        }
     }
 }
 impl Agent<LostCities> for LostCitiesParticipant {
@@ -208,13 +229,25 @@ impl Agent<LostCities> for LostCitiesParticipant {
         rng: &mut R,
     ) -> Result<LostCitiesAction, AgentError> {
         if let Some(search) = &self.search {
+            if let Some(reuse) = &mut self.reuse {
+                reuse.begin_decision();
+            }
             let observer = decision.player();
             let observation = decision.observation();
             let legal: Vec<_> = decision.legal_actions().collect();
-            let result = search.search(&LostCities, &observation, observer, &legal, rng)?;
+            let fresh;
+            let (result, reuse_stats, new_nodes) = if let Some(reuse) = &mut self.reuse {
+                let r = reuse.search(&LostCities, &observation, observer, &legal, rng)?;
+                (&r.search, Some(r.reuse), r.new_nodes)
+            } else {
+                fresh = search.search(&LostCities, &observation, observer, &legal, rng)?;
+                let count = fresh.diagnostics.tree_nodes as u64;
+                (&fresh, None, count)
+            };
             self.stats = AgentDecisionStats {
                 search_iterations: Some(result.diagnostics.completed_iterations),
-                search_nodes: Some(result.diagnostics.tree_nodes as u64),
+                search_nodes: Some(new_nodes),
+                tree_reuse: reuse_stats,
                 terminal_simulations: Some(result.diagnostics.terminal_simulations),
                 cutoff_simulations: Some(result.diagnostics.cutoff_simulations),
                 root_actions: legal
@@ -238,10 +271,93 @@ impl Agent<LostCities> for LostCitiesParticipant {
                     .collect(),
                 ..Default::default()
             };
-            Ok(result.action)
+            let action = result.action;
+            if let Some(reuse) = &mut self.reuse {
+                reuse.finish_decision();
+            }
+            Ok(action)
         } else {
             self.stats = AgentDecisionStats::default();
             RandomAgent.select_action(decision, rng)
+        }
+    }
+    fn on_match_start(&mut self, game: &LostCities, _: &LostCitiesState, owner: PlayerId) {
+        self.pending_draw = None;
+        self.stats = AgentDecisionStats::default();
+        if let Some(reuse) = &mut self.reuse {
+            let started = Instant::now();
+            reuse.start_match(game, owner);
+            reuse.record_maintenance(started.elapsed());
+        }
+    }
+    fn on_action_applied(
+        &mut self,
+        game: &LostCities,
+        state: &LostCitiesState,
+        actor: PlayerId,
+        action: &LostCitiesAction,
+    ) {
+        let Some(reuse) = &mut self.reuse else {
+            return;
+        };
+        let started = Instant::now();
+        if self.pending_draw.take().is_some() {
+            reuse.reset();
+        }
+        if let Some(owner) = reuse.owner() {
+            if game.status(state) == PositionStatus::Chance {
+                // Simulation DrawDeck resolves deterministically. Wait for real chance.
+                if matches!(action, LostCitiesAction::DrawDeck) {
+                    self.pending_draw = Some((actor, *action));
+                } else {
+                    reuse.reset();
+                }
+            } else {
+                reuse.advance_real_transition(
+                    game,
+                    owner,
+                    actor,
+                    action,
+                    &game.observation(state, owner),
+                );
+            }
+        } else {
+            reuse.reset();
+        }
+        reuse.record_maintenance(started.elapsed());
+    }
+    fn on_chance_applied(
+        &mut self,
+        game: &LostCities,
+        state: &LostCitiesState,
+        _: &LostCitiesAction,
+    ) {
+        let Some(reuse) = &mut self.reuse else {
+            return;
+        };
+        let started = Instant::now();
+        if game.status(state) != PositionStatus::Chance {
+            if let Some((actor, action)) = self.pending_draw.take() {
+                if let Some(owner) = reuse.owner() {
+                    // The event's hidden card is deliberately not used or forwarded.
+                    reuse.advance_real_transition(
+                        game,
+                        owner,
+                        actor,
+                        &action,
+                        &game.observation(state, owner),
+                    );
+                } else {
+                    reuse.reset();
+                }
+            }
+        }
+        reuse.record_maintenance(started.elapsed());
+    }
+    fn on_match_end(&mut self, _: &LostCities, _: &LostCitiesState) {
+        self.pending_draw = None;
+        if let Some(reuse) = &mut self.reuse {
+            reuse.end_match();
         }
     }
     fn last_decision_stats(&self) -> AgentDecisionStats {
@@ -258,6 +374,7 @@ mod so_ismcts_tests {
     fn config() -> AgentConfig {
         AgentConfig::SoIsmcts(SoIsmctsConfig {
             selection_policy: meeple_bots_core::BanditPolicy::Uct,
+            tree_reuse: false,
             budget: meeple_bots_core::SearchBudget::Iterations(NonZeroU32::new(2).unwrap()),
             exploration: 1.0,
         })
@@ -295,6 +412,7 @@ mod so_ismcts_tests {
                 let search = SoIsmctsAgent {
                     config: SoIsmctsConfig {
                         selection_policy: meeple_bots_core::BanditPolicy::Uct,
+                        tree_reuse: false,
                         budget: meeple_bots_core::SearchBudget::Iterations(
                             NonZeroU32::new(2).unwrap(),
                         ),

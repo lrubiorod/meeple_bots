@@ -104,7 +104,7 @@ pub fn analyze_structure(
 }
 
 #[pyfunction]
-#[pyo3(signature = (game, median_depth, seed=0, iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None, selection_policy="uct"))]
+#[pyo3(signature = (game, median_depth, seed=0, iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None, selection_policy="uct", tree_reuse=false))]
 #[allow(clippy::too_many_arguments)] // Python API keeps existing positional parameters compatible.
 pub fn benchmark_so_ismcts(
     py: Python<'_>,
@@ -115,6 +115,7 @@ pub fn benchmark_so_ismcts(
     exploration: f64,
     time_budget: Option<f64>,
     selection_policy: &str,
+    tree_reuse: bool,
 ) -> PyResult<Py<PyList>> {
     let game = parse_configured_game(game, None)?;
     if !meeple_bots_catalog::game_search_capabilities(game)
@@ -126,6 +127,7 @@ pub fn benchmark_so_ismcts(
     let config = meeple_bots_so_ismcts::SoIsmctsConfig {
         budget: parse_search_budget(iterations, time_budget)?,
         exploration,
+        tree_reuse,
         selection_policy: super::parse_bandit_policy(selection_policy)?,
     };
     let timings = py

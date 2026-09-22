@@ -58,7 +58,7 @@ def _mcts_timings(game, agent, depth, seed):
 def _so_timings(game, agent, depth, seed):
     return _native.benchmark_so_ismcts(_native_game(game), depth, seed,
                                       iterations=agent.iterations, exploration=agent.exploration,
-                                      time_budget=agent.time_budget, selection_policy=agent.selection_policy)
+                                      time_budget=agent.time_budget, selection_policy=agent.selection_policy, tree_reuse=agent.tree_reuse)
 
 
 # Family-specific measurement only. Report construction and operating points are shared.

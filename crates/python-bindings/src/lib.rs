@@ -61,16 +61,18 @@ struct PyAgentConfig {
 #[pymethods]
 impl PyAgentConfig {
     #[staticmethod]
-    #[pyo3(signature = (iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None, selection_policy="uct"))]
+    #[pyo3(signature = (iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None, selection_policy="uct", tree_reuse=false))]
     fn so_ismcts(
         iterations: Option<u32>,
         exploration: f64,
         time_budget: Option<f64>,
         selection_policy: &str,
+        tree_reuse: bool,
     ) -> PyResult<Self> {
         let config = meeple_bots_so_ismcts::SoIsmctsConfig {
             budget: parse_search_budget(iterations, time_budget)?,
             exploration,
+            tree_reuse,
             selection_policy: parse_bandit_policy(selection_policy)?,
         };
         config

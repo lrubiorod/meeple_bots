@@ -106,6 +106,7 @@ fn agent(n: u32) -> SoIsmctsAgent {
     SoIsmctsAgent {
         config: SoIsmctsConfig {
             selection_policy: meeple_bots_core::BanditPolicy::Uct,
+            tree_reuse: false,
             budget: meeple_bots_core::SearchBudget::Iterations(NonZeroU32::new(n).unwrap()),
             exploration: 1.,
         },
@@ -216,7 +217,7 @@ fn histories_are_not_globally_merged() {
     assert_ne!(outcome(&mut nodes, 0, 0, 8).0, a);
 }
 use meeple_bots_lost_cities::{LostCities, LostCitiesAction as L, LostCitiesState};
-fn ready() -> LostCitiesState {
+pub(super) fn ready() -> LostCitiesState {
     let g = LostCities;
     let mut s = g.initial_state();
     let mut r = SplitMix64::new(42);

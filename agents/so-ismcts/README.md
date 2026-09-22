@@ -4,7 +4,8 @@
 observation, that player's legal root actions, game rules, and a search RNG. It has
 no authoritative-state argument and does not implement the legacy `Agent` lifecycle.
 The Lost Cities catalog adapter constructs the observation outside the search
-boundary; its lifecycle callbacks are no-ops. Ordinary MCTS remains incompatible
+boundary. With `tree_reuse=true`, its lifecycle callbacks advance an observation-only
+`ReusableSoIsmcts` instance owned by that seat. Ordinary MCTS remains incompatible
 with Lost Cities.
 
 ## One decision, many temporary worlds
@@ -13,8 +14,8 @@ Every iteration samples a **fresh complete determinization** from the same root
 observation. Selection and expansion traverse a shared tree, then a uniform random
 rollout finishes that same world. Terminal root utility (+1 win, 0 draw, -1 loss)
 is backed up along the traversed path. The temporary world is dropped at iteration
-end; only statistics and observable distinctions survive. Each real decision
-starts a new tree, with the acting player as the fixed observer.
+end; only statistics and observable distinctions survive. By default each real
+decision starts a new tree, with the acting player as the fixed observer.
 
 The optional core `DeterminizedWorld` capability supplies legal actions, observation,
 action application, status and terminal utility without RNG-driven transitions.
@@ -110,13 +111,36 @@ diagnostics are available through `search()`.
 
 Single Observer uses one root perspective, including opponent turns. It does not
 solve the opponent-model limitations addressed by MO-ISMCTS or RIS-MCTS. There is
-no PIMC, redeterminization, heuristic rollout, RAVE, widening, bias, MAST, reuse,
-transpositions, parallel search or stochastic-node search. `study` currently supports
-UCT operating-budget calibration and exploration tuning only. It rejects tuned
-baselines rather than racing an ignored C; selection tuning is deferred. See
+no PIMC, redeterminization, heuristic rollout, RAVE, widening, bias, MAST,
+transpositions, parallel search or stochastic-node search. `study` supports
+operating-budget calibration, UCT exploration, UCT/UCB1-Tuned selection and tree
+reuse tuning. UCB1-Tuned baselines are accepted, but cannot tune inactive C. See
 [Lost Cities study](../../python/studies.md#lost-cities-and-the-so-ismcts-study-profile). The Lost Cities debug GUI supports
 SO-ISMCTS in either seat with separate iteration/exploration settings and an
 observation-only search boundary, while displaying both hands for inspection.
+
+## Optional realized-path tree reuse
+
+Set `tree_reuse = true` in a SO-ISMCTS profile or pass it to `SoIsmctsAgent`.
+Reuse is disabled by default. Each seat owns an independent tree and fixed observer;
+cloning or starting/ending a match clears retained state. Standalone `search()` and
+independent-position benchmarks always start fresh, including when reuse is enabled.
+
+After each real action, reuse follows only that action's immediate edge and the
+resulting owner observation. Real deck draws wait for the environment's chance
+resolution; the hidden chance event itself is never passed to search. A missing
+branch or incompatible owner/observation discards the retained tree. A hit compacts
+the reached subtree, discarding unreachable nodes and remapping child indices.
+Visits, availability, utility sums and UCB1-Tuned squared utility sums survive.
+Every new iteration still samples a fresh determinization; no hidden world survives.
+This is history-path reuse, not observation-based transposition merging.
+
+Match diagnostics count newly completed iterations and newly allocated nodes;
+`tree_reuse` separately records retained visits/nodes, hits, misses, pruning and
+resets. Lifecycle maintenance is included in agent-total timing and deducted from
+the next timed search, with a reserve for result finalization. At least one whole
+iteration runs even when maintenance exhausts the allowance, so the deadline is
+not a hard limit. Use equal wall-clock budgets for competitive reuse comparisons.
 
 ## Python and CLI
 

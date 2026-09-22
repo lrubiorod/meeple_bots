@@ -1,9 +1,21 @@
 """Real-path reuse through native matches; standalone search remains fresh."""
 import unittest
 from dataclasses import asdict, replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from meeple_bots import LostCities, SoIsmctsAgent, RandomAgent, Match, benchmark_search_agent
 
 class ReuseTests(unittest.TestCase):
+    def test_profile_export_preserves_reuse_and_selector(self):
+        from meeple_bots.studies import export_profile
+        from meeple_bots._search_profiles import load_search_profile
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'agent.toml'
+            for policy in ('uct', 'ucb1_tuned'):
+                agent = SoIsmctsAgent(time_budget=.001, selection_policy=policy, tree_reuse=True)
+                export_profile(path, 'reuse', agent)
+                self.assertEqual(load_search_profile(path), agent)
+
     def test_standalone_is_fresh_even_when_config_requests_reuse(self):
         g=LostCities(); s=g.initial_state(42); o=g.observation(s,0); legal=g.legal_actions(s)
         for policy in ('uct','ucb1_tuned'):

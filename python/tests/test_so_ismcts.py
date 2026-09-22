@@ -53,7 +53,7 @@ class SoIsmctsTests(unittest.TestCase):
         for kwargs in ({'iterations': 0}, {'exploration': -1}, {'exploration': float('nan')}, {'exploration': float('inf')}):
             with self.assertRaises(ValueError):
                 SoIsmctsAgent(**kwargs)
-        for kwargs in ({'rave_equivalence': 100}, {'tree_reuse': True}, {'rollout_policy': 'uniform'}):
+        for kwargs in ({'rave_equivalence': 100}, {'transpositions': True}, {'rollout_policy': 'uniform'}):
             with self.assertRaises(TypeError):
                 SoIsmctsAgent(**kwargs)
         with self.assertRaisesRegex(ValueError, 'only supported by Lost Cities'):
@@ -100,7 +100,7 @@ class SoIsmctsTests(unittest.TestCase):
             self.assertEqual(main(base), 0)
         payload = json.loads(out.getvalue())
         self.assertEqual(payload['players'][0], {
-            'type': 'so_ismcts', 'iterations': 2, 'exploration': 1.0, 'selection_policy': 'uct',
+            'type': 'so_ismcts', 'iterations': 2, 'exploration': 1.0, 'selection_policy': 'uct', 'tree_reuse': False,
             'rollout_policy': 'uniform', 'root_selection': 'most_visited',
         })
         err = io.StringIO()

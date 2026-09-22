@@ -192,6 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     match.add_argument("--first", choices=["human", "mcts", "so_ismcts", "random"], default="mcts")
     match.add_argument("--second", choices=["human", "mcts", "so_ismcts", "random"], default="random")
+    match.add_argument("--so-ismcts-tree-reuse", action="store_true")
     match.add_argument("--so-ismcts-selection-policy", choices=("uct", "ucb1_tuned"), default="uct")
     match.add_argument("--so-ismcts-iterations", type=int, default=1000)
     match.add_argument("--so-ismcts-exploration", type=float, default=2 ** 0.5)
@@ -554,7 +555,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not using_so and any(a.startswith("--so-ismcts-") for a in supplied):
             raise ValueError("SO-ISMCTS options require a so_ismcts participant")
         mcts = _mcts_configuration(args)
-        first = SoIsmctsAgent(args.so_ismcts_iterations, args.so_ismcts_exploration, selection_policy=args.so_ismcts_selection_policy) if args.first == "so_ismcts" and args.first_mcts_config is None else _match_agent(
+        first = SoIsmctsAgent(args.so_ismcts_iterations, args.so_ismcts_exploration, selection_policy=args.so_ismcts_selection_policy, tree_reuse=args.so_ismcts_tree_reuse) if args.first == "so_ismcts" and args.first_mcts_config is None else _match_agent(
             args.first,
             args.first_mcts_config,
             mcts,
@@ -562,7 +563,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--first-mcts-config",
             "--first-mcts-heuristic",
         )
-        second = SoIsmctsAgent(args.so_ismcts_iterations, args.so_ismcts_exploration, selection_policy=args.so_ismcts_selection_policy) if args.second == "so_ismcts" and args.second_mcts_config is None else _match_agent(
+        second = SoIsmctsAgent(args.so_ismcts_iterations, args.so_ismcts_exploration, selection_policy=args.so_ismcts_selection_policy, tree_reuse=args.so_ismcts_tree_reuse) if args.second == "so_ismcts" and args.second_mcts_config is None else _match_agent(
             args.second,
             args.second_mcts_config,
             mcts,
@@ -1476,7 +1477,7 @@ def _agent(
 def _agent_dict(name: str, agent) -> dict[str, object]:
     if isinstance(agent, SoIsmctsAgent):
         return {"type": "so_ismcts", "iterations": agent.iterations, "exploration": agent.exploration,
-                "selection_policy": agent.selection_policy,
+                "selection_policy": agent.selection_policy, "tree_reuse": agent.tree_reuse,
                 "rollout_policy": "uniform", "root_selection": "most_visited"}
     cutoff_evaluator = agent.cutoff_evaluator if isinstance(agent, MctsAgent) else None
     rollout_evaluator = (

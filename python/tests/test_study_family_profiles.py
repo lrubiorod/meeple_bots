@@ -18,15 +18,15 @@ class FamilyStudyTests(unittest.TestCase):
             output=Path(path), games_per_comparison=8, workers=1, progress=lambda _: None, **kwargs)
 
     def test_capabilities_are_real_and_defaults_unchanged(self):
-        self.assertEqual(PROFILES['so_ismcts'].supported_tuners, ('exploration', 'selection'))
-        self.assertFalse(PROFILES['so_ismcts'].mechanisms)
-        for dimension in ('rave', 'tree-reuse', 'structure', 'progressive-widening', 'unknown'):
+        self.assertEqual(PROFILES['so_ismcts'].supported_tuners, ('exploration', 'selection', 'tree-reuse'))
+        self.assertEqual(PROFILES['so_ismcts'].mechanisms, ('tree_reuse',))
+        for dimension in ('rave', 'structure', 'progressive-widening', 'unknown'):
             with TemporaryDirectory() as tmp, self.assertRaisesRegex(ValueError, "agent family 'so_ismcts'"):
                 self.runner(tmp, tune=dimension)
         with TemporaryDirectory() as tmp:
             r=self.runner(tmp, all_search=True)
             self.assertFalse(r.state['request']['vs_random'])
-            self.assertEqual({s['dimension'] for s in r.state['request']['tuner_specs'].values()}, {'exploration','selection'})
+            self.assertEqual({s['dimension'] for s in r.state['request']['tuner_specs'].values()}, {'exploration','selection','tree-reuse'})
         with TemporaryDirectory() as tmp:
             r=StudyRunner('connect6', MctsAgent(iterations=1), output=Path(tmp), progress=lambda _: None)
             self.assertEqual(r.family_profile.name, 'mcts')
@@ -51,6 +51,23 @@ class FamilyStudyTests(unittest.TestCase):
             self.assertEqual(p['agents']['incumbent']['selection_policy'],'ucb1_tuned')
         with TemporaryDirectory() as tmp, self.assertRaisesRegex(ValueError, 'does not use exploration'):
             self.runner(tmp,SoIsmctsAgent(selection_policy='ucb1_tuned'),tune='exploration')
+
+    def test_tree_reuse_local_and_mechanism_candidates_freeze_other_fields(self):
+        for selector in ('uct', 'ucb1_tuned'):
+            for enabled in (False, True):
+                base = SoIsmctsAgent(time_budget=.0001, selection_policy=selector, tree_reuse=enabled)
+                for flags in ({'tune': 'tree-reuse'}, {'mechanism_search': True}):
+                    with TemporaryDirectory() as tmp:
+                        r = self.runner(tmp, base, **flags)
+                        r.calibrate()
+                        name = next(n for n, s in r.state['request']['tuner_specs'].items()
+                                    if s['dimension'] == 'tree-reuse')
+                        phase = r.profile.build_phase(name, r.state, base)
+                        self.assertEqual(len(phase['contrasts']), 1)
+                        challenger = agent_from_values(phase['agents'][phase['contrasts'][0]['b']])
+                        self.assertEqual(set(changes(base, challenger)), {'tree_reuse'})
+                        self.assertEqual(challenger.tree_reuse, not enabled)
+                        self.assertNotIn('transpositions', phase['agents'][phase['contrasts'][0]['b']])
 
     def test_random_native_fixed_profile_reports_and_does_not_select(self):
         with TemporaryDirectory() as tmp:

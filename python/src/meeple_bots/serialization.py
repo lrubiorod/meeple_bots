@@ -197,7 +197,7 @@ def agent_dict(name: str, agent: RandomAgent | SoIsmctsAgent | MctsAgent) -> dic
         return {"name": name, "type": "random"}
     if isinstance(agent, SoIsmctsAgent):
         return {"name": name, "type": "so_ismcts", "iterations": agent.iterations, "time_budget": agent.time_budget,
-                "exploration": agent.exploration, "selection_policy": agent.selection_policy, "rollout_policy": "uniform",
+                "exploration": agent.exploration, "selection_policy": agent.selection_policy, "tree_reuse": agent.tree_reuse, "rollout_policy": "uniform",
                 "root_selection": "most_visited"}
     return {
         "name": name,

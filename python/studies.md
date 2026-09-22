@@ -812,15 +812,27 @@ the family's tools (for example, stochastic MCTS does not support RAVE/PW).
 | Family | Exploration | Selection | Tree reuse | RAVE | PW | Transpositions |
 | --- | --- | --- | --- | --- | --- | --- |
 | MCTS | UCT C | UCT/UCB1-Tuned (also UCT-RAVE where supported) | yes | deterministic backend | deterministic backend | yes |
-| SO-ISMCTS | IS-UCT C | UCT/UCB1-Tuned | no | no | no | no |
+| SO-ISMCTS | IS-UCT C | UCT/UCB1-Tuned | yes | no | no | no |
 
-SO-ISMCTS tree reuse is not integrated in the current public agent, so this profile
-does not advertise it. MCTS retains its four-way reuse/transpositions mechanism
-stage; `--tune tree-reuse` changes only reuse on an MCTS baseline.
+SO-ISMCTS supports optional realized-path tree reuse (`tree_reuse = true`, default
+false). `--mechanism-search` compares reuse off/on; `--tune tree-reuse` freezes all
+other baseline fields, including selector and compute budget. MCTS retains its
+four-way reuse/transpositions mechanism stage. Use timed baselines for competitive
+reuse comparisons; explicitly supplied iteration budgets remain frozen for local
+retuning. Standalone searches and independent-position calibration remain fresh.
+Lifecycle maintenance is included in agent-total timing. See
+[SO-ISMCTS reuse](../agents/so-ismcts/README.md#optional-realized-path-tree-reuse).
+
+```bash
+.venv/bin/python -m meeple_bots study --game lost_cities \
+  --agent so_ismcts --mechanism-search --budget 5m \
+  --target-match-time 1s --games-per-comparison 8 \
+  --output results/studies/lost-cities-reuse-smoke
+```
 
 `--selection-search` adds UCT exploration calibration and selector comparison for
 SO-ISMCTS. `--all-search` resolves to these currently supported stages; it does not
-invent RAVE, PW, transposition or reuse support. Without these flags, the original
+invent RAVE, PW or transposition support. Without these flags, the original
 bounded exploration plan remains unchanged. UCB1-Tuned baselines are now accepted;
 `--tune exploration` rejects them because C is inactive. `--tune selection` works
 from either selector, freezing C and the resource budget. Full selection search
@@ -893,8 +905,9 @@ provisional nominee. Random is only the structural pilot, never the C-selection 
 Full study and local retune use the same exploration generator and comparisons.
 Only C changes in local mode: iterations/time, uniform rollout, MostVisited, and
 game configuration remain frozen. The target match time remains a reporting
-reference for an explicit baseline budget, not a budget replacement. RAVE, widening,
-reuse, other selectors, heuristics and other tuning dimensions are rejected.
+reference for an explicit baseline budget, not a budget replacement. Selection and
+tree reuse have separate tuners; RAVE, widening, transpositions and heuristics
+remain unsupported by this family.
 
 `candidates/best_agent.toml` is directly usable, for example:
 

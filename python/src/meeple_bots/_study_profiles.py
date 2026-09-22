@@ -33,9 +33,9 @@ class MctsStudyProfile:
 
 class SoIsmctsStudyProfile:
     name = 'so_ismcts'
-    version = 2
-    supported_tuners = ('exploration', 'selection')
-    mechanisms = ()
+    version = 3
+    supported_tuners = ('exploration', 'selection', 'tree-reuse')
+    mechanisms = ('tree_reuse',)
 
     def resolved_tuners(self, caps):
         return self.supported_tuners

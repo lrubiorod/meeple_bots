@@ -93,7 +93,7 @@ def policy_values(policy) -> dict:
 
 def profile_values(agent: MctsAgent | SoIsmctsAgent) -> dict:
     if isinstance(agent, SoIsmctsAgent):
-        return {"agent": "so_ismcts", "exploration": agent.exploration, "selection_policy": agent.selection_policy,
+        return {"agent": "so_ismcts", "exploration": agent.exploration, "selection_policy": agent.selection_policy, "tree_reuse": agent.tree_reuse,
                 "rollout": "uniform", "root_selection": "most_visited",
                 **({"iterations": agent.iterations} if agent.iterations is not None else {"time_budget": agent.time_budget})}
     values = {"iterations": agent.iterations} if agent.iterations is not None else {"time_budget": agent.time_budget}

@@ -7,8 +7,9 @@ class SoTournamentConfigTests(unittest.TestCase):
     def test_selectors_and_equal_time_budget(self):
         for policy in ('uct', 'ucb1_tuned'):
             (entry,) = _load_tournament_agents(dict(name=policy, kind='so_ismcts',
-                selection_policy=policy, time_budget=1.0), 1, LostCities())
+                selection_policy=policy, time_budget=1.0, tree_reuse=True), 1, LostCities())
             self.assertEqual(entry.agent.selection_policy, policy)
+            self.assertTrue(entry.agent.tree_reuse)
             self.assertEqual(entry.agent.time_budget, 1.0)
             self.assertIsNone(entry.agent.iterations)
 

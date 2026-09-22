@@ -7,6 +7,8 @@ use meeple_bots_core::{
 };
 pub use meeple_bots_core::{BanditPolicy, SearchBudget};
 use std::time::Instant;
+mod reuse;
+pub use reuse::{ReusableSoIsmcts, ReuseSearchResult};
 
 /// Safety cutoff for cyclic games, not a game horizon. Cutoffs back up neutral utility.
 pub const MAX_SIMULATION_ACTIONS: usize = 10_000;
@@ -15,6 +17,7 @@ pub struct SoIsmctsConfig {
     pub budget: SearchBudget,
     pub exploration: f64,
     pub selection_policy: BanditPolicy,
+    pub tree_reuse: bool,
 }
 impl Default for SoIsmctsConfig {
     fn default() -> Self {
@@ -22,6 +25,7 @@ impl Default for SoIsmctsConfig {
             budget: SearchBudget::default(),
             exploration: std::f64::consts::SQRT_2,
             selection_policy: BanditPolicy::Uct,
+            tree_reuse: false,
         }
     }
 }
@@ -225,6 +229,40 @@ impl SoIsmctsAgent {
         G::Action: Clone + Eq,
         R: RandomSource + ?Sized,
     {
+        self.search_with_nodes(
+            game,
+            observation,
+            observer,
+            root_legal,
+            rng,
+            vec![Node {
+                visits: 0,
+                edges: vec![],
+            }],
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn search_with_nodes<G, W, O, R>(
+        &self,
+        game: &G,
+        observation: &O,
+        observer: PlayerId,
+        root_legal: &[G::Action],
+        rng: &mut R,
+        mut nodes: Vec<Node<G::Action, O>>,
+        mut timing: Option<&mut reuse::ReuseTiming>,
+    ) -> Result<SearchResult<G::Action, O>, AgentError>
+    where
+        G: TwoPlayerZeroSumGame
+            + ImperfectInformationGame<Determinization = W>
+            + for<'a> Game<Observation<'a> = O>
+            + 'static,
+        W: DeterminizedWorld<Action = G::Action, Observation = O>,
+        O: Clone + Eq,
+        G::Action: Clone + Eq,
+        R: RandomSource + ?Sized,
+    {
         self.config.validate()?;
         if game.player_count() != 2 || observer.index() >= 2 {
             return Err(error(
@@ -234,10 +272,6 @@ impl SoIsmctsAgent {
         if root_legal.is_empty() {
             return Err(AgentError::NoLegalActions);
         }
-        let mut nodes = vec![Node {
-            visits: 0,
-            edges: vec![],
-        }];
         let mut diagnostics = Diagnostics::default();
         let started = Instant::now();
         loop {
@@ -246,7 +280,10 @@ impl SoIsmctsAgent {
                     diagnostics.completed_iterations >= u64::from(n.get())
                 }
                 SearchBudget::Time(t) => {
-                    diagnostics.completed_iterations > 0 && started.elapsed() >= t
+                    diagnostics.completed_iterations > 0
+                        && timing
+                            .as_ref()
+                            .map_or_else(|| started.elapsed() >= t, |clock| clock.exhausted())
                 }
             };
             if exhausted {
@@ -338,9 +375,18 @@ impl SoIsmctsAgent {
             }
             diagnostics.completed_iterations += 1;
         }
+        if let Some(clock) = timing.as_mut() {
+            clock.finish_search();
+        }
         diagnostics.tree_nodes = nodes.len();
         diagnostics.action_edges = nodes.iter().map(|n| n.edges.len()).sum();
-        let most = nodes[0].edges.iter().map(|e| e.visits).max().unwrap();
+        let most = nodes[0]
+            .edges
+            .iter()
+            .filter(|e| root_legal.contains(&e.action))
+            .map(|e| e.visits)
+            .max()
+            .unwrap();
         // Stable input action order resolves MostVisited ties; no hidden tie-break data.
         let action = root_legal
             .iter()
