@@ -446,7 +446,7 @@ class StudyTests(unittest.TestCase):
 
     def test_rave_progression_and_selector_comparison_order(self):
         state = self.populate(self.state_for_plan())
-        for name, k in [('rave', 10000), ('rave_extend_1', 20000), ('rave_extend_2', 40000), ('rave_extend_3', 80000), ('rave_extend_4', 160000), ('rave_extend_5', 320000)]:
+        for name, k in [('rave', 10000), ('rave_extend_1', 20000), ('rave_extend_2', 40000), ('rave_extend_3', 80000)]:
             phase = state['phases'][name]
             self.assertEqual(len(phase['contrasts']), 2)
             self.assertIn(k, [phase['agents'][c['b']]['rave_equivalence'] for c in phase['contrasts']])
@@ -459,7 +459,7 @@ class StudyTests(unittest.TestCase):
         c = comparison['contrasts'][0]
         self.assertEqual(comparison['agents'][c['a']]['selection_policy'], 'ucb1_tuned')
         self.assertEqual(comparison['agents'][c['b']]['selection_policy'], 'uct_rave')
-        self.assertEqual(comparison['agents'][c['b']]['rave_equivalence'], 320000)
+        self.assertEqual(comparison['agents'][c['b']]['rave_equivalence'], 80000)
         self.assertGreater(PHASES.index('rave_compare'), PHASES.index('rave_exploration'))
 
     def test_rave_stops_expansion_without_claiming_plateau(self):
@@ -467,7 +467,7 @@ class StudyTests(unittest.TestCase):
             state = self.populate(self.state_for_plan())
             for c in state['phases']['rave_extend_1']['contrasts']:
                 c['result']['score_b'] = score
-            for name in ('rave_extend_2', 'rave_extend_3', 'rave_extend_4', 'rave_extend_5', 'rave_exploration'):
+            for name in ('rave_extend_2', 'rave_extend_3', 'rave_exploration'):
                 phase = _build_phase(name, state, generic_baseline('boop'), None)
                 state['phases'][name] = phase
                 if name != 'rave_exploration':
@@ -497,7 +497,7 @@ class StudyTests(unittest.TestCase):
     def test_incomplete_rave_calibration_never_competes_with_selector(self):
         state = self.populate(self.state_for_plan())
         state['phases']['rave']['contrasts'][0]['result'] = {}
-        for name in ('rave_extend_1', 'rave_extend_2', 'rave_extend_3', 'rave_extend_4', 'rave_extend_5', 'rave_exploration', 'rave_compare'):
+        for name in ('rave_extend_1', 'rave_extend_2', 'rave_extend_3', 'rave_exploration', 'rave_compare'):
             phase = _build_phase(name, state, generic_baseline('boop'), None)
             state['phases'][name] = phase
             self.assertFalse(phase['contrasts'])
@@ -518,8 +518,8 @@ class StudyTests(unittest.TestCase):
                 planned_phase.setdefault('planned_pairs', 2)
             runner.save()
             seeds = [runner._trace_config(runner.state['phases'][name], 0).seed
-                     for name in ('rave_extend_1', 'rave_extend_2', 'rave_extend_3', 'rave_extend_4', 'rave_extend_5', 'rave_exploration', 'rave_compare')]
-            self.assertEqual(len(set(seeds)), 7)
+                     for name in ('rave_extend_1', 'rave_extend_2', 'rave_extend_3', 'rave_exploration', 'rave_compare')]
+            self.assertEqual(len(set(seeds)), 5)
             resumed = StudyRunner('boop', output=Path(tmp), budget=1000, resume=True, rave_search=True, progress=lambda _: None)
             self.assertEqual(resumed.state['phases']['rave_extend_1'], phase)
             self.assertEqual(resumed.state['request']['games_per_comparison'], 50)
@@ -775,8 +775,8 @@ class StudyTests(unittest.TestCase):
         alpha = _build_phase('pw_alpha', state, generic_baseline('boop'), None)
         self.assertTrue(alpha['contrasts'])
         self.assertEqual(stage_for_phase('pw_alpha_extend_5'), 'pw')
-        self.assertLess(PHASES.index('pw_k_extend_5'), PHASES.index('pw_alpha'))
-        self.assertLess(PHASES.index('pw_alpha_extend_5'), PHASES.index('pw_compare'))
+        self.assertLess(PHASES.index('pw_k_extend_3'), PHASES.index('pw_alpha'))
+        self.assertLess(PHASES.index('pw_alpha_extend_3'), PHASES.index('pw_compare'))
 
     def test_fixed_games_pause_retains_pending_phase_instead_of_skipping(self):
         with TemporaryDirectory() as tmp:

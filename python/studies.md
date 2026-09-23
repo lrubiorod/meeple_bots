@@ -607,7 +607,7 @@ can be affected by CPU contention. Use `--workers 1` for isolated comparisons.
 ### RAVE and PW calibration
 
 RAVE starts from the current selector's exploration. It uses the current RAVE k
-if present, otherwise 3000, with two coarse neighbors. Up to five adaptive rounds
+if present, otherwise 3000, with two coarse neighbors. Up to three adaptive rounds
 check geometric gaps or expand improving boundaries, followed by local exploration
 calibration. Only then does the calibrated copy face the incumbent. Stopping for
 lack of improvement is not proof of a plateau.
@@ -671,7 +671,7 @@ Budget-pruned races are frozen, not silently reintroduced on resume. A completed
 study with `budget_limited=true` may have omitted challengers; start a new local
 retune to explore them. Resume is for incomplete executed races.
 
-After family screening, each surviving PW policy calibrates k, then alpha, with up to **five additional rounds per axis**.
+After family screening, each surviving PW policy calibrates k, then alpha, with up to **three additional rounds per axis**.
 The first additional round checks gaps around the coarse winner. Subsequent
 rounds continue only for a winning challenger scoring at least 55%, with mean
 paired-seed score minus one estimated standard error above 50%. This is an
@@ -723,7 +723,42 @@ python -m meeple_bots study --game connect6 --game-param board_size=13 \
 # Add --resume to the identical command after an interruption.
 ```
 
-### Local coordinate retuning
+#### Reading the study plan and compute budget
+
+The console groups the target/family, search horizon, active compute budget,
+calibration, high-level stages and comparison policy. Internal phase IDs remain
+in `study.json`, `summary.json`, reports and traces; they appear during execution,
+not as a flat startup list. Only stages in the resolved plan are reported; MCTS
+plans do not gain an extra confirmation stage from this presentation change.
+
+Compute precedence remains: explicit `--decision-time` > supplied baseline/config
+budget > time derived from `--target-match-time`. Local `--tune` freezes its
+baseline budget and therefore rejects `--decision-time`. An overridden match target
+is marked **not used**. Otherwise the output shows the derivation:
+`target_match_time / (estimated player decisions * safety margin)`.
+`Estimated search/game` is decision seconds times estimated player decisions,
+not a hard wall-clock match deadline. Fixed-iteration baselines display iterations
+as the fairness budget, with observed mean latency only as an estimate.
+
+Study's practical full horizon retains its existing minimum probe terminal-rate
+criterion (99%), or a rules-proven maximum when available. It does not use analyze's
+1.5 × sampled-p95 rule. Baseline and heuristic cutoff horizons are labeled separately.
+
+Adaptive scalar chains now have an initial round plus **at most three extensions**.
+This covers RAVE equivalence, PW k/alpha and the shared local/second-pass scalar
+tuners. Their first follow-up can refine interior gaps; subsequent rounds retain
+the existing improvement requirement. Candidate grids, fixed games and evidence
+thresholds are unchanged. Second-pass numerical suffixes identify adaptive rounds,
+not candidates; their chains are shortened too. Categorical races and the final
+single k recheck keep one round. This reduces possible work, not evidence per race.
+
+Protocol 23 freezes `max_extension_rounds=3` and all resolved IDs at creation.
+Earlier checkpoints are rejected with a plan-version error and left untouched;
+continue them using their original code or start in a new output directory.
+The active source, decision budget and estimated search/game are also recorded in
+`calibration.compute_budget` in checkpoints and summaries.
+
+## Local coordinate retuning
 
 `--tune DIMENSION` requires `--agent-config PATH` (alias of `--baseline`). It is
 exclusive with full-study search flags and `--second-pass`. No selection-family
@@ -760,7 +795,7 @@ approximately k/3 and 10k/3, PW k with k/3 and 8k/3, and alpha with +/-0.25
 (bounded to [0.05,1]). Depth starts near half/1.5 times the incumbent and respects
 the reference horizon. A first follow-up checks gaps; later rounds require a
 supported improvement. Neighbor gaps are geometric for RAVE/PW k, arithmetic
-for C/alpha/depth; boundary winners may extend outward. There are at most five
+for C/alpha/depth; boundary winners may extend outward. There are at most three
 follow-up rounds per scalar tuner, preventing unbounded searches. Categorical
 selection/admission/structure comparisons use one round. The coupled PW tuner
 runs k, alpha, then one local k recheck, never enabling/disabling PW itself.

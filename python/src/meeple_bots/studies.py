@@ -47,10 +47,13 @@ from .study_analysis import summarize_contrast, write_study_report, study_diagno
 
 GAMES = {"lost_cities": LostCities,"connect6": Connect6, "boop": Boop, "spotf": SpiritsOfTheForest, "connect-four": ConnectFour,
          "tic-tac-toe": TicTacToe, "splendor": Splendor}
-PHASES = ("depth_screen", "exploration", "selectors", "rave", "rave_extend_1", "rave_extend_2", "rave_extend_3", "rave_extend_4", "rave_extend_5",
-          "rave_exploration", "rave_compare",
-          "mechanisms", "pw_screen", "pw_k", *(f"pw_k_extend_{i}" for i in range(1, 6)),
-          "pw_alpha", *(f"pw_alpha_extend_{i}" for i in range(1, 6)), "pw_refine", "pw_compare")
+MAX_EXTENSION_ROUNDS = 3
+STUDY_VERSION = 23
+PHASES = ("depth_screen", "exploration", "selectors", "rave",
+          *(f"rave_extend_{i}" for i in range(1, MAX_EXTENSION_ROUNDS + 1)),
+          "rave_exploration", "rave_compare", "mechanisms", "pw_screen", "pw_k",
+          *(f"pw_k_extend_{i}" for i in range(1, MAX_EXTENSION_ROUNDS + 1)), "pw_alpha",
+          *(f"pw_alpha_extend_{i}" for i in range(1, MAX_EXTENSION_ROUNDS + 1)), "pw_refine", "pw_compare")
 STAGES = ("depth", "selection", "rave", "mechanisms", "pw")
 
 
@@ -356,8 +359,8 @@ def _build_phase(name: str, state: dict, base: MctsAgent, reference: MctsAgent |
                     compare(control, add(f"{group}-rave-k{candidate.rave_equivalence}", candidate, group), "rave_equivalence")
             decisions[group] = "refining_geometric_neighbors" if any(c["a"] == control for c in contrasts) else "no_untested_neighbors"
     elif name == "rave_exploration":
-        prior = phases["rave_extend_5"]
-        for group, parent in carry("rave_extend_5").items():
+        prior = phases[f"rave_extend_{MAX_EXTENSION_ROUNDS}"]
+        for group, parent in carry(f"rave_extend_{MAX_EXTENSION_ROUNDS}").items():
             control = add(f"{group}-rave", parent, group)
             evidence = [c for c in prior["contrasts"] if c["b"] in prior["groups"][group]]
             ready = all(c.get("result", {}).get("seed_pairs", 0) >= max(4, c.get("target_pairs", 4)) for c in evidence)
@@ -512,7 +515,7 @@ def tuning_specs(dimension, prefix="local"):
     axes = ["progressive-widening-k", "progressive-widening-alpha", "progressive-widening-k"] if dimension == "progressive-widening" else [dimension]
     specs = {}
     for step, axis in enumerate(axes):
-        rounds = 1 if axis in ("selection", "structure", "tree-reuse", "widening-expansion") or step == 2 else 6
+        rounds = 1 if axis in ("selection", "structure", "tree-reuse", "widening-expansion") or step == 2 else 1 + MAX_EXTENSION_ROUNDS
         chain = f"{prefix}-{step}-{axis}"
         for round_index in range(rounds):
             specs[f"{chain}-{round_index}"] = {"dimension": axis, "round": round_index, "chain": chain}
@@ -676,7 +679,7 @@ class StudyRunner:
         self.base, self.reference = baseline, reference
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
-        request = {"version": 22, "execution_mode": "local_retune" if tune else "full_study", "minimum_evidence_pairs": 4, "tune": tune, "second_pass": second_pass, "widening_expansion_search": widening_expansion_search, "tuner_specs": specs, "phase_names": list(self.phase_names), "games_per_comparison": 2 * max_pairs, "stage_games": stage_games, "baseline_supplied": supplied, "selection_search": selection_search, "mechanism_search": mechanism_search, "depth_search": depth_search, "pw_search": pw_search, "pw_supported": pw_supported, "rave_search": rave_search, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
+        request = {"version": STUDY_VERSION, "max_extension_rounds": MAX_EXTENSION_ROUNDS, "execution_mode": "local_retune" if tune else "full_study", "minimum_evidence_pairs": 4, "tune": tune, "second_pass": second_pass, "widening_expansion_search": widening_expansion_search, "tuner_specs": specs, "phase_names": list(self.phase_names), "games_per_comparison": 2 * max_pairs, "stage_games": stage_games, "baseline_supplied": supplied, "selection_search": selection_search, "mechanism_search": mechanism_search, "depth_search": depth_search, "pw_search": pw_search, "pw_supported": pw_supported, "rave_search": rave_search, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
                    "heuristic": heuristic, "target_match_time": target_match_time, "safety_margin": 1.2,
                    "selection_policies": selectors, "game": game, **({"game_params": game_parameters(self.game)} if game_parameters(self.game) else {}), "baseline": profile_values(baseline),
                    "reference": profile_values(reference) if reference else None,
@@ -693,8 +696,8 @@ class StudyRunner:
             if not resume:
                 raise FileExistsError(f"study exists: {self.path}; use --resume")
             self.state = json.loads(self.path.read_text())
-            if self.state["request"].get("version") != 22:
-                raise ValueError("old study protocol cannot resume with sibling PW calibration; use a new output directory")
+            if self.state["request"].get("version") != STUDY_VERSION:
+                raise ValueError("old study protocol / extension plan cannot resume with the 3-extension limit; existing checkpoint is unchanged; use a new output directory")
             saved_request = self.state["request"]
             # Permission to change binaries is never permission to change the frozen plan.
             if {k: v for k, v in saved_request.items() if k != "engine"} != {k: v for k, v in request.items() if k != "engine"}:
@@ -764,6 +767,9 @@ class StudyRunner:
                 "message": "Supported exploratory improvement found." if modified else "No sufficiently supported improvement found."}
             self.state.setdefault("selected_candidate", {"phase": None, "name": "incumbent", "profile": profile_values(self.base)})
         self.state.update(game=self.state["request"]["game"], agent_family=self.family)
+        from ._study_output import compute_budget
+        if self.state.get("calibration"):
+            self.state["calibration"]["compute_budget"] = compute_budget(self.state)
         self.state["spent_seconds"] = self.spent
         self.state.update(study_diagnostics(self.state))
         self.state["random_baseline"] = self._random_summary()
@@ -865,15 +871,7 @@ class StudyRunner:
         if self.state["calibration"]:
             return
         request = self.state["request"]
-        label = "Full-depth optimization" if request["mode"] == "full_depth" else f"Heuristic cutoff optimization (H{request['heuristic']})"
-        if request["baseline_supplied"]:
-            label = "Incremental optimization of supplied baseline"
-        if request.get("tune"):
-            label = "LOCAL RETUNE"
-            self.progress("Base agent: " + str(self.output / "baseline.toml"))
-            self.progress("Tuning: " + ", ".join(TUNING_FIELDS[request["tune"]]))
-            self.progress("Frozen: " + json.dumps({k: v for k, v in config_fields(self.base).items() if k not in TUNING_FIELDS[request["tune"]]}, sort_keys=True))
-        self.progress(f"Study mode: {label}. Target match time: {request['target_match_time']:g}s.")
+        self.progress("Calibrating search cost and horizon...")
         work = self.state.setdefault("calibration_progress", {})
         pilot_agent = replace(_iterations(self.base, 32), rollout_depth=64)
         pilot = {"name": "calibration", "agents": {"pilot": profile_values(pilot_agent), "random": None},
@@ -956,12 +954,6 @@ class StudyRunner:
             warnings.append("Requested target provides little search per decision; results describe under-searched agents. The requested target is unchanged.")
         cal["warnings"] = warnings
         self.state["calibration"] = cal
-        self.progress(f"Horizon: {horizon['depth']} ({horizon['kind']}); estimated decisions: {length:.1f}; time/decision: {target:.4f}s.")
-        self.progress(f"Search adequacy: {adequacy['category']}; median iterations: {center}; representative branching: {adequacy['representative_branching']:g}.")
-        for warning in warnings:
-            self.progress("Warning: " + warning)
-        for recommendation in adequacy["suggested_targets"]:
-            self.progress(f"Approximate target {recommendation['target_match_time']:.1f}s/match -> {recommendation['estimated_category']} (linear throughput estimate, not a guarantee).")
         self.save()
 
     def _estimated_round_seconds(self, phase: dict) -> float:
@@ -1059,28 +1051,8 @@ class StudyRunner:
                      allocation_mode="fixed_games")
 
     def _announce_plan(self):
-        self.progress(f"Game: {self.state['request']['game']}; Agent family: {self.family}")
-        self.progress('Supported study dimensions: ' + ', '.join(self.state['request']['supported_tuners']))
-        self.progress('Resolved stages: calibration, ' + ', '.join(self.phase_names))
-        self.progress('Selection policies: ' + ', '.join(self.state['request']['selection_policies']))
-        unsupported = sorted({'tree_reuse', 'transpositions', 'rave', 'progressive_widening'}
-                             - set(self.family_profile.mechanisms))
-        if unsupported:
-            self.progress('Unsupported for this family: ' + ', '.join(unsupported))
-        if self.state['request'].get('vs_random'):
-            self.progress('Random baseline: final retained champion vs Random; diagnostic only, after competitive stages.')
-        if self.profile:
-            return self.profile.announce(self)
-        self.progress("Agent family: MCTS")
-        self.progress("Execution: " + ("LOCAL RETUNE" if self.state["request"].get("tune") else "FULL STUDY") + "; enabled stages: " + ", ".join(n for n in self.phase_names if n in self.state["request"]["tuner_specs"] or _phase_enabled(n, self.state["request"])))
-        pw_requested = self.state["request"].get("pw_search", False)
-        self.progress("PW search: " + ("enabled" if pw_requested and self.state["request"].get("pw_supported") else "unavailable for this game" if pw_requested else "disabled (enable with --pw-search)"))
-        requested = self.state["request"]["rave_search"]
-        supported = "uct_rave" in self.state["request"]["selection_policies"]
-        self.progress("RAVE search: " + ("enabled" if requested and supported else "unavailable for this game" if requested else "disabled (enable with --rave-search)"))
-        if self.state["request"]["max_pairs"] < 4 or any(g < 8 for g in self.state["request"]["stage_games"].values()):
-            self.progress("Minimum evidence raises comparisons below 8 games to 4 paired seeds (8 games).")
-        self.progress(("Baseline fixed-iteration comparisons" if self.state["calibration"].get("fixed_iterations") else "Equal-time comparisons") + "; fixed games per comparison; budget screening reduces candidates, never evidence per comparison.")
+        from ._study_output import announce_plan
+        announce_plan(self)
 
     def run(self):
         try:
@@ -1121,6 +1093,8 @@ class StudyRunner:
                     self.save()
                     continue
                 phase["status"] = "running"
+                from ._study_output import announce_extension
+                announce_extension(self, phase)
                 self.progress(f"{name}: {len(phase['contrasts'])} contrasts, {phase['planned_games']} fixed games; estimate {phase['estimated_seconds']:.0f}s (not a limit).")
                 for round_index in range(phase["planned_pairs"]):
                     for indices in self._batches(phase, round_index):
@@ -1138,6 +1112,7 @@ class StudyRunner:
                     phase["winner"] = next(iter(_group_leaders(phase).values()))
                     control = phase["contrasts"][0]["a"]
                     phase["outcome"] = "IMPROVED" if phase["winner"] != control else "INCONCLUSIVE"
+                announce_extension(self, phase, completed=True)
                 self.save()
             complete = all(self.state["phases"].get(n, {}).get("status") == "complete" for n in self.phase_names)
             self.state["status"] = "complete" if complete else "budget_exhausted"

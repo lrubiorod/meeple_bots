@@ -59,7 +59,8 @@ class StudyTunerTests(unittest.TestCase):
     def setup_race(self, tmp, **kwargs):
         runner = StudyRunner('connect6', self.champion(), output=Path(tmp), tune='exploration',
             game_params={'board_size': 13}, games_per_comparison=8, workers=1, progress=lambda _: None, **kwargs)
-        runner.state['calibration'] = {'horizon': {'depth': 169}, 'fixed_iterations': 4,
+        runner.state['calibration'] = {'horizon': {'depth': 169, 'kind': 'baseline'}, 'fixed_iterations': 4,
+            'search_adequacy': {'category': 'LOW', 'median_iterations_per_decision': 4, 'representative_branching': 169},
             'mean_plies': 50, 'seconds_per_iteration': .001, 'decision_seconds': .01}
         phase = _build_phase(runner.phase_names[0], runner.state, runner.base, None)
         return runner, phase
@@ -105,7 +106,8 @@ class StudyTunerTests(unittest.TestCase):
     def test_full_and_local_call_same_generator_and_second_pass_uses_champion(self):
         with TemporaryDirectory() as tmp:
             runner = StudyRunner('connect6', self.champion(), output=Path(tmp), all_search=True, second_pass=True, progress=lambda _: None)
-            runner.state['calibration'] = {'horizon': {'depth': 169}, 'fixed_iterations': 4, 'cutoff_depths': []}
+            runner.state['calibration'] = {'horizon': {'depth': 169, 'kind': 'baseline'}, 'fixed_iterations': 4,
+            'search_adequacy': {'category': 'LOW', 'median_iterations_per_decision': 4, 'representative_branching': 169}, 'cutoff_depths': []}
             first = _build_phase('depth_screen', runner.state, runner.base, None)
             first['status'] = 'complete'
             runner.state['phases']['depth_screen'] = first
@@ -149,8 +151,8 @@ class StudyTunerTests(unittest.TestCase):
     def test_coupled_pw_plan_keeps_enable_and_expansion_frozen(self):
         specs = tuning_specs('progressive-widening')
         dimensions = [s['dimension'] for s in specs.values()]
-        self.assertEqual(dimensions[:6], ['progressive-widening-k']*6)
-        self.assertEqual(dimensions[6:12], ['progressive-widening-alpha']*6)
+        self.assertEqual(dimensions[:4], ['progressive-widening-k']*4)
+        self.assertEqual(dimensions[4:8], ['progressive-widening-alpha']*4)
         self.assertEqual(dimensions[-1], 'progressive-widening-k')
 
     def test_native_second_pass_and_no_flags_still_use_full_mode(self):

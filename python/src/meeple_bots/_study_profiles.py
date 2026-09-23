@@ -1,5 +1,4 @@
 """Search-family policy for the shared study coordinator, not another executor."""
-import json
 from statistics import mean, median
 from time import perf_counter
 
@@ -65,9 +64,7 @@ class SoIsmctsStudyProfile:
         if runner.state['calibration']:
             return
         request = runner.state['request']
-        runner.progress('Study mode: ' + ('LOCAL RETUNE' if request['tune'] else 'FULL STUDY'))
-        runner.progress('Agent family: SO-ISMCTS; game: ' + request['game'])
-        runner.progress(f'Total study budget: {runner.budget}; target match time: {request["target_match_time"]}s')
+        runner.progress('Calibrating search cost with structural Random-vs-Random pilot...')
         # The normal trace writer/executor persists the paired structural pilot too.
         pilot = runner.state.setdefault('calibration_progress', {}).setdefault('pilot', {
             'name': 'calibration', 'agents': {'random-a': None, 'random-b': None},
@@ -80,7 +77,7 @@ class SoIsmctsStudyProfile:
         cal = {'mean_plies': expected, 'estimated_game_decisions': expected,
                'target_match_time': request['target_match_time'], 'safety_margin': request['safety_margin'],
                'decision_seconds': seconds, 'fixed_iterations': fixed,
-               'decision_time_source': 'baseline' if request['baseline_supplied'] else 'target_match_time',
+               'decision_time_source': 'explicit_override' if request['decision_seconds'] is not None else 'baseline' if request['baseline_supplied'] else 'target_match_time',
                'horizon': {'kind': 'unbounded', 'depth': None}, 'pilot': pilot, 'position_timings': []}
         agent = _study_budget(runner.base, cal)
         # Sample only legitimate observations. Environment sampling and policy/search seeds
@@ -125,16 +122,6 @@ class SoIsmctsStudyProfile:
         runner.state['operating_baseline'] = profile_values(agent)
         runner.state['selected_candidate'] = {'phase': None, 'name': 'incumbent', 'profile': profile_values(agent)}
         runner.save()
-
-    def announce(self, runner):
-        cal = runner.state['calibration']
-        runner.progress('Agent family: SO-ISMCTS; baseline: ' + json.dumps(runner.state['operating_baseline']))
-        runner.progress(f'Estimated decisions/game: {cal["estimated_game_decisions"]:.1f}; decision budget: ' +
-                        (f'{cal["fixed_iterations"]} iterations' if cal['fixed_iterations'] else f'{cal["decision_seconds"]:.6f}s'))
-        runner.progress(f'Median iterations/decision: {cal["median_iterations_per_decision"]}; determinizations/decision: {cal["median_determinizations_per_decision"]}; search adequacy: {cal["search_adequacy"]["category"]}')
-        runner.progress('Planned stages: calibration, ' + ', '.join(runner.phase_names))
-        if runner.state['request']['tune']:
-            runner.progress('Tuning: ' + runner.state['request']['tune'] + '. All other agent fields and game configuration are frozen.')
 
     def build_phase(self, name, state, base):
         from .studies import _build_tuning_phase
