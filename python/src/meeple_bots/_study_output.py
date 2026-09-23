@@ -21,7 +21,7 @@ def announce_plan(runner):
     r, c = runner.state['request'], runner.state['calibration']
     out = runner.progress
     def field(label, value):
-        out(f'  {label + ":":<29}{value}')
+        out(f'  {label + ":":<{max(29, len(label) + 2)}}{value}')
     b = compute_budget(runner.state)
     out('Study\nTarget')
     field('Game', r['game'])
@@ -30,7 +30,8 @@ def announce_plan(runner):
             'incremental baseline optimization' if r['baseline_supplied'] else r['mode'].replace('_', ' '))
     field('Mode', mode)
     field('Total study budget', f'{runner.budget:g}s' if runner.budget is not None else 'unlimited')
-    field('Selection policies', ', '.join(r['selection_policies']))
+    out('Capabilities')
+    field('Available selection policies', ', '.join(r['selection_policies']))
     out('Supported tuning')
     out('  ' + ', '.join(r['supported_tuners']))
     unsupported = sorted({'tree_reuse', 'transpositions', 'rave', 'progressive_widening'} - set(runner.family_profile.mechanisms))
@@ -78,18 +79,27 @@ def announce_plan(runner):
     out('Planned stages')
     out('  Calibration')
     specs = r['tuner_specs']
+    policy_names = {'uct': 'UCT', 'ucb1_tuned': 'UCB1-Tuned', 'uct_rave': 'UCT-RAVE'}
+    def selection_candidates(policies):
+        out('    Candidate policies: ' + ', '.join(policy_names.get(p, p) for p in policies))
     if r.get('tune'):
         field('Local retune', r['tune'])
+        if r['tune'] == 'selection':
+            selection_candidates(r['selection_policies'])
+        if r['tune'] == 'widening-expansion':
+            field('PW admission strategies', 'random, rave-guided')
         out(f'    Adaptive dimensions: initial round + max {MAX_EXTENSION_ROUNDS} extensions; categorical dimensions: one round.')
     elif runner.profile:
         dimensions = {s['dimension'] for n, s in specs.items() if not n.startswith('second-')}
         for dimension in ('exploration', 'selection', 'tree-reuse'):
             field(dimension.replace('-', ' ').capitalize(), 'enabled' if dimension in dimensions else 'disabled')
+            if dimension == 'selection' and dimension in dimensions:
+                selection_candidates(r['selection_policies'])
     else:
         for label, phase, flag in [('Depth screen', 'depth_screen', 'depth-search'),
                                    ('Exploration', 'exploration', 'selection-search'),
                                    ('Selection', 'selectors', 'selection-search'),
-                                   ('RAVE', 'rave', 'rave-search'),
+                                   ('RAVE selector search', 'rave', 'rave-search'),
                                    ('Structure', 'mechanisms', 'mechanism-search'),
                                    ('Progressive widening', 'pw_screen', 'pw-search')]:
             active = phase in runner.phase_names and _phase_enabled(phase, r)
@@ -98,15 +108,33 @@ def announce_plan(runner):
             if phase == 'depth_screen' and r['mode'] != 'heuristic_cutoff':
                 status = 'not applicable to this horizon mode'
             field(label, status)
+            if active and phase == 'selectors':
+                selection_candidates(p for p in r['selection_policies'] if p != 'uct_rave')
+                out('    Compared against the retained incumbent (which may use another policy).')
             if active and phase == 'rave':
+                selection_candidates(['uct_rave'])
                 out(f'    equivalence: initial range + max {MAX_EXTENSION_ROUNDS} adaptive extensions; exploration; compare')
             if active and phase == 'pw_screen':
                 out(f'    screen; tune k (max {MAX_EXTENSION_ROUNDS} extensions); tune alpha (max {MAX_EXTENSION_ROUNDS} extensions); refine; compare')
+                field('PW admission strategies', 'random, rave-guided' if 'uct_rave' in r['selection_policies'] else 'random')
         if any(n.startswith('admission-') for n in specs):
-            field('Widening expansion', 'enabled')
+            field('Widening expansion', 'conditional on retained candidate having PW enabled')
+            field('PW admission strategies', 'random, rave-guided' if 'uct_rave' in r['selection_policies'] else 'unavailable (AMAF unsupported)')
     if r['second_pass']:
         dimensions = dict.fromkeys(s['dimension'] for n, s in specs.items() if n.startswith('second-'))
-        field('Second pass', ', '.join(dimensions))
+        field('Second pass', 'conditional tuning of the retained candidate')
+        for dimension in dimensions:
+            if dimension == 'rave':
+                if not (_phase_enabled('rave', r) or runner.base.selection_policy == 'uct_rave'):
+                    continue
+                condition = 'only if retained selector is UCT-RAVE'
+            elif dimension.startswith('progressive-widening'):
+                if not (_phase_enabled('pw_screen', r) or getattr(runner.base, 'progressive_widening', False)):
+                    continue
+                condition = 'only if retained candidate has PW enabled'
+            else:
+                condition = 'only if retained selector uses exploration'
+            out(f'    {dimension} ({condition})')
         out(f'    Adaptive chains: initial round + max {MAX_EXTENSION_ROUNDS} extensions; final joint recheck unchanged.')
     if 'confirmation' in runner.phase_names:
         out('  Confirmation')

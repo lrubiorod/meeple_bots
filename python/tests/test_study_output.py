@@ -31,7 +31,7 @@ class StudyOutputTests(unittest.TestCase):
                              '128 plies', 'Progressive widening:', 'Second pass:', 'max 3 extensions'):
                 self.assertIn(expected, text)
             self.assertEqual(text.count('Agent family:'), 1)
-            self.assertIn('RAVE:                        disabled', text)
+            self.assertIn('RAVE selector search:        disabled', text)
             self.assertNotIn('Resolved stages:', text)
             self.assertNotIn('pw_k_extend_1', text)
             self.assertNotIn('second-0-exploration-0', text)
@@ -42,6 +42,39 @@ class StudyOutputTests(unittest.TestCase):
             self.assertEqual(b['decision_seconds'], .25)
             self.assertEqual(b['estimated_search_game_seconds'], 20)
             self.assertFalse(b['target_match_time_active'])
+
+    def test_available_policies_and_conditional_second_pass_preserve_state(self):
+        with TemporaryDirectory() as tmp:
+            for rave in (False, True):
+                runner = self.calibrated(Path(tmp)/str(rave), selection_search=True,
+                                         pw_search=True, second_pass=True, rave_search=rave)
+                before = json.dumps(runner.state, sort_keys=True)
+                checkpoint = runner.path.read_bytes()
+                text = self.output(runner)
+                self.assertIn('Available selection policies: uct, ucb1_tuned, uct_rave', text)
+                self.assertIn('Candidate policies: UCT, UCB1-Tuned\n', text)
+                self.assertIn('RAVE selector search:        ' + ('enabled' if rave else 'disabled'), text)
+                self.assertIn('PW admission strategies:     random, rave-guided', text)
+                second = text.split('Second pass:', 1)[1].split('Comparison policy', 1)[0]
+                self.assertEqual('    rave (' in second, rave)
+                self.assertEqual('Candidate policies: UCT-RAVE\n' in text, rave)
+                self.assertIn('progressive-widening-k (only if retained candidate has PW enabled)', second)
+                self.assertIn('progressive-widening-alpha (only if retained candidate has PW enabled)', second)
+                self.assertIn('second-0-rave-0', runner.phase_names)
+                self.assertEqual(json.dumps(runner.state, sort_keys=True), before)
+                self.assertEqual(runner.path.read_bytes(), checkpoint)
+
+    def test_second_pass_respects_existing_baseline_mechanisms(self):
+        with TemporaryDirectory() as tmp:
+            for enabled in (False, True):
+                base = MctsAgent(iterations=20, selection_policy='uct_rave' if enabled else 'uct',
+                                 progressive_widening=enabled)
+                runner = self.calibrated(Path(tmp)/str(enabled), baseline=base, second_pass=True)
+                text = self.output(runner)
+                second = text.split('Second pass:', 1)[1].split('Comparison policy', 1)[0]
+                self.assertEqual('rave (only if retained selector is UCT-RAVE)' in second, enabled)
+                self.assertEqual('progressive-widening-k (' in second, enabled)
+                self.assertIn('RAVE selector search:        disabled', text)
 
     def test_active_target_and_baseline_precedence(self):
         with TemporaryDirectory() as tmp:

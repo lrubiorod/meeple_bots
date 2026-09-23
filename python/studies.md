@@ -725,6 +725,15 @@ python -m meeple_bots study --game connect6 --game-param board_size=13 \
 
 #### Reading the study plan and compute budget
 
+`Available selection policies` describes family/backend capabilities, not enabled
+comparisons. The Selection stage lists its candidate policies; RAVE selector search
+is reported separately. UCT-RAVE can be available without `--rave-search`.
+Second-pass dimensions are conditional on the retained candidate: RAVE tuning
+requires UCT-RAVE (which can also come from a supplied baseline), and PW tuning
+requires PW enabled. Inactive dimensions are omitted from the human summary;
+their frozen internal stage IDs remain unchanged. PW's `random` and `rave-guided`
+admission strategies are independent of RAVE selector search and are shown separately.
+
 The console groups the target/family, search horizon, active compute budget,
 calibration, high-level stages and comparison policy. Internal phase IDs remain
 in `study.json`, `summary.json`, reports and traces; they appear during execution,
