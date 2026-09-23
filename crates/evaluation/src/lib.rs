@@ -3,6 +3,7 @@
 pub mod so_ismcts;
 
 use std::{
+    collections::BTreeMap,
     error::Error,
     fmt,
     num::NonZeroU32,
@@ -54,6 +55,7 @@ pub struct RolloutCostEstimate {
     /// Nominal same-player-block estimate; excludes turn-completion overshoot.
     pub approximate_player_turns: f64,
     pub milliseconds_per_iteration: f64,
+    /// Deprecated compatibility grid; human analysis uses shared operating points.
     pub iteration_budgets: Vec<IterationBudgetEstimate>,
 }
 
@@ -69,6 +71,7 @@ pub struct SuggestedMctsExperiment {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SampledDecisionTiming {
+    pub phase: Option<&'static str>,
     pub sampled_ply: u32,
     pub milliseconds: f64,
     pub iterations: u64,
@@ -116,6 +119,7 @@ pub struct GameEvaluationReport {
     pub calibration_positions: u32,
     pub target_time_seconds: f64,
     pub rollout_costs: Vec<RolloutCostEstimate>,
+    /// Deprecated compatibility presets; never rendered as recommendations by analyze.
     pub suggested_experiments: Vec<SuggestedMctsExperiment>,
     /// Compatibility alias for the Balanced experiment's rollout depth.
     pub recommended_rollout_depth: u32,
@@ -290,6 +294,7 @@ where
         let milliseconds = (started.elapsed().as_secs_f64() * 1_000.0).max(f64::EPSILON);
         let stats = agent.last_decision_stats();
         position_timings.push(SampledDecisionTiming {
+            phase: game.diagnostic_phase(state),
             sampled_ply: *sampled_ply,
             legal_actions: game.legal_actions(state).count(),
             terminal_simulations: stats.terminal_simulations,
@@ -342,9 +347,57 @@ where
     })
 }
 
+/// Player-decision branching grouped by a game-provided diagnostic label.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhaseStructure {
+    pub label: &'static str,
+    pub samples: u64,
+    pub legal_actions_mean: f64,
+    pub legal_actions_p50: u32,
+    pub legal_actions_p95: u32,
+    pub legal_actions_min: u32,
+    pub legal_actions_max: u32,
+    pub effective_branching_factor: f64,
+}
+
+fn phase_structure(label: &'static str, counts: &BTreeMap<u32, u64>) -> PhaseStructure {
+    let samples: u64 = counts.values().sum();
+    let percentile = |percent: u64| {
+        let rank = (samples * percent).div_ceil(100).max(1);
+        let mut cumulative = 0;
+        for (&actions, &count) in counts {
+            cumulative += count;
+            if cumulative >= rank {
+                return actions;
+            }
+        }
+        0
+    };
+    PhaseStructure {
+        label,
+        samples,
+        legal_actions_mean: counts
+            .iter()
+            .map(|(&a, &n)| f64::from(a) * n as f64)
+            .sum::<f64>()
+            / samples as f64,
+        legal_actions_p50: percentile(50),
+        legal_actions_p95: percentile(95),
+        legal_actions_min: *counts.first_key_value().unwrap().0,
+        legal_actions_max: *counts.last_key_value().unwrap().0,
+        effective_branching_factor: (counts
+            .iter()
+            .map(|(&a, &n)| f64::from(a).ln() * n as f64)
+            .sum::<f64>()
+            / samples as f64)
+            .exp(),
+    }
+}
+
 /// Random-policy physical decision structure; never an information-set tree estimate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructuralReport {
+    pub phases: Vec<PhaseStructure>,
     pub physical_turns_p50: u32,
     pub physical_turns_p95: u32,
     pub samples: u32,
@@ -389,6 +442,11 @@ fn structural_report(s: &SampledMetrics, config: EvaluationConfig) -> Structural
         values.iter().map(|&x| f64::from(x)).sum::<f64>() / values.len().max(1) as f64
     };
     StructuralReport {
+        phases: s
+            .phase_counts
+            .iter()
+            .map(|(&label, counts)| phase_structure(label, counts))
+            .collect(),
         physical_turns_p50: percentile(&s.physical_turns, 50),
         physical_turns_p95: percentile(&s.physical_turns, 95),
         samples: config.samples.get(),
@@ -427,6 +485,7 @@ fn structural_report(s: &SampledMetrics, config: EvaluationConfig) -> Structural
 }
 
 struct SampledMetrics {
+    phase_counts: BTreeMap<&'static str, BTreeMap<u32, u64>>,
     completed_samples: u32,
     effective_branching_factor: f64,
     player_turn_choice_product_log10: f64,
@@ -458,6 +517,7 @@ where
     let mut initial_branches = Vec::new();
     let mut chance_events = Vec::new();
     let mut branch_counts = Vec::new();
+    let mut phase_counts: BTreeMap<_, BTreeMap<u32, u64>> = BTreeMap::new();
     let mut depths = Vec::with_capacity(config.samples.get() as usize);
     let mut player_turn_depths = Vec::with_capacity(config.samples.get() as usize);
     let mut player_changes = Vec::with_capacity(config.samples.get() as usize);
@@ -533,6 +593,13 @@ where
                         initial_branches.push(actions.len() as u32);
                     }
                     branch_counts.push(actions.len() as u32);
+                    if let Some(label) = game.diagnostic_phase(&state) {
+                        *phase_counts
+                            .entry(label)
+                            .or_default()
+                            .entry(actions.len() as u32)
+                            .or_default() += 1;
+                    }
                     current_turn_actions += 1;
                     current_turn_choice_log += (actions.len() as f64).ln();
                     game.apply_action(&mut state, &actions[action_index])
@@ -564,6 +631,7 @@ where
     let player_turn_count = actions_per_player_turn.len() as f64;
 
     Ok(SampledMetrics {
+        phase_counts,
         completed_samples,
         initial_branches,
         physical_turns,
@@ -635,6 +703,7 @@ where
         &mut SplitMix64::new(seed ^ 0x8EBC_6AF0_9C88_C6E3),
     )?;
     let mut states = vec![(0, initial)];
+    let mut phase_examples: BTreeMap<&'static str, (u32, G::State)> = BTreeMap::new();
     let mut target_depths = [median_depth / 3, median_depth.saturating_mul(2) / 3];
     target_depths.sort_unstable();
 
@@ -648,9 +717,14 @@ where
             SplitMix64::new(seed ^ u64::from(target_depth) ^ 0x8EBC_6AF0_9C88_C6E3);
         resolve_calibration_chance(game, &mut state, &mut chance_rng)?;
         let mut reached = true;
-        for _ in 0..target_depth {
+        for ply in 0..target_depth {
             match game.status(&state) {
                 PositionStatus::PlayerTurn(_) => {
+                    if let Some(label) = game.diagnostic_phase(&state) {
+                        if phase_examples.len() < 4 && !phase_examples.contains_key(label) {
+                            phase_examples.insert(label, (ply, state.clone()));
+                        }
+                    }
                     let actions: Vec<_> = game.legal_actions(&state).collect();
                     let index = rng
                         .index(actions.len())
@@ -672,6 +746,16 @@ where
         }
     }
 
+    // Keep the original early/mid/late probes first and unchanged. Add only missing
+    // decision kinds seen along those paths; never benchmark chance/terminal states.
+    for (label, example) in phase_examples {
+        if !states
+            .iter()
+            .any(|(_, state)| game.diagnostic_phase(state) == Some(label))
+        {
+            states.push(example);
+        }
+    }
     Ok(states)
 }
 

@@ -552,6 +552,16 @@ impl Game for SpiritsOfTheForest {
     fn is_turn_boundary(&self, state: &Self::State) -> bool {
         state.phase == TurnPhase::Collect && state.collected_this_turn == 0
     }
+
+    fn diagnostic_phase(&self, state: &Self::State) -> Option<&'static str> {
+        if !matches!(self.status(state), PositionStatus::PlayerTurn(_)) {
+            return None;
+        }
+        Some(match state.phase {
+            TurnPhase::Collect => "Collect",
+            TurnPhase::PlaceGemstone => "Gem placement",
+        })
+    }
     fn legal_actions<'a>(&'a self, state: &'a Self::State) -> Self::LegalActions<'a> {
         if matches!(self.status(state), PositionStatus::Terminal) {
             return Vec::new().into_iter();

@@ -107,6 +107,7 @@ class SampledDecisionTiming:
     root_visits: tuple[int, ...] = ()
     root_expansion: tuple[int, int, int] | None = None
     widening_expansions: tuple[int, int, int, int] | None = None
+    phase: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +151,7 @@ class GameEvaluationReport:
     calibration_positions: int
     target_time_seconds: float
     rollout_costs: tuple[RolloutCostEstimate, ...]
+    # Deprecated compatibility presets; analyze renders operating points instead.
     suggested_experiments: tuple[SuggestedMctsExperiment, ...]
     # Compatibility aliases for the Balanced experiment.
     recommended_rollout_depth: int
@@ -1090,6 +1092,7 @@ def benchmark_mcts_agent(
         position_timings=tuple(
             SampledDecisionTiming(
                 sampled_ply=timing["sampled_ply"],
+                phase=timing.get("phase"),
                 milliseconds=timing["milliseconds"],
                 iterations=timing["iterations"],
                 nodes=timing["nodes"],

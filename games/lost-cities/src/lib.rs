@@ -169,6 +169,14 @@ impl Game for LostCities {
     fn is_turn_boundary(&self, s: &Self::State) -> bool {
         matches!(s.phase, Phase::Deal(_) | Phase::Play | Phase::Finished)
     }
+
+    fn diagnostic_phase(&self, s: &Self::State) -> Option<&'static str> {
+        match s.phase {
+            Phase::Play => Some("Play"),
+            Phase::Draw => Some("Draw"),
+            _ => None,
+        }
+    }
     fn legal_actions<'a>(&'a self, s: &'a Self::State) -> Self::LegalActions<'a> {
         let mut actions = Vec::new();
         match s.phase {

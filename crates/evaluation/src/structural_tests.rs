@@ -25,6 +25,10 @@ impl Game for ChanceGame {
     fn is_turn_boundary(&self, s: &Self::State) -> bool {
         matches!(s.0, 1 | 4)
     }
+    fn diagnostic_phase(&self, s: &Self::State) -> Option<&'static str> {
+        // Deliberately labels chance/terminal too: the analyzer must ignore them.
+        Some(if s.0 == 1 { "Choice" } else { "Forced" })
+    }
     fn legal_actions<'a>(&'a self, s: &'a Self::State) -> Self::LegalActions<'a> {
         0..if s.0 == 1 { s.1 } else { 1 }
     }
@@ -73,6 +77,15 @@ fn chance_setup_counts_events_and_preserves_decisions_and_physical_turns() {
     assert!((1. ..3.).contains(&r.initial_legal_actions_mean));
     // Only one of three decisions branches. Chance outcomes are excluded.
     assert!(r.effective_branching_factor <= 3_f64.powf(1. / 3.));
+    assert_eq!(r.phases.len(), 2);
+    let choice = r.phases.iter().find(|p| p.label == "Choice").unwrap();
+    let forced = r.phases.iter().find(|p| p.label == "Forced").unwrap();
+    assert_eq!(choice.samples, 64);
+    assert_eq!(forced.samples, 128);
+    assert_eq!((choice.legal_actions_min, choice.legal_actions_max), (1, 3));
+    assert_eq!(choice.legal_actions_mean, r.initial_legal_actions_mean);
+    assert_eq!((forced.legal_actions_p50, forced.legal_actions_p95), (1, 1));
+    assert_eq!(forced.effective_branching_factor, 1.);
     let short = analyze_structure(
         &ChanceGame,
         EvaluationConfig {
@@ -97,7 +110,29 @@ fn deterministic_structure_stays_exact_and_has_no_chance() {
         (9, 9)
     );
     assert_eq!(r.chance_events_mean, 0.);
+    assert!(r.phases.is_empty());
     assert_eq!(r.physical_turns_p50, r.depth_p50);
+}
+
+#[test]
+fn calibration_adds_only_missing_phases_without_chance_or_terminal_probes() {
+    let states = sample_calibration_states(&ChanceGame, 6, 42).unwrap();
+    assert_eq!(states.len(), 2);
+    assert!(
+        states
+            .iter()
+            .all(|(_, s)| matches!(ChanceGame.status(s), PositionStatus::PlayerTurn(_)))
+    );
+    let game = meeple_bots_lost_cities::LostCities;
+    let states = sample_calibration_states(&game, 120, 42).unwrap();
+    assert!(states.len() <= 7);
+    for phase in ["Play", "Draw"] {
+        assert!(
+            states
+                .iter()
+                .any(|(_, state)| game.diagnostic_phase(state) == Some(phase))
+        );
+    }
 }
 #[test]
 fn lost_cities_structural_sampling_resolves_deals_and_draws() {

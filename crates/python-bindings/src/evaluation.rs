@@ -6,6 +6,23 @@ pub(crate) fn structural_dict(
     report: &meeple_bots_evaluation::StructuralReport,
 ) -> PyResult<Py<PyDict>> {
     let value = PyDict::new(py);
+    let phases = PyList::empty(py);
+    for phase in &report.phases {
+        let row = PyDict::new(py);
+        row.set_item("label", phase.label)?;
+        row.set_item("samples", phase.samples)?;
+        row.set_item("legal_actions_mean", phase.legal_actions_mean)?;
+        row.set_item("legal_actions_p50", phase.legal_actions_p50)?;
+        row.set_item("legal_actions_p95", phase.legal_actions_p95)?;
+        row.set_item("legal_actions_min", phase.legal_actions_min)?;
+        row.set_item("legal_actions_max", phase.legal_actions_max)?;
+        row.set_item(
+            "effective_branching_factor",
+            phase.effective_branching_factor,
+        )?;
+        phases.append(row)?;
+    }
+    value.set_item("phases", phases)?;
     value.set_item("physical_turns_p50", report.physical_turns_p50)?;
     value.set_item("physical_turns_p95", report.physical_turns_p95)?;
     value.set_item("samples", report.samples)?;
@@ -137,6 +154,7 @@ pub fn benchmark_so_ismcts(
     for t in timings {
         let row = PyDict::new(py);
         row.set_item("sampled_ply", t.sampled_ply)?;
+        row.set_item("phase", t.phase)?;
         row.set_item("milliseconds", t.milliseconds)?;
         row.set_item("iterations", t.iterations)?;
         row.set_item("determinizations", t.determinizations)?;

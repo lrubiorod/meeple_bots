@@ -810,6 +810,7 @@ fn py_benchmark_mcts_agent(
     for timing in report.position_timings {
         let item = PyDict::new(py);
         item.set_item("sampled_ply", timing.sampled_ply)?;
+        item.set_item("phase", timing.phase)?;
         item.set_item("milliseconds", timing.milliseconds)?;
         item.set_item("iterations", timing.iterations)?;
         item.set_item("nodes", timing.nodes)?;

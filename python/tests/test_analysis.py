@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from meeple_bots import (LostCities, Connect6, TicTacToe, Splendor, MctsAgent, SoIsmctsAgent,
+from meeple_bots import (LostCities, Connect6, TicTacToe, Splendor, SpiritsOfTheForest, MctsAgent, SoIsmctsAgent,
                          analyze_game, analyze_structure, benchmark_search_agent)
 from meeple_bots.analysis import (operating_points, summarize_search, print_analysis,
                                  _add_game_search_estimates, _format_game_search_seconds)
@@ -17,6 +17,60 @@ from meeple_bots import _native
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_cli_has_one_operating_section_and_no_legacy_presets(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main(['analyze', '--game', 'tic-tac-toe', '--samples', '2', '--target-time', '1ms'])
+        self.assertEqual(code, 0)
+        text = output.getvalue()
+        for old in ('Fast', 'Balanced', 'Wide', 'Deep', 'Suggested starting experiments',
+                    'Practical MCTS configuration', 'Candidate rollout depths', 'Budget table', '1s='):
+            self.assertNotIn(old, text)
+        for section in ('Structure', 'Depth structure', 'Rollout horizon diagnostics',
+                        'Search calibration', 'Operating points', 'Interpretation'):
+            self.assertIn(section, text)
+        self.assertEqual(text.count('Operating points'), 1)
+        self.assertEqual(text.count('decision | iterations | mean game | p95 game'), 1)
+        self.assertEqual(text.count('<- target'), 1)
+        self.assertIn('ms/iteration', text)
+        self.assertIn('Actions per player turn', text)
+        self.assertIn('Observed choices across one player turn', text)
+        self.assertNotIn('Phase diagnostics', text)
+
+    def test_phase_adequacy_can_be_lower_than_global(self):
+        timings = [dict(milliseconds=10, iterations=1000, legal_actions=2,
+                        root_visits=[500, 500], nodes=1001, phase='Collect') for _ in range(2)]
+        timings.append(dict(milliseconds=10, iterations=1000, legal_actions=200,
+                            root_visits=[5]*200, nodes=1001, phase='Gem placement'))
+        result = summarize_search(timings, .01, 'mcts')
+        self.assertEqual(result['search_adequacy']['category'], 'HIGH')
+        phases = {p['label']: p for p in result['phase_diagnostics']}
+        self.assertEqual(phases['Gem placement']['search_adequacy']['category'], 'LOW')
+        self.assertEqual(phases['Gem placement']['search_adequacy']['median_visits_per_root_action'], 5)
+        self.assertEqual(phases['Gem placement']['root_actions_visited'], [200])
+
+    def test_phases_cover_spotf_and_lost_cities_without_chance(self):
+        for game, labels in ((SpiritsOfTheForest(), {'Collect', 'Gem placement'}),
+                             (LostCities(), {'Play', 'Draw'})):
+            with self.subTest(game=game):
+                structure = analyze_structure(game, samples=4, max_depth=600, seed=42)
+                self.assertEqual({p['label'] for p in structure['phases']}, labels)
+                self.assertEqual(sum(p['samples'] for p in structure['phases']),
+                                 structure['samples'] * structure['decisions_mean'])
+                agent = (SoIsmctsAgent(iterations=8) if isinstance(game, LostCities)
+                         else MctsAgent(iterations=8, root_diagnostics=True))
+                report = benchmark_search_agent(game, agent, structure['depth_p50'], seed=42)
+                self.assertLessEqual(report['sampled_positions'], 7)
+                self.assertEqual({p['label'] for p in report['phase_diagnostics']}, labels)
+                self.assertTrue(all(t['phase'] in labels and t['legal_actions'] > 0
+                                    for t in report['position_timings']))
+        report = analyze_game(SpiritsOfTheForest(), samples=2, max_depth=150, seed=42, target_time=.001)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            print_analysis(report)
+        for label in ('Phase diagnostics', 'Collect', 'Gem placement', 'Structural decision samples'):
+            self.assertIn(label, output.getvalue())
+
     def test_game_search_estimates_use_decisions_and_preserve_operating_points(self):
         for family in ('mcts', 'so_ismcts', 'future_family'):
             with self.subTest(family=family):

@@ -37,6 +37,13 @@ pub trait Game {
     }
     fn status(&self, state: &Self::State) -> PositionStatus;
 
+    /// Optional public, human-readable decision kind for analysis only.
+    /// Return None for games without meaningful phases and for non-decision states.
+    /// Labels must not contain hidden information or influence agent behavior.
+    fn diagnostic_phase(&self, _state: &Self::State) -> Option<&'static str> {
+        None
+    }
+
     /// Whether this position is between physical turns, before the next player decision.
     /// The initial position is also a boundary. This is independent of player identity:
     /// the same player may take consecutive turns. Mandatory chance preparation may

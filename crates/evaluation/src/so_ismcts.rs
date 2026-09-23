@@ -9,6 +9,7 @@ use std::time::Instant;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SoIsmctsTiming {
+    pub phase: Option<&'static str>,
     pub sampled_ply: u32,
     pub milliseconds: f64,
     pub iterations: u64,
@@ -68,6 +69,7 @@ where
         let determinization_milliseconds = started.elapsed().as_secs_f64() * 1000. / 256.;
         let edges = result.diagnostics.action_edges.max(1) as f64;
         timings.push(SoIsmctsTiming {
+            phase: game.diagnostic_phase(state),
             sampled_ply: *ply,
             milliseconds,
             iterations: result.diagnostics.completed_iterations,

@@ -140,6 +140,16 @@ def summarize_search(timings, target_time, family):
                       mean_action_edges=mean(t['action_edges'] for t in timings),
                       mean_action_availability=mean(t['mean_availability'] for t in timings),
                       mean_availability_ratio=mean(t['mean_availability_ratio'] for t in timings))
+    result['phase_diagnostics'] = []
+    for phase in sorted({t['phase'] for t in timings if t.get('phase')}):
+        probes = [t for t in timings if t.get('phase') == phase]
+        measured = search_adequacy(probes, target_time)
+        projected = [{**t, 'iterations': t['iterations']*target_time/(t['milliseconds']/1000)} for t in probes]
+        result['phase_diagnostics'].append(dict(label=phase, sampled_positions=len(probes),
+            root_legal_actions=[t['legal_actions'] for t in probes],
+            root_actions_visited=[t['root_actions_visited'] for t in probes],
+            search_adequacy=measured,
+            estimated_target_adequacy=search_adequacy(projected, target_time)['category']))
     return result
 
 
@@ -216,51 +226,95 @@ def report_dict(report):
                 configured_agent_benchmarks=list(report.configured_agent_benchmarks))
 
 
+def _print_root_diagnostics(adequacy, visited, estimated):
+    coverage = adequacy['median_root_coverage']
+    coverage_text = f"{coverage:.1%}" if coverage is not None else "unavailable"
+    known = [v for v in visited if v is not None]
+    print(f"  Root legal actions (median): {adequacy['representative_branching']}; median visited: {median(known) if known else 'unavailable'}; coverage: {coverage_text}")
+    print(f"  Root visits/action median/p10: {adequacy['median_visits_per_root_action']} / {adequacy['p10_visits_per_root_action']}")
+    print(f"  Measured adequacy: {adequacy['category']}; estimated at target: {estimated}")
+
+
 def print_analysis(report, include_structure=True):
     s, c, p = report.structural, report.search_calibration, report.properties
-    print(f"Search family: {c['family']}")
-    print(f"Players: {p['players']}; Chance: {p['stochastic']}; Hidden information: {p['imperfect_information']}")
+    rows = [('Default calibration', c)] + [(x['name'], x) for x in report.configured_agent_benchmarks]
+    print(f"Game: {p['game']}")
     if include_structure:
-        print(f"Game: {p['game']}")
-        print(f"Structural sampling: {s['samples']} samples; terminal rate {s['terminal_rate']:.1%}")
+        print('\nStructure')
+        print(f"  Players: {p['players']}; Stochastic: {p['stochastic']}; Hidden information: {p['imperfect_information']}")
+        print(f"  Structural sampling: {s['samples']} samples; terminal rate {s['terminal_rate']:.1%}")
         if s['initial_legal_actions_min'] == s['initial_legal_actions_max']:
             print(f"  Initial legal actions: {s['initial_legal_actions_min']}")
         else:
             print(f"  Initial legal actions mean/p50/p95/min/max: {s['initial_legal_actions_mean']:.2f} / {s['initial_legal_actions_p50']} / {s['initial_legal_actions_p95']} / {s['initial_legal_actions_min']} / {s['initial_legal_actions_max']}")
-        print(f"  Player decisions mean/p50/p95: {s['decisions_mean']:.1f} / {s['depth_p50']} / {s['estimated_depth']}")
+        print(f"  Effective decision branching: {s['effective_branching_factor']:.2f}")
+        choices = s['player_turn_choice_product_log10']
+        choice_text = f"~{10**choices:,.1f} (10^{choices:.2f})" if choices <= 6 else f"~10^{choices:.2f}"
+        print(f"  Observed choices across one player turn: {choice_text} (geometric mean of sampled phase products)")
+        print(f"  Physical decision-tree estimate: 10^{s['estimated_tree_log10']:.1f}; excludes chance branching, not an information-set tree size")
+        print('\nDepth structure')
+        print(f"  Player decisions / tree depth mean/p50/p95: {s['decisions_mean']:.1f} / {s['depth_p50']} / {s['estimated_depth']}")
         print(f"  Physical turns p50/p95: {s['physical_turns_p50']} / {s['physical_turns_p95']} (game turn boundaries)")
         print(f"  Player turns p50/p95: {s['player_turn_depth_p50']} / {s['player_turn_depth_p95']} (consecutive same-player decision blocks)")
-        print(f"  Effective decision branching: {s['effective_branching_factor']:.2f}")
-        print(f"  Physical decision-tree estimate: 10^{s['estimated_tree_log10']:.1f}; excludes chance branching, not an information-set tree size")
+        print(f"  Player changes p50/p95: {s['player_changes_p50']} / {s['player_changes_p95']}")
+        print(f"  Actions per player turn mean/p95/max: {s['actions_per_player_turn_mean']:.2f} / {s['actions_per_player_turn_p95']} / {s['actions_per_player_turn_max']}")
+        print(f"  Chance events mean/p50/p95: {s['chance_events_mean']:.2f} / {s['chance_events_p50']} / {s['chance_events_p95']}")
         if s['depth_is_lower_bound']:
             print('  WARNING: some samples hit the safety cap; depth estimates are lower bounds.')
-    print(f"Chance events mean/p50/p95: {s['chance_events_mean']:.2f} / {s['chance_events_p50']} / {s['chance_events_p95']}")
-    for label, row in [('Default calibration', c)] + [(x['name'], x) for x in report.configured_agent_benchmarks]:
-        a = row['search_adequacy']
-        print(f"\n{label}: {row['sampled_positions']} early/mid/late positions")
+    if report.legacy_report is not None:
+        print('\nRollout horizon diagnostics')
+        print('  Soft rollout horizons; full denotes sampled p95 depth, not a proven game bound.')
+        for cost in report.legacy_report.rollout_costs:
+            label = 'full' if cost.rollout_depth == s['estimated_depth'] else 'depth'
+            print(f"  {label} {cost.rollout_depth:<4} | ~{cost.milliseconds_per_iteration:.4f} ms/iteration | ~{cost.approximate_player_turns:.1f} player turns")
+    print('\nSearch calibration')
+    print(f"  Search family: {c['family']}")
+    print('  Independent positions; these probes do not measure match tree-reuse benefits.')
+    for label, row in rows:
+        print(f"\n{label}: {row['sampled_positions']} positions (early/mid/late plus missing phases)")
+        print(f"  Agent configuration: {row['agent']}")
         print(f"  Mean iteration: {row['milliseconds_per_iteration']:.4f} ms; iterations/s: {row['iterations_per_second']:,.0f}")
         print(f"  Measured median iterations/decision: {row['median_iterations_per_decision']:,.0f}; mean latency: {row['decision_time_mean_ms']:.2f} ms")
+        print(f"  Latency p50/p95/max: {row['decision_time_p50_ms']:.2f} / {row['decision_time_p95_ms']:.2f} / {max(t['milliseconds'] for t in row['position_timings']):.2f} ms")
         print(f"  Mean tree nodes: {row['mean_tree_nodes']:.0f}")
         if row['family'] == 'so_ismcts':
             print(f"  Determinizations/s: {row['determinizations_per_second']:,.0f}; median/decision: {row['median_determinizations_per_decision']:,.0f}")
             print(f"  Isolated determinization: {row['isolated_determinization_mean_ms']*1000:.2f} us (256 samples/observation)")
             print(f"  Mean action edges: {row['mean_action_edges']:.0f}; mean availability: {row['mean_action_availability']:.2f}; mean availability/node visits: {row['mean_availability_ratio']:.3f}")
-        coverage = a['median_root_coverage']
-        coverage_text = f"{coverage:.1%}" if coverage is not None else "unavailable"
-        visited = [t['root_actions_visited'] for t in row['position_timings'] if t['root_actions_visited'] is not None]
-        print(f"  Root legal actions: {a['representative_branching']}; median visited: {median(visited) if visited else 'unavailable'}; coverage: {coverage_text}")
-        print(f"  Root visits/action median/p10: {a['median_visits_per_root_action']} / {a['p10_visits_per_root_action']}")
-        print(f"  Measured adequacy: {a['category']}; estimated at target: {row['estimated_target_adequacy']}")
-        print(f"  Target decision time: {row['target_time_seconds']*1000:.2f} ms; estimated iterations: {row['estimated_iterations_at_target']:,}")
+        print('  Root diagnostics')
+        _print_root_diagnostics(row['search_adequacy'], [t['root_actions_visited'] for t in row['position_timings']], row['estimated_target_adequacy'])
         if row.get('target_match_time'):
-            print(f"  Derived from {row['target_match_time']}s / ({row['expected_decisions']:.1f} decisions × {row['safety_margin']})")
-        print('  Budget table (linear estimates): decision | iterations' + (' | determinizations' if row['family'] == 'so_ismcts' else '') + ' | mean game | p95 game')
+            print(f"  Target derived from {row['target_match_time']}s / ({row['expected_decisions']:.1f} decisions × {row['safety_margin']})")
+        for warning in row['warnings']:
+            print('  WARNING: ' + warning)
+    phases = {phase['label']: phase for phase in s.get('phases', [])}
+    phase_labels = sorted(set(phases) | {phase['label'] for _, row in rows for phase in row.get('phase_diagnostics', [])})
+    if phase_labels:
+        print('\nPhase diagnostics')
+        for label in phase_labels:
+            print(label)
+            if label in phases:
+                phase = phases[label]
+                print(f"  Structural decision samples: {phase['samples']}")
+                print(f"  Legal actions mean/p50/p95: {phase['legal_actions_mean']:.2f} / {phase['legal_actions_p50']} / {phase['legal_actions_p95']}; min/max: {phase['legal_actions_min']} / {phase['legal_actions_max']}")
+                print(f"  Effective decision branching: {phase['effective_branching_factor']:.2f}")
+            for name, row in rows:
+                found = next((x for x in row.get('phase_diagnostics', []) if x['label'] == label), None)
+                if found is None:
+                    print(f"  {name}: no search probe for this phase")
+                    continue
+                print(f"  {name}: {found['sampled_positions']} search probe(s)")
+                _print_root_diagnostics(found['search_adequacy'], found['root_actions_visited'], found['estimated_target_adequacy'])
+    print('\nOperating points (linear estimates)')
+    for label, row in rows:
+        print(f"  {label}")
+        print('  decision | iterations' + (' | determinizations' if row['family'] == 'so_ismcts' else '') + ' | mean game | p95 game')
         for b in row['budget_table']:
             game_times = ' | '.join(_format_game_search_seconds(b.get(field)) for field in
                                   ('estimated_mean_game_search_seconds', 'estimated_p95_game_search_seconds'))
             print(f"    {b['seconds']:g}s | {b['iterations']:,}" + (f" | {b['determinizations']:,}" if 'determinizations' in b else '') + f' | {game_times}' + (' <- target' if b['target'] else ''))
-        print('  Game columns estimate accumulated search time with both players using this decision budget; not wall-clock limits.')
-        for warning in row['warnings']:
-            print('  WARNING: ' + warning)
-    print('\nRoot diagnostics describe measured probes; target operating points are estimates.')
-    print(c['interpretation'])
+    print('  Game columns estimate accumulated search time with both players using this decision budget; not wall-clock limits.')
+    print('\nInterpretation')
+    print('Root diagnostics describe measured probes; target operating points are estimates based on measured throughput.')
+    print('Adequacy describes search population, not playing strength, confidence or optimality.')
+    print('Analyze measures search cost / adequacy; study measures competitive strength through equal-compute comparisons.')

@@ -92,42 +92,61 @@ The player-turn choice product can overstate strategically distinct choices when
 forced or converge to equivalent states. It is deliberately displayed as an observed
 approximation rather than a precise branching factor.
 
-## Practical MCTS calibration
+## Analysis output: five complementary views
 
-Evaluation derives up to four rollout depths from the sampled P95 ply depth. They span short,
-medium, long, and sampled-full horizons. Each depth is also converted to approximate player turns
-using the observed mean actions per player turn.
+1. **Structure**, including depth structure: legal branching, choices across a player
+   turn, terminal rate, physical decision-tree estimates, plies, physical turns,
+   same-player decision blocks, player changes, microactions and chance events.
+2. **Rollout horizon diagnostics** (where applicable): measured milliseconds per
+   iteration for short through sampled-full rollout horizons, with approximate
+   player turns. These are cost measurements, not claims that deeper is stronger.
+3. **Search calibration**: family, exact measured configuration, throughput, latency,
+   tree size and root sampling diagnostics. Adequacy describes search population,
+   not playing strength, probability of winning or statistical confidence.
+4. **Phase diagnostics**, when games provide meaningful labels: structural branching
+   and search population by decision kind. Global adequacy can hide a local problem:
+   SPOTF's mean branching may be modest while **Gem placement** has many choices.
+   **Collect** and **Gem placement** are reported separately; Lost Cities exposes
+   **Play** and **Draw**. Games without meaningful labels omit this section.
+5. **Operating points**: one section for linearly estimated work per time budget and
+   accumulated mean/p95 game search compute. The requested row retains `<- target`.
+   Configured profiles each have their own table within this section.
 
-For every candidate depth, a neutral MCTS search is timed at the initial state and at up to two
-seeded intermediate sampled positions. A small probe chooses an adaptive iteration count targeting
-a short timing window; that count is clamped so analysis remains bounded. The median measured
-cost across positions becomes `milliseconds_per_iteration` for that depth.
+`analyze` measures cost and adequacy; `study` measures competitive strength under
+an explicit equal-compute budget. There are no human-facing Fast/Balanced/Wide/Deep
+presets: those names suggested quality that analysis never measured.
 
-The standard 1, 2, 5, 10, and 20 second iteration budgets are computed from those measurements and
-rounded down to two significant digits. They are approximations: tree reuse, allocator behavior,
-CPU scaling, position shape, and system load can change real decision time.
+### Rollout horizon diagnostics
 
-This neutral calibration does not run a requested production profile. In particular, it does not
-include a configured heuristic and its adaptive probe may use a different iteration count. Use
-configured agent benchmarks when exact profile latency matters.
+Evaluation derives up to four rollout depths from sampled p95 ply depth. Each is
+converted to approximate player turns using observed mean actions per player turn.
+Neutral MCTS is timed on a few seeded positions, using a bounded adaptive iteration
+count. The median cost becomes `milliseconds_per_iteration` for that depth. The
+`full` label means sampled p95, not a rules-proven horizon; capped samples remain
+lower bounds. These measurements are machine-dependent and do not substitute for
+configured-profile measurements. SO-ISMCTS does not expose an MCTS rollout horizon.
 
-`--target-time SECONDS` (or Python's `target_time`) controls the suggested benchmark points. It
-does not make calibration run for that many seconds.
+Depth rows show **cost per iteration only**. Time-to-iteration projections belong
+exclusively in Operating points. `--target-time` selects an estimated operating
+point; it does not make default calibration run for that duration.
 
-### Practical fields
+### Generic phase diagnostics
 
-| Field | Meaning |
-| --- | --- |
-| `calibration_positions` | Number of sampled positions timed per rollout depth. |
-| `rollout_costs` | Candidate depths, approximate player-turn horizons, measured costs, and standard time budgets. |
-| `target_time_seconds` | Requested per-decision target for suggested experiments. |
-| `suggested_experiments` | Fast, Balanced, Wide, and when available Deep starting points. |
+`Game::diagnostic_phase` is an optional, public diagnostic label, defaulting to
+`None`. The generic structural sampler groups legal-action counts only at player
+states, reusing its existing paths without consuming extra randomness. Per phase,
+`structural.phases` reports sample count, mean/p50/p95/min/max legal actions and
+geometric effective branching. Chance and terminal states never count as decisions.
 
-Fast, Balanced, and Wide retain the legacy operating points at a medium rollout depth.
-Deep uses the next longer calibrated horizon at approximately the Balanced time target.
-Their iteration counts describe different resource allocations. Analyze does not select a
-strongest operating point or infer a strategic improvement from additional compute.
-Use `study`, batch or tournaments for competitive evidence under an explicit fairness budget.
+Calibration keeps its original early/mid/late probes. It stores at most four phase
+examples encountered along those same calibration paths and appends only phases
+missing from the original probes. There is no extra random trajectory and at most
+four extra searches per calibration/profile. Phases not encountered have no search
+measurement; the renderer says so rather than inventing coverage. Search results
+carry a `phase` label and `phase_diagnostics` aggregates root legal/visited actions,
+coverage, median/p10 visits and measured/estimated adequacy with unchanged thresholds.
+Global adequacy is computed independently, not forced to the lowest phase value.
+Sparse probes are explicitly counted and are not an exhaustive phase benchmark.
 
 ## Configured agent benchmarks
 
@@ -187,19 +206,20 @@ reproducible experimental artifact.
 
 The shared positions are the initial state and, when reachable, states near one third and two
 thirds of the sampled median game depth. This gives a small early/middle/late latency check without
-making `analyze` run a long match suite. Legacy deterministic MCTS output ranks
-supplied profiles from fastest to slowest; comparison is not limited to two agents.
+making `analyze` run a long match suite. Missing phase examples may add bounded
+probes as described above. Legacy JSON ranks supplied MCTS profiles by latency;
+the human output reports each profile once in the common calibration section.
 Family-specific configured benchmarks also accept SO-ISMCTS TOMLs for compatible
 games (see below), reporting search cost without competitive matches.
 
-Each legacy MCTS configured benchmark reports:
+Each legacy MCTS configured benchmark in JSON reports:
 
 - exact agent configuration and sampled position count;
 - mean, p50, p95, and maximum isolated decision latency;
 - observed milliseconds per completed iteration;
 - latency, actual iterations, and created nodes at each sampled ply;
 - time relative to the fastest supplied profile;
-- ratio to `--target-time` and the profile whose mean is closest to that target.
+- ratio to `--target-time` (cost comparison only).
 
 With only three positions, p95 is effectively the slowest sampled position; it is an orientation
 metric, not a production latency guarantee. MCTS cost is not perfectly linear in iteration count
@@ -221,15 +241,17 @@ searches are not exactly reproducible because system load changes the completed 
 
 ## Compatibility fields
 
-`recommended_rollout_depth`, `recommended_iterations`, `iterations_capped`,
-`milliseconds_per_iteration`, and `estimated_decision_time_ms` remain available. They are aliases
-for the Balanced experiment and its calibrated depth, not structural tree-size recommendations.
-For deterministic MCTS these are superseded by `rollout_costs` and
-`suggested_experiments`. New multi-family integrations should use `analyze_game`
-and its independent `structural` and `search_calibration` sections.
+The public Rust/Python `evaluate_game` report and deterministic MCTS CLI JSON retain
+`suggested_experiments`, `rollout_costs[].iteration_budgets`, `recommended_rollout_depth`,
+`recommended_iterations`, `iterations_capped`, `milliseconds_per_iteration` and
+`estimated_decision_time_ms`. Presets, per-depth budget grids and recommendation
+aliases are **deprecated compatibility data**, no longer rendered in human output.
+They remain computed to avoid breaking existing consumers; no runtime warning is
+emitted. The default calibration horizon remains unchanged.
 
-The tree-size estimate is still an order-of-magnitude structural description. It no longer drives
-the practical iteration suggestions.
+Use `rollout_costs` for horizon costs, `structural` for game structure and
+`search_calibration.budget_table` for operating points. The existing `budget_table`
+JSON key is intentionally preserved. Phase metrics and timing labels are additive.
 
 ## Rust API
 
@@ -273,7 +295,7 @@ Perfect-information MCTS is rejected for hidden-information games before samplin
 
 `--agent-config` is repeatable. Each profile retains its exact resource budget and C. Comparisons
 report latency, throughput, nodes and root diagnostics, never wins or a strongest configuration.
-Legacy inline MCTS profiles and latency-ranked configured MCTS output remain supported.
+Legacy inline MCTS profiles and latency-ranked configured MCTS JSON remain supported.
 
 ```python
 from meeple_bots import LostCities, SoIsmctsAgent, analyze_game, analyze_structure, benchmark_search_agent
@@ -313,7 +335,7 @@ labels are retained because they describe different concepts.
 
 ### Operating points and interpretation
 
-The budget table also shows `mean game` and `p95 game`: estimated accumulated search
+The Operating points table shows `mean game` and `p95 game`: estimated accumulated search
 time if **both players** use the row's decision budget at every decision. The JSON
 fields are `estimated_mean_game_search_seconds` and `estimated_p95_game_search_seconds`:
 
