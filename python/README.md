@@ -13,6 +13,7 @@ Rust owns rules and search; Python provides orchestration, interfaces and analys
 | Run CLI commands | [Command-line workflows](usage.md#command-line-workflows) |
 | Calibrate a compatible search-agent family | [Automatic diagnosis](studies.md#incremental-mcts-study) |
 | Measure structure and search cost | [Analysis](../crates/evaluation/README.md) |
+| Diagnose search choices at fixed positions | [Behavioral probes](probes.md) |
 | Configure profiles and tournaments | [Study reference](studies.md#run-a-study) |
 | Extract and validate traces | [Extraction](studies.md#2-extract-analysis-tables) |
 | Generate generic, Boop or SPOTF reports | [Reports](studies.md#3-generate-a-tournament-report) |

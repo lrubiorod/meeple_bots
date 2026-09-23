@@ -81,6 +81,7 @@ rebuild the native extension with `maturin develop --release`.
 | Configured study | `meeple-bots tournament` | [Study workflow](python/studies.md#run-a-study) |
 | Build study artifacts | `extract`, then `report` | [Artifacts](python/studies.md#study-artifacts) |
 | Estimate search cost | `analyze` or `analyze_game` | [Evaluation](crates/evaluation/README.md) |
+| Diagnose fixed-position decisions | `probe` | [Behavioral probes](python/probes.md) |
 
 Use `meeple-bots COMMAND --help` for the options installed in the active environment.
 

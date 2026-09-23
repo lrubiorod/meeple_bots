@@ -429,6 +429,8 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--allow-engine-change", action="store_true", help="with --resume, explicitly accept changed code/build and record mixed-engine provenance; configuration must still match")
     study.add_argument("--json", action="store_true")
 
+    from .probes.cli import add_parser as add_probe_parser
+    add_probe_parser(commands)
     for command in (match, batch, analyze, study):
         command.add_argument("--game-param", dest="game_params", action=GameParameterAction, metavar="NAME=INTEGER", help="game initialization parameter; repeat for multiple parameters")
     return parser
@@ -437,6 +439,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "probe":
+            from .probes.cli import run as run_probe
+            return run_probe(args)
         if args.command == "gui":
             run_gui(
                 game=args.game,
