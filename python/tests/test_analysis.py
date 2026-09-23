@@ -3,20 +3,74 @@ import io
 import json
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
+from dataclasses import replace
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from meeple_bots import (LostCities, Connect6, TicTacToe, Splendor, SpiritsOfTheForest, MctsAgent, SoIsmctsAgent,
                          analyze_game, analyze_structure, benchmark_search_agent)
 from meeple_bots.analysis import (operating_points, summarize_search, print_analysis,
-                                 _add_game_search_estimates, _format_game_search_seconds)
+                                 _add_game_search_estimates, _format_game_search_seconds, sampled_full_horizon, _ANALYZERS)
 from meeple_bots.cli import main
 from meeple_bots._search_budget import decision_budget
 from meeple_bots import _native
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_sampled_full_horizon_rounding(self):
+        for p95, expected in ((100, 150), (101, 152), (124, 186), (1, 2), (0, 1), (2**32-1, 2**32-1)):
+            self.assertEqual(sampled_full_horizon(p95), expected)
+
+    def test_default_full_calibration_ignores_legacy_and_shares_probes(self):
+        from meeple_bots.api import evaluate_game
+        from meeple_bots.study_analysis import search_adequacy
+        game = SpiritsOfTheForest()
+        legacy = evaluate_game(game, samples=2, max_depth=200, seed=42, target_time=.001)
+        # Deliberately contradictory compatibility field must not influence any probe.
+        legacy = replace(legacy, recommended_rollout_depth=1)
+        measured = Mock(wraps=_ANALYZERS['mcts'])
+        with patch('meeple_bots.analysis.evaluate_game', return_value=legacy), patch.dict(_ANALYZERS, mcts=measured):
+            report = analyze_game(game, samples=2, max_depth=200, seed=42, target_time=.001)
+        full = sampled_full_horizon(report.structural['estimated_depth'])
+        self.assertTrue(all(call.args[1].rollout_depth == full for call in measured.call_args_list))
+        calibration = report.search_calibration
+        self.assertEqual(calibration['agent']['rollout_depth'], full)
+        self.assertEqual(calibration['agent']['cutoff_evaluator'], {'kind': 'neutral'})
+        timings = calibration['position_timings']
+        throughput = sum(t['iterations'] for t in timings) / (sum(t['milliseconds'] for t in timings)/1000)
+        self.assertEqual(calibration['iterations_per_second'], throughput)
+        for point in calibration['budget_table']:
+            self.assertEqual(point['iterations'], max(1, int(throughput * point['seconds'])))
+        self.assertEqual(calibration['search_adequacy']['category'], search_adequacy(timings, .001)['category'])
+        self.assertEqual({p['label'] for p in calibration['phase_diagnostics']}, {'Collect', 'Gem placement'})
+        for phase in calibration['phase_diagnostics']:
+            probes = [t for t in timings if t['phase'] == phase['label']]
+            self.assertEqual(phase['search_adequacy']['iterations_completed'], sum(t['iterations'] for t in probes))
+        self.assertEqual(legacy.rollout_costs[-1].rollout_depth, full)
+        self.assertTrue(any(c.rollout_depth < full for c in legacy.rollout_costs))
+        output = io.StringIO()
+        with redirect_stdout(output): print_analysis(report)
+        self.assertIn(f'full {full}', output.getvalue())
+        self.assertIn(f'full = {full} plies', output.getvalue())
+        self.assertIn('Rollouts reaching terminal:', output.getvalue())
+        self.assertFalse(any('truncated structural' in w for w in calibration['warnings']))
+
+    def test_truncated_full_horizon_warning_and_configured_budget_preserved(self):
+        baseline = MctsAgent(iterations=2, rollout_depth=3)
+        report = analyze_game(TicTacToe(), samples=2, max_depth=1, target_time=.001, profiles=[('fixed', baseline)])
+        self.assertEqual(report.search_calibration['agent']['rollout_depth'], 2)
+        self.assertTrue(any('truncated structural' in w for w in report.search_calibration['warnings']))
+        self.assertEqual(report.configured_agent_benchmarks[0]['agent']['rollout_depth'], 3)
+
+    def test_terminal_and_neutral_cutoff_diagnostics(self):
+        full = benchmark_search_agent(TicTacToe(), MctsAgent(iterations=1, rollout_depth=100, root_diagnostics=True), 0)
+        self.assertEqual(full['rollout_terminal_rate'], 1)
+        self.assertEqual(full['rollout_cutoff_rate'], 0)
+        short = benchmark_search_agent(TicTacToe(), MctsAgent(iterations=1, rollout_depth=1, root_diagnostics=True), 0)
+        self.assertEqual(short['rollout_terminal_rate'], 0)
+        self.assertEqual(short['rollout_cutoff_rate'], 1)
+
     def test_cli_has_one_operating_section_and_no_legacy_presets(self):
         output = io.StringIO()
         with redirect_stdout(output):

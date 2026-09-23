@@ -65,6 +65,11 @@ def _so_timings(game, agent, depth, seed):
 _ANALYZERS = {'mcts': _mcts_timings, 'so_ismcts': _so_timings}
 
 
+def sampled_full_horizon(p95):
+    """Ceiling of 1.5 times sampled decision p95, within MCTS's u32 config range."""
+    return max(1, min(2**32 - 1, (3 * p95 + 1) // 2))
+
+
 def operating_points(iterations_per_second, target_time, family):
     budgets = sorted({.1, .25, .5, 1., 2., target_time})
     return [dict(seconds=t, iterations=max(1, int(iterations_per_second*t)),
@@ -140,6 +145,11 @@ def summarize_search(timings, target_time, family):
                       mean_action_edges=mean(t['action_edges'] for t in timings),
                       mean_action_availability=mean(t['mean_availability'] for t in timings),
                       mean_availability_ratio=mean(t['mean_availability_ratio'] for t in timings))
+    completed = [t for t in timings if t.get('terminal_simulations') is not None and t.get('cutoff_simulations') is not None]
+    terminal = sum(t['terminal_simulations'] for t in completed)
+    cutoff = sum(t['cutoff_simulations'] for t in completed)
+    result['rollout_terminal_rate'] = terminal / (terminal + cutoff) if terminal + cutoff else None
+    result['rollout_cutoff_rate'] = cutoff / (terminal + cutoff) if terminal + cutoff else None
     result['phase_diagnostics'] = []
     for phase in sorted({t['phase'] for t in timings if t.get('phase')}):
         probes = [t for t in timings if t.get('phase') == phase]
@@ -198,7 +208,7 @@ def analyze_game(game, samples=128, max_depth=256, seed=0, target_time=None,
             legacy = evaluate_game(game, samples, max_depth, seed, target)
     depth = structural['depth_p50']
     default = (SoIsmctsAgent(iterations=8) if family == 'so_ismcts' else
-               MctsAgent(iterations=8, rollout_depth=legacy.recommended_rollout_depth if legacy else max(1, structural['estimated_depth']), root_diagnostics=True))
+               MctsAgent(iterations=8, rollout_depth=sampled_full_horizon(structural['estimated_depth']), root_diagnostics=True))
     measure = _ANALYZERS[family]
     probe = measure(game, default, depth, seed)
     cost = sum(t['milliseconds'] for t in probe)/sum(t['iterations'] for t in probe)
@@ -206,6 +216,12 @@ def analyze_game(game, samples=128, max_depth=256, seed=0, target_time=None,
     count = max(1, min(4096, round(min(.1, target)*1000/cost)))
     operating = replace(default, iterations=count)
     calibration = benchmark_search_agent(game, operating, depth, seed, target)
+    if family == 'mcts':
+        calibration['rollout_horizon'] = dict(kind='sampled_full_safety',
+            sampled_p95=structural['estimated_depth'], depth=default.rollout_depth,
+            multiplier=1.5, capped=3 * structural['estimated_depth'] > 2 * (2**32 - 1))
+        if structural['depth_is_lower_bound']:
+            calibration['warnings'].append('Sampled-full safety horizon is based on truncated structural samples; increase --max-depth before relying on it.')
     calibration['measurement'] = 'Short adaptive fixed-iteration probe; root diagnostics refer to measured work, target counts are estimates.'
     calibration['target_match_time'] = target_match_time
     calibration['safety_margin'] = 1.2 if target_match_time is not None else None
@@ -263,15 +279,22 @@ def print_analysis(report, include_structure=True):
             print('  WARNING: some samples hit the safety cap; depth estimates are lower bounds.')
     if report.legacy_report is not None:
         print('\nRollout horizon diagnostics')
-        print('  Soft rollout horizons; full denotes sampled p95 depth, not a proven game bound.')
+        print(f"  full = ceil(1.5 × sampled p95 depth {s['estimated_depth']}) = {sampled_full_horizon(s['estimated_depth'])}; soft safety horizon, not a proven game bound.")
         for cost in report.legacy_report.rollout_costs:
-            label = 'full' if cost.rollout_depth == s['estimated_depth'] else 'depth'
+            label = 'full' if cost.rollout_depth == sampled_full_horizon(s['estimated_depth']) else 'depth'
             print(f"  {label} {cost.rollout_depth:<4} | ~{cost.milliseconds_per_iteration:.4f} ms/iteration | ~{cost.approximate_player_turns:.1f} player turns")
     print('\nSearch calibration')
     print(f"  Search family: {c['family']}")
     print('  Independent positions; these probes do not measure match tree-reuse benefits.')
     for label, row in rows:
         print(f"\n{label}: {row['sampled_positions']} positions (early/mid/late plus missing phases)")
+        if row.get('rollout_horizon'):
+            horizon = row['rollout_horizon']
+            print(f"  Rollout horizon: full = {horizon['depth']} plies; ceil(1.5 × sampled p95 {horizon['sampled_p95']}); soft safety horizon.")
+            if horizon['capped']:
+                print('  WARNING: horizon capped at the u32 configuration limit.')
+        if row.get('rollout_terminal_rate') is not None:
+            print(f"  Rollouts reaching terminal: {row['rollout_terminal_rate']:.1%}; cutoff rate: {row['rollout_cutoff_rate']:.1%}")
         print(f"  Agent configuration: {row['agent']}")
         print(f"  Mean iteration: {row['milliseconds_per_iteration']:.4f} ms; iterations/s: {row['iterations_per_second']:,.0f}")
         print(f"  Measured median iterations/decision: {row['median_iterations_per_decision']:,.0f}; mean latency: {row['decision_time_mean_ms']:.2f} ms")

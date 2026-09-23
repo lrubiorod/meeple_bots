@@ -122,8 +122,27 @@ Evaluation derives up to four rollout depths from sampled p95 ply depth. Each is
 converted to approximate player turns using observed mean actions per player turn.
 Neutral MCTS is timed on a few seeded positions, using a bounded adaptive iteration
 count. The median cost becomes `milliseconds_per_iteration` for that depth. The
-`full` label means sampled p95, not a rules-proven horizon; capped samples remain
-lower bounds. These measurements are machine-dependent and do not substitute for
+`full` label means the **sampled full-depth safety horizon**:
+`ceil(3 * sampled_p95_decision_depth / 2)`, using integer arithmetic. Thus 100 becomes
+150, 101 becomes 152, and 124 becomes 186. Values saturate at the MCTS u32 config
+limit (and are at least one). The short horizons are still derived from the sampled
+p95; the final row uses this expanded horizon without duplicates.
+
+P95 is not a maximum. The factor 1.5 is a pragmatic margin for the tail, not a
+claimed coverage probability or a proven game bound. Rollouts stop immediately at
+terminal; the horizon is a soft cutoff (existing physical-turn completion rules
+still apply). Reaching it without terminal retains the existing neutral evaluator.
+Truncated structural samples trigger a warning: increase `--max-depth` before
+relying on their derived horizon. `--max-depth` remains a structural sampling cap.
+
+Default MCTS calibration uses this safety horizon directly, independently of legacy
+Balanced/recommendation fields. Global and phase diagnostics share those same
+probes, and operating points scale their measured throughput. Gameplay defaults,
+configured profiles, study candidates and SO-ISMCTS semantics are unchanged.
+Terminal/cutoff rates aggregate existing simulation counters; they are measured
+outcomes, not a strength criterion or a guarantee about future rollouts.
+
+These measurements are machine-dependent and do not substitute for
 configured-profile measurements. SO-ISMCTS does not expose an MCTS rollout horizon.
 
 Depth rows show **cost per iteration only**. Time-to-iteration projections belong
@@ -247,7 +266,7 @@ The public Rust/Python `evaluate_game` report and deterministic MCTS CLI JSON re
 `estimated_decision_time_ms`. Presets, per-depth budget grids and recommendation
 aliases are **deprecated compatibility data**, no longer rendered in human output.
 They remain computed to avoid breaking existing consumers; no runtime warning is
-emitted. The default calibration horizon remains unchanged.
+emitted. Default calibration no longer consumes these legacy horizon aliases.
 
 Use `rollout_costs` for horizon costs, `structural` for game structure and
 `search_calibration.budget_table` for operating points. The existing `budget_table`

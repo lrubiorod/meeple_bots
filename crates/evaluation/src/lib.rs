@@ -777,9 +777,16 @@ fn resolve_calibration_chance<G: Game>(
     Ok(events)
 }
 
+/// Sampled tail margin, not a proven bound. Saturate at the config's u32 limit.
+fn sampled_full_horizon(p95_depth: u32) -> u32 {
+    (u64::from(p95_depth) * 3)
+        .div_ceil(2)
+        .clamp(1, u64::from(u32::MAX)) as u32
+}
+
 fn candidate_rollout_depths(p95_depth: u32) -> Vec<u32> {
     let full_depth = p95_depth.max(1);
-    let mut depths = vec![full_depth];
+    let mut depths = Vec::new();
     for denominator in [6, 3] {
         depths.push(nearest_power_of_two(full_depth.div_ceil(denominator)));
     }
@@ -788,6 +795,7 @@ fn candidate_rollout_depths(p95_depth: u32) -> Vec<u32> {
     for depth in &mut depths {
         *depth = (*depth).clamp(1, full_depth);
     }
+    depths.push(sampled_full_horizon(p95_depth));
     depths.sort_unstable();
     depths.dedup();
     depths
@@ -1084,8 +1092,12 @@ mod tests {
 
     #[test]
     fn candidate_depths_span_short_to_full_horizons() {
-        assert_eq!(candidate_rollout_depths(96), vec![16, 32, 64, 96]);
-        assert_eq!(candidate_rollout_depths(1), vec![1]);
+        for (p95, expected) in [(100, 150), (101, 152), (124, 186)] {
+            assert_eq!(sampled_full_horizon(p95), expected);
+            assert_eq!(candidate_rollout_depths(p95).last(), Some(&expected));
+        }
+        assert_eq!(candidate_rollout_depths(96), vec![16, 32, 64, 144]);
+        assert_eq!(candidate_rollout_depths(1), vec![1, 2]);
         assert_eq!(candidate_rollout_depths(u32::MAX).last(), Some(&u32::MAX));
     }
 
