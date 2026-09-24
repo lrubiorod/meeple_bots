@@ -46,7 +46,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyModule};
 
 enum PythonAgentConfig {
-    Automated(AgentConfig),
+    Automated(Box<AgentConfig>),
     Human {
         selector: Py<PyAny>,
         observer: Option<Py<PyAny>>,
@@ -79,13 +79,13 @@ impl PyAgentConfig {
             .validate()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
-            inner: PythonAgentConfig::Automated(AgentConfig::SoIsmcts(config)),
+            inner: PythonAgentConfig::Automated(Box::new(AgentConfig::SoIsmcts(config))),
         })
     }
     #[staticmethod]
     fn random() -> Self {
         Self {
-            inner: PythonAgentConfig::Automated(AgentConfig::Random),
+            inner: PythonAgentConfig::Automated(Box::new(AgentConfig::Random)),
         }
     }
 
@@ -172,7 +172,7 @@ impl PyAgentConfig {
         }
 
         Ok(Self {
-            inner: PythonAgentConfig::Automated(AgentConfig::Mcts(MctsAgentConfig {
+            inner: PythonAgentConfig::Automated(Box::new(AgentConfig::Mcts(MctsAgentConfig {
                 search: MctsConfig {
                     progressive_widening: parse_progressive_widening(
                         progressive_widening,
@@ -213,7 +213,7 @@ impl PyAgentConfig {
                 root_diagnostics,
                 tree_reuse,
                 transpositions,
-            })),
+            }))),
         })
     }
 
@@ -1645,8 +1645,8 @@ fn run_python_match(
         };
         return meeple_bots_catalog::run_match_with_trace(
             game,
-            first.clone(),
-            second.clone(),
+            first.as_ref().clone(),
+            second.as_ref().clone(),
             config,
         )
         .map_err(|e| PyRuntimeError::new_err(e.to_string()));
@@ -2276,7 +2276,7 @@ fn python_participant<'a, M>(
     mcts: impl FnOnce(MctsAgentConfig) -> Result<M, CatalogError>,
 ) -> PyResult<PythonParticipant<'a, M>> {
     match configured {
-        PythonAgentConfig::Automated(config) => ConfiguredAgent::new(config.clone(), mcts)
+        PythonAgentConfig::Automated(config) => ConfiguredAgent::new(config.as_ref().clone(), mcts)
             .map(PythonParticipant::Automated)
             .map_err(|error| PyRuntimeError::new_err(error.to_string())),
         PythonAgentConfig::Human { selector, observer } => {

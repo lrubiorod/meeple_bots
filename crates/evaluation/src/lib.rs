@@ -720,10 +720,11 @@ where
         for ply in 0..target_depth {
             match game.status(&state) {
                 PositionStatus::PlayerTurn(_) => {
-                    if let Some(label) = game.diagnostic_phase(&state) {
-                        if phase_examples.len() < 4 && !phase_examples.contains_key(label) {
-                            phase_examples.insert(label, (ply, state.clone()));
-                        }
+                    if let Some(label) = game.diagnostic_phase(&state)
+                        && phase_examples.len() < 4
+                        && !phase_examples.contains_key(label)
+                    {
+                        phase_examples.insert(label, (ply, state.clone()));
                     }
                     let actions: Vec<_> = game.legal_actions(&state).collect();
                     let index = rng

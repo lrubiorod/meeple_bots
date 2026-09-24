@@ -227,7 +227,7 @@ impl PySplendorSession {
     ) -> PyResult<Self> {
         let automated = |c: Option<&super::PyAgentConfig>| match c.map(|c| &c.inner) {
             None => Ok(None),
-            Some(super::PythonAgentConfig::Automated(a)) => Ok(Some(a.clone())),
+            Some(super::PythonAgentConfig::Automated(a)) => Ok(Some(a.as_ref().clone())),
             _ => Err(error("use None for a human session seat")),
         };
         Ok(Self {

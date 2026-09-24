@@ -17,7 +17,7 @@ pub struct PyCantStopSession {
 fn automated(config: Option<&PyAgentConfig>) -> PyResult<Option<AgentConfig>> {
     match config.map(|c| &c.inner) {
         None => Ok(None),
-        Some(PythonAgentConfig::Automated(a)) => Ok(Some(a.clone())),
+        Some(PythonAgentConfig::Automated(a)) => Ok(Some(a.as_ref().clone())),
         _ => Err(PyValueError::new_err("use None for a human session seat")),
     }
 }

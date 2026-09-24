@@ -98,7 +98,7 @@ impl ImperfectInformationGame for Toy {
         self.samples.set(n + 1);
         Ok(World {
             stage: *o,
-            red: n % 2 == 0,
+            red: n.is_multiple_of(2),
         })
     }
 }

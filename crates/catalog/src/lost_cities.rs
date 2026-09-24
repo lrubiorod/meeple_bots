@@ -336,20 +336,20 @@ impl Agent<LostCities> for LostCitiesParticipant {
             return;
         };
         let started = Instant::now();
-        if game.status(state) != PositionStatus::Chance {
-            if let Some((actor, action)) = self.pending_draw.take() {
-                if let Some(owner) = reuse.owner() {
-                    // The event's hidden card is deliberately not used or forwarded.
-                    reuse.advance_real_transition(
-                        game,
-                        owner,
-                        actor,
-                        &action,
-                        &game.observation(state, owner),
-                    );
-                } else {
-                    reuse.reset();
-                }
+        if game.status(state) != PositionStatus::Chance
+            && let Some((actor, action)) = self.pending_draw.take()
+        {
+            if let Some(owner) = reuse.owner() {
+                // The event's hidden card is deliberately not used or forwarded.
+                reuse.advance_real_transition(
+                    game,
+                    owner,
+                    actor,
+                    &action,
+                    &game.observation(state, owner),
+                );
+            } else {
+                reuse.reset();
             }
         }
         reuse.record_maintenance(started.elapsed());

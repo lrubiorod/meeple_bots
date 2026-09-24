@@ -1,5 +1,5 @@
 use super::*;
-use meeple_bots_core::{ImperfectInformationGame, PlayerId};
+use meeple_bots_core::PlayerId;
 
 // Random setup with variable initial branching, a chance event inside a player's
 // physical turn, and a second physical turn belonging to the same player.
