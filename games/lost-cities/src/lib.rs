@@ -434,12 +434,11 @@ impl LostCities {
         if (s.phase == Phase::Finished) != s.deck.is_empty() {
             return Err(bad());
         }
-        if let Some(color) = s.blocked_discard {
-            if !matches!(s.phase, Phase::Draw | Phase::DrawChance)
-                || s.discards[color as usize].is_empty()
-            {
-                return Err(bad());
-            }
+        if let Some(color) = s.blocked_discard
+            && (!matches!(s.phase, Phase::Draw | Phase::DrawChance)
+                || s.discards[color as usize].is_empty())
+        {
+            return Err(bad());
         }
         if s.hands
             .iter()
