@@ -1958,6 +1958,67 @@ mod tests {
     }
 
     #[test]
+    fn spotf_h0_bias_and_rollout_are_collect_only() {
+        use meeple_bots_mcts_agent::SelectionBias;
+        let game = spirits_of_the_forest_game(7);
+        let mut state = game.initial_state();
+        let bias = ConfiguredSelectionBias::Progressive {
+            weight: 0.25,
+            evaluator: EvaluatorConfig::game_heuristic(0),
+            condition: Some(RolloutConditionConfig::TurnPhase(CatalogTurnPhase::Collect)),
+        };
+        let primary = RolloutPolicyConfig::EpsilonGreedy {
+            epsilon: 0.1,
+            evaluator: EvaluatorConfig::game_heuristic(0),
+        };
+        let policy = ConfiguredRolloutPolicy::Conditional {
+            condition: RolloutConditionConfig::TurnPhase(CatalogTurnPhase::Collect),
+            primary: primary.clone(),
+            fallback: RolloutPolicyConfig::UniformRandom,
+        };
+        for collect in [true, false] {
+            assert_eq!(
+                bias.applies(&game, &state, PlayerId::FIRST, PlayerId::FIRST),
+                collect
+            );
+            for seed in 0..16 {
+                let mut actual_rng = SplitMix64::new(seed);
+                let mut expected_rng = SplitMix64::new(seed);
+                let expected_policy = if collect {
+                    primary.clone()
+                } else {
+                    RolloutPolicyConfig::UniformRandom
+                };
+                let actual = policy
+                    .select_action(
+                        &game,
+                        &state,
+                        PlayerId::FIRST,
+                        PlayerId::FIRST,
+                        &mut actual_rng,
+                    )
+                    .unwrap();
+                let expected = expected_policy
+                    .select_action(
+                        &game,
+                        &state,
+                        PlayerId::FIRST,
+                        PlayerId::FIRST,
+                        &mut expected_rng,
+                    )
+                    .unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(actual_rng.next_u64(), expected_rng.next_u64());
+            }
+            if collect {
+                let action = game.legal_actions(&state).next().unwrap();
+                game.apply_action(&mut state, &action).unwrap();
+                assert_eq!(state.phase(), TurnPhase::PlaceGemstone);
+            }
+        }
+    }
+
+    #[test]
     fn spotf_conditional_epsilon_one_matches_uniform_random_search() {
         let game = spirits_of_the_forest_game(17);
         let state = game.initial_state();

@@ -89,8 +89,8 @@ world is passed to the agent. Rust samples determinizations normally.
 Each budget's table shows selected count/share, median visits, median
 availability and median Q across seeds. A final matrix compares selection shares
 across budgets. Candidate-action lists focus the tables only: search, raw results
-and aggregate JSON retain every legal action. The dominant selection is computed
-over all actions, so it can fall outside the displayed focus. Focus percentages
+and aggregate JSON retain every legal action. Tables include the union of annotated focus actions, the top three selected
+actions and every tied dominant action. Each appears once with its role and metrics. Focus percentages
 need not sum to 100%.
 
 Q is mean terminal utility from the **root player's perspective**, not the actor
@@ -124,8 +124,7 @@ modification. Each capture writes:
 Raw records are flushed after each completed search. Interrupted runs leave
 partial raw data and may have no summaries. This first version does not resume or
 overwrite captures; use a new directory. Preserve baseline directories and repeat
-the same command with a new output path after future agent changes. There is no
-automatic cross-capture comparison or tuning.
+the same command with a new output path after future agent changes. Archived captures can be compared offline; this does not tune agents.
 
 ## Extending
 
@@ -135,16 +134,75 @@ automatic cross-capture comparison or tuning.
 action metrics. `games/lost_cities.py` owns all card/expedition semantics and labels.
 
 A new game adds builders and labels and registers its cases; runner/reporting
-need no strategic game knowledge. The current built-in suite and executable
-search integration are Lost Cities/SO-ISMCTS. A different search API can provide
+need no strategic game knowledge. The built-in suites support Lost Cities/SO-ISMCTS and SPOTF/MCTS. A different search API can provide
 the observation-only adapter documented in `runner.observation_search`, returning
 a selected action, root visits, root-action metrics and optional diagnostics.
 It must use the game's legitimate agent input, retain all legal actions, start
 fresh and normalize Q to root-player utility. Missing availability is supported;
-no MCTS agent or perfect-information suite is added here.
+the SPOTF adapter supplies the first perfect-information integration.
 
 Correctness tests cover fixture reachability/card conservation, legal candidates,
 observation invariance under hidden changes, determinization compatibility,
 observation-only search input, reproducibility, aggregation, CLI and persistence.
 Tiny native smoke runs assert legal results and diagnostic shape only. No test
 requires Red 4 (or any strategically preferred action) to win a race.
+
+## SPOTF and named configurations
+
+SPOTF has eleven public-position probes and normal catalog MCTS search.
+Personal experiment profiles and guides belong in ignored `local/experiments/`;
+generated captures belong in `results/`. Reusable tests build their own agent
+configurations and do not depend on personal files.
+The built-in adapter reconstructs a perfect-information position through Rust
+rules and calls the normal configured agent; no game branch was added to MCTS.
+
+Repeat `--variant NAME=PROFILE.toml` to capture named configs and a cross-config
+selection-share table. `--decision-time SECONDS` is mutually exclusive with
+`--iterations` and measures throughput at a fixed decision budget. Each native
+SPOTF run records search seconds, completed iterations and existing root H0/bias
+statistics. Reports include iteration throughput and median decision latency.
+Time-budget runs are not deterministic in iteration counts; fixed-iteration
+searches remain the mode for reproducibility checks. MCTS has no availability
+statistic, shown as `—`. All legal actions, including unexpanded ones, remain in
+raw/aggregate output.
+
+
+## Comparing saved captures
+
+`probe` runs behavioral searches; `probe compare` reads existing
+`metadata.json` and `runs.jsonl` without instantiating agents or rerunning search:
+
+```sh
+python -m meeple_bots probe compare \
+  --input control=results/probes/control \
+  --input guided=results/probes/guided \
+  --baseline control \
+  --output results/probes/comparison
+```
+
+Use two or more arbitrary unique names. The first input is the default baseline.
+`--top-k` defaults to 3. Human tables include the union of every variant's focus,
+top-K and tied dominant actions; JSON retains all actions. Actions are joined by
+canonical JSON identity, never labels or row order. Missing actions have no
+measurement (shown as an em dash), rather than an invented zero.
+
+The new output directory contains `comparison.txt` and `comparison.json`.
+Both include dominant selections, agreement, selection counts/shares, median
+visits/Q/availability and measured throughput/latency. JSON additionally preserves
+source metadata/configs, seed sets, seed-level selected actions and every action.
+Control-relative share deltas use **percentage points**, not relative percentages.
+Q deltas are descriptive search estimates from root-player utility, not evidence
+of objectively better actions. Config differences come from saved metadata.
+
+Incompatible games, probe IDs, recorded observations, fixture versions or root
+players are rejected. Missing historical observation metadata produces a warning;
+fixture metadata is checked when available. Root action differences are warned
+with missing/additional identities and retained as a union. Budget differences are
+reported explicitly: absent variants are not compared at that budget. Different
+seed sets are warned. Equal numeric search seeds do not establish statistical
+pairing because policies can consume randomness differently.
+
+Fixed-iteration probes diagnose behavior and sample complexity. Latency describes
+the capture environment and may differ across machines/builds. These comparisons
+are not competitive evidence: use fresh equal-time tournaments for strength.
+Focus annotations never restrict search. Historical captures are not rewritten.

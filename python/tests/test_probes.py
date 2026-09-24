@@ -129,7 +129,7 @@ class ProbeFrameworkTests(unittest.TestCase):
         self.assertEqual(len(select_cases(suite='ordering')), 3)
         self.assertEqual(select_cases(probe='preserve-low-sequence-early'), (CASES[0],))
         self.assertEqual(select_cases(probe=CASES[0].id), (CASES[0],))
-        for kwargs in ({'game': 'spotf'}, {'suite': 'missing'}, {'probe': 'missing'}, {'cases': (CASES[0], CASES[0])}):
+        for kwargs in ({'game': 'missing'}, {'suite': 'missing'}, {'probe': 'missing'}, {'cases': (CASES[0], CASES[0])}):
             with self.assertRaises(ValueError):
                 select_cases(**kwargs)
 

@@ -1,0 +1,1094 @@
+{
+  "avoid_unnecessary_gem_sacrifice": {
+    "seed": 100000000,
+    "action_indices": [
+      4,
+      13
+    ],
+    "phase": "collect",
+    "source": {
+      "trace": "spotf-pw-validation-v1",
+      "match_number": 1,
+      "ply": 2
+    },
+    "description": "avoid unnecessary gem sacrifice",
+    "notes": "Sacrifice occurs during Collect, not placement. Compare a gem-costing collection against a free alternative; the cost may be justified.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 0,
+        "column": 0,
+        "sacrifice": null
+      },
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 1,
+        "column": 0,
+        "sacrifice": {
+          "kind": "available"
+        }
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        5,
+        6,
+        6,
+        7,
+        7,
+        8,
+        8,
+        8,
+        9
+      ],
+      "own_symbols": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "opponent_symbols": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "legal_action_count": 8
+    }
+  },
+  "useful_reservation": {
+    "seed": 100000000,
+    "action_indices": [
+      4,
+      13,
+      3,
+      0,
+      12
+    ],
+    "phase": "collect",
+    "source": {
+      "trace": "spotf-pw-validation-v1",
+      "match_number": 1,
+      "ply": 5
+    },
+    "description": "useful reservation",
+    "notes": "Collecting an own reserved tile can catch the opposing category count and return the gem.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 0,
+        "column": 0,
+        "sacrifice": null
+      },
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 1,
+        "column": 0,
+        "sacrifice": null
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        4,
+        6,
+        6,
+        7,
+        7,
+        8,
+        8,
+        8,
+        9
+      ],
+      "own_symbols": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "opponent_symbols": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "legal_action_count": 9
+    }
+  },
+  "high_branching_gem_position": {
+    "seed": 100000000,
+    "action_indices": [
+      4,
+      13,
+      3,
+      0,
+      12,
+      4,
+      0,
+      31,
+      0,
+      19,
+      0,
+      0,
+      1,
+      13,
+      16,
+      11,
+      0
+    ],
+    "phase": "place_gemstone",
+    "source": {
+      "trace": "spotf-pw-validation-v1",
+      "match_number": 1,
+      "ply": 17
+    },
+    "description": "high branching gem position",
+    "notes": "Many legal moves/placements; measure search allocation without pruning any action.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "skip_gemstone"
+      },
+      {
+        "type": "spotf",
+        "kind": "move_gemstone",
+        "source_row": 0,
+        "source_column": 3,
+        "target_row": 0,
+        "target_column": 4
+      },
+      {
+        "type": "spotf",
+        "kind": "move_gemstone",
+        "source_row": 1,
+        "source_column": 0,
+        "target_row": 2,
+        "target_column": 3
+      },
+      {
+        "type": "spotf",
+        "kind": "move_gemstone",
+        "source_row": 3,
+        "source_column": 0,
+        "target_row": 3,
+        "target_column": 10
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        4,
+        6,
+        5,
+        7,
+        5,
+        6,
+        6,
+        7,
+        9
+      ],
+      "own_symbols": [
+        0,
+        0,
+        1,
+        0,
+        2,
+        0,
+        0,
+        1,
+        1
+      ],
+      "opponent_symbols": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        2,
+        2,
+        0,
+        0
+      ],
+      "legal_action_count": 103
+    }
+  },
+  "preserve_category_progress": {
+    "seed": 100000000,
+    "action_indices": [
+      4,
+      13,
+      3,
+      0,
+      12,
+      4,
+      0,
+      31,
+      0,
+      19,
+      0,
+      0,
+      1,
+      13,
+      16,
+      11,
+      0,
+      58,
+      4,
+      0,
+      8,
+      3,
+      0,
+      9,
+      0
+    ],
+    "phase": "place_gemstone",
+    "source": {
+      "trace": "spotf-pw-validation-v1",
+      "match_number": 1,
+      "ply": 25
+    },
+    "description": "preserve category progress",
+    "notes": "Compare reserving a disputed category with another reservation or skipping; placement alone adds no collected symbols.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "skip_gemstone"
+      },
+      {
+        "type": "spotf",
+        "kind": "place_gemstone",
+        "row": 2,
+        "column": 7
+      },
+      {
+        "type": "spotf",
+        "kind": "place_gemstone",
+        "row": 3,
+        "column": 10
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        4,
+        4,
+        5,
+        6,
+        3,
+        6,
+        6,
+        7,
+        9
+      ],
+      "own_symbols": [
+        1,
+        0,
+        0,
+        1,
+        2,
+        2,
+        2,
+        0,
+        0
+      ],
+      "opponent_symbols": [
+        0,
+        2,
+        1,
+        0,
+        2,
+        0,
+        0,
+        1,
+        1
+      ],
+      "legal_action_count": 33
+    }
+  },
+  "locally_similar_gem_choices": {
+    "seed": 100000000,
+    "action_indices": [
+      4,
+      13,
+      3,
+      0,
+      12,
+      4,
+      0,
+      31,
+      0,
+      19,
+      0,
+      0,
+      1,
+      13,
+      16,
+      11,
+      0,
+      58,
+      4,
+      0,
+      8,
+      3,
+      0,
+      9,
+      0
+    ],
+    "phase": "place_gemstone",
+    "source": {
+      "trace": "spotf-pw-validation-v1",
+      "match_number": 1,
+      "ply": 25
+    },
+    "description": "locally similar gem choices",
+    "notes": "Two targets share a spirit category but occupy different public board locations; no strategic verdict is encoded.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "skip_gemstone"
+      },
+      {
+        "type": "spotf",
+        "kind": "place_gemstone",
+        "row": 2,
+        "column": 7
+      },
+      {
+        "type": "spotf",
+        "kind": "place_gemstone",
+        "row": 3,
+        "column": 5
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        4,
+        4,
+        5,
+        6,
+        3,
+        6,
+        6,
+        7,
+        9
+      ],
+      "own_symbols": [
+        1,
+        0,
+        0,
+        1,
+        2,
+        2,
+        2,
+        0,
+        0
+      ],
+      "opponent_symbols": [
+        0,
+        2,
+        1,
+        0,
+        2,
+        0,
+        0,
+        1,
+        1
+      ],
+      "legal_action_count": 33
+    }
+  },
+  "majority_preservation": {
+    "seed": 100000000,
+    "action_indices": [
+      4,
+      13,
+      3,
+      0,
+      12,
+      4,
+      0,
+      31,
+      0,
+      19,
+      0,
+      0,
+      1,
+      13,
+      16,
+      11,
+      0,
+      58,
+      4,
+      0,
+      8,
+      3,
+      0,
+      9,
+      0,
+      7,
+      3,
+      1,
+      14,
+      7,
+      7,
+      0,
+      18,
+      2,
+      0,
+      1,
+      2,
+      26,
+      1,
+      5,
+      1,
+      0,
+      8
+    ],
+    "phase": "collect",
+    "source": {
+      "trace": "spotf-pw-validation-v1",
+      "match_number": 1,
+      "ply": 43
+    },
+    "description": "majority preservation",
+    "notes": "A small public lead can be reinforced or left contested. No action is labeled optimal.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 0,
+        "column": 6,
+        "sacrifice": null
+      },
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 1,
+        "column": 5,
+        "sacrifice": null
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        1,
+        4,
+        2,
+        2,
+        3,
+        6,
+        6,
+        7,
+        7
+      ],
+      "own_symbols": [
+        2,
+        0,
+        2,
+        3,
+        2,
+        2,
+        2,
+        0,
+        0
+      ],
+      "opponent_symbols": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        1,
+        3
+      ],
+      "legal_action_count": 8
+    }
+  },
+  "majority_concession": {
+    "seed": 100000000,
+    "action_indices": [
+      4,
+      13,
+      3,
+      0,
+      12,
+      4,
+      0,
+      31,
+      0,
+      19,
+      0,
+      0,
+      1,
+      13,
+      16,
+      11,
+      0,
+      58,
+      4,
+      0,
+      8,
+      3,
+      0,
+      9,
+      0,
+      7,
+      3,
+      1,
+      14,
+      7,
+      7,
+      0,
+      18,
+      2,
+      0,
+      1,
+      2,
+      26,
+      1,
+      5,
+      1,
+      0,
+      8,
+      1,
+      46,
+      1,
+      5,
+      6,
+      5,
+      4,
+      1,
+      0,
+      0,
+      0,
+      4,
+      1,
+      0,
+      0,
+      2,
+      0,
+      15,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0
+    ],
+    "phase": "collect",
+    "source": {
+      "trace": "spotf-pw-validation-v1",
+      "match_number": 1,
+      "ply": 69
+    },
+    "description": "majority concession",
+    "notes": "Taking a disputed category versus another tile may leave a useful public opportunity to the opponent.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 2,
+        "column": 4,
+        "sacrifice": null
+      },
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 3,
+        "column": 1,
+        "sacrifice": null
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        1,
+        2,
+        2,
+        1,
+        3,
+        4,
+        3,
+        2,
+        4
+      ],
+      "own_symbols": [
+        2,
+        2,
+        2,
+        3,
+        2,
+        4,
+        4,
+        2,
+        2
+      ],
+      "opponent_symbols": [
+        2,
+        2,
+        2,
+        3,
+        2,
+        0,
+        1,
+        4,
+        4
+      ],
+      "legal_action_count": 4
+    }
+  },
+  "unrecoverable_category": {
+    "seed": 100000000,
+    "action_indices": [
+      4,
+      13,
+      3,
+      0,
+      12,
+      4,
+      0,
+      31,
+      0,
+      19,
+      0,
+      0,
+      1,
+      13,
+      16,
+      11,
+      0,
+      58,
+      4,
+      0,
+      8,
+      3,
+      0,
+      9,
+      0,
+      7,
+      3,
+      1,
+      14,
+      7,
+      7,
+      0,
+      18,
+      2,
+      0,
+      1,
+      2,
+      26,
+      1,
+      5,
+      1,
+      0,
+      8,
+      1,
+      46,
+      1,
+      5,
+      6,
+      5,
+      4,
+      1,
+      0,
+      0,
+      0,
+      4,
+      1,
+      0,
+      0,
+      2,
+      0,
+      15,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      2,
+      0,
+      25,
+      0,
+      0,
+      0,
+      0,
+      4,
+      0,
+      0,
+      0,
+      0,
+      4,
+      1,
+      0,
+      0,
+      2,
+      5,
+      2,
+      0,
+      0
+    ],
+    "phase": "collect",
+    "source": {
+      "trace": "spotf-pw-validation-v1",
+      "match_number": 1,
+      "ply": 90
+    },
+    "description": "unrecoverable category",
+    "notes": "Even all remaining symbols cannot catch the opposing count in the focal category. Other tile benefits may still matter.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 2,
+        "column": 6,
+        "sacrifice": null
+      },
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 3,
+        "column": 4,
+        "sacrifice": null
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        1,
+        2,
+        1,
+        1,
+        3,
+        0,
+        2,
+        1,
+        0
+      ],
+      "own_symbols": [
+        2,
+        2,
+        3,
+        3,
+        2,
+        5,
+        4,
+        2,
+        6
+      ],
+      "opponent_symbols": [
+        2,
+        2,
+        2,
+        3,
+        2,
+        3,
+        2,
+        5,
+        4
+      ],
+      "legal_action_count": 4
+    }
+  },
+  "questionable_reservation": {
+    "seed": 100000000,
+    "action_indices": [
+      4,
+      12,
+      2,
+      0,
+      33,
+      2,
+      0,
+      12,
+      0,
+      0,
+      30,
+      3,
+      0,
+      19,
+      7,
+      0,
+      17,
+      2,
+      0,
+      1,
+      4,
+      0,
+      20,
+      9,
+      43,
+      6,
+      45,
+      2,
+      0,
+      10,
+      9,
+      0,
+      50,
+      2,
+      0,
+      11,
+      0,
+      28,
+      9,
+      17,
+      10,
+      0,
+      9,
+      9,
+      2,
+      48,
+      0,
+      0,
+      1,
+      9,
+      0,
+      17,
+      10,
+      0,
+      63,
+      5,
+      9,
+      0,
+      0,
+      10,
+      0,
+      25,
+      10,
+      1,
+      5,
+      2,
+      6,
+      0,
+      1,
+      1,
+      1,
+      1,
+      5,
+      15,
+      5,
+      0,
+      8,
+      0
+    ],
+    "phase": "collect",
+    "source": {
+      "trace": "spotf-pw-validation-v1",
+      "match_number": 2,
+      "ply": 78
+    },
+    "description": "questionable reservation",
+    "notes": "Own reserved tile lies in a category already secured by public counts; immediate points and gem recovery still matter.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "take_tile",
+        "row": 3,
+        "column": 4,
+        "sacrifice": null
+      },
+      {
+        "type": "spotf",
+        "kind": "end_collection"
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        0,
+        2,
+        3,
+        2,
+        1,
+        4,
+        3,
+        3,
+        6
+      ],
+      "own_symbols": [
+        3,
+        1,
+        1,
+        4,
+        4,
+        0,
+        2,
+        5,
+        0
+      ],
+      "opponent_symbols": [
+        2,
+        3,
+        2,
+        1,
+        2,
+        4,
+        3,
+        0,
+        4
+      ],
+      "legal_action_count": 2
+    }
+  },
+  "reservation_context_a": {
+    "seed": 23,
+    "action_indices": [
+      1,
+      0,
+      5
+    ],
+    "phase": "place_gemstone",
+    "source": {
+      "construction": "two legal double-symbol collects in opposite order; seed 23"
+    },
+    "description": "reservation context a",
+    "notes": "Paired contrast: identical forest, gems, phase and actor; only ownership of two collected categories is exchanged. Not an isolated H0-quality assertion.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "skip_gemstone"
+      },
+      {
+        "type": "spotf",
+        "kind": "place_gemstone",
+        "row": 0,
+        "column": 0
+      },
+      {
+        "type": "spotf",
+        "kind": "place_gemstone",
+        "row": 3,
+        "column": 11
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        5,
+        6,
+        6,
+        5,
+        7,
+        8,
+        6,
+        8,
+        10
+      ],
+      "own_symbols": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0
+      ],
+      "opponent_symbols": [
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "legal_action_count": 47
+    }
+  },
+  "reservation_context_b": {
+    "seed": 23,
+    "action_indices": [
+      5,
+      0,
+      1
+    ],
+    "phase": "place_gemstone",
+    "source": {
+      "construction": "two legal double-symbol collects in opposite order; seed 23"
+    },
+    "description": "reservation context b",
+    "notes": "Paired contrast: identical forest, gems, phase and actor; only ownership of two collected categories is exchanged. Not an isolated H0-quality assertion.",
+    "candidates": [
+      {
+        "type": "spotf",
+        "kind": "skip_gemstone"
+      },
+      {
+        "type": "spotf",
+        "kind": "place_gemstone",
+        "row": 0,
+        "column": 0
+      },
+      {
+        "type": "spotf",
+        "kind": "place_gemstone",
+        "row": 3,
+        "column": 11
+      }
+    ],
+    "public_context": {
+      "remaining_symbols": [
+        5,
+        6,
+        6,
+        5,
+        7,
+        8,
+        6,
+        8,
+        10
+      ],
+      "own_symbols": [
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "opponent_symbols": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0
+      ],
+      "legal_action_count": 47
+    }
+  }
+}

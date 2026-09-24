@@ -5,9 +5,10 @@ from hashlib import sha256
 import json
 from pathlib import Path
 from time import perf_counter
+from math import isfinite
 
 from ..serialization import agent_dict
-from .core import action_dict
+from .core import action_dict, json_value
 from .report import action_key, aggregate, render
 
 
@@ -25,7 +26,7 @@ def observation_search(agent, observation, legal_actions, *, seed):
 
 
 def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
-               progress=print, search=observation_search):
+               progress=print, search=observation_search, decision_seconds=None, variant_name="probe"):
     cases, iterations = tuple(cases), tuple(iterations)
     if not cases or len({c.id for c in cases}) != len(cases):
         raise ValueError('provide nonempty cases with unique IDs')
@@ -33,9 +34,12 @@ def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
         raise ValueError('iterations must be distinct positive u32 budgets')
     if type(seeds) is not int or seeds < 1 or type(seed) is not int or not 0 <= seed <= 2**64-seeds:
         raise ValueError('search seeds must form a nonempty u64 range')
-    if search is observation_search and not callable(getattr(agent, 'search', None)):
+    if decision_seconds is not None and (not isfinite(decision_seconds) or decision_seconds <= 0):
+        raise ValueError('decision time must be finite and positive')
+    if search is observation_search and not callable(getattr(agent, 'search', None)) and any(c.search is None for c in cases):
         raise ValueError('this agent needs an observation-only probe search adapter')
-    configs = [replace(agent, iterations=n, time_budget=None) for n in iterations]
+    configs = ([replace(agent, iterations=None, time_budget=decision_seconds)] if decision_seconds is not None else
+               [replace(agent, iterations=n, time_budget=None) for n in iterations])
     output = Path(output)
     if output.exists():
         raise FileExistsError(f'probe output already exists: {output}; use a new directory')
@@ -48,17 +52,17 @@ def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
     native_path = Path(_native.__file__)
     metadata = {'version': 1, 'created_utc': datetime.now(timezone.utc).isoformat(),
                 'native_sha256': sha256(native_path.read_bytes()).hexdigest(),
-                'iterations': list(iterations), 'search_seeds': list(range(seed, seed+seeds)),
+                'iterations': list(iterations) if decision_seconds is None else [], 'decision_seconds': decision_seconds, 'variant': variant_name, 'search_seeds': list(range(seed, seed+seeds)),
                 'agent': agent_dict('probe', agent), 'q_orientation': 'root_player',
                 'fresh_search_per_run': True,
                 'probes': [{'id': c.id, 'game': c.game, 'description': c.description, 'tags': c.tags,
                             'notes': c.notes, 'root_player': p.root_player,
                             'candidate_actions': [action_dict(a) for a in c.candidate_actions],
-                            'observation': asdict(p.observation) if is_dataclass(p.observation) else p.observation,
+                            'observation': p.observation.to_dict() if hasattr(p.observation, 'to_dict') else asdict(p.observation) if is_dataclass(p.observation) else p.observation,
                             'fixture': p.fixture} for c, p in zip(cases, positions)]}
     output.mkdir(parents=True, exist_ok=False)
     def write(name, data):
-        (output/name).write_text(json.dumps(data, indent=2, allow_nan=False) + '\n')
+        (output/name).write_text(json.dumps(json_value(data), indent=2, allow_nan=False) + '\n')
     write('metadata.json', metadata)
     runs = []
     with (output/'runs.jsonl').open('x') as raw:
@@ -70,7 +74,7 @@ def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
                 last_update = perf_counter()
                 for count, search_seed in enumerate(range(seed, seed+seeds), 1):
                     started = perf_counter()
-                    result = search(config, position.observation, position.legal_actions, seed=search_seed)
+                    result = (case.search or search)(config, position.observation, position.legal_actions, seed=search_seed)
                     elapsed = perf_counter() - started
                     selected = action_dict(result['action'])
                     if action_key(selected) not in legal:
@@ -84,9 +88,11 @@ def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
                         root.append({'action': action_dict(action), 'label': case.action_label(action),
                                      'focused': key in focus, 'visits': edge['visits'],
                                      'availability': edge.get('availability'),
-                                     'q': edge['q'] if edge['visits'] else None})
+                                     'q': edge['q'] if edge['visits'] else None,
+                                     **{k: edge[k] for k in ('heuristic_value', 'progressive_bias') if k in edge}})
                     row = {'probe_id': case.id, 'game': case.game, 'root_player': position.root_player,
-                           'agent': agent_dict('probe', config), 'iterations': config.iterations,
+                           'agent': agent_dict(variant_name, config), 'iterations': config.iterations,
+                           'decision_seconds': config.time_budget, 'variant': variant_name,
                            'search_seed': search_seed, 'selected_action': selected,
                            'root_visits': result['root_visits'], 'elapsed_seconds': elapsed,
                            'diagnostics': result.get('diagnostics', {}), 'root_actions': root}
@@ -95,9 +101,26 @@ def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
                     runs.append(row)
                     now = perf_counter()
                     if count == seeds or now-last_update >= 5:
-                        progress(f'  {config.iterations:,} iterations: {count}/{seeds} complete')
+                        budget_label = f'{config.iterations:,} iterations' if config.iterations is not None else f'{config.time_budget:g}s/decision'
+                        progress(f'  {budget_label}: {count}/{seeds} complete')
                         last_update = now
     summaries = aggregate(runs)
     write('summary.json', summaries)
     (output/'report.txt').write_text(render(summaries))
+    return summaries
+
+
+def run_variants(cases, variants, *, output, **kwargs):
+    """Run named configs over the same cases/seeds; each capture remains standalone."""
+    from .report import render_variants
+    cases = tuple(cases)
+    output = Path(output)
+    if not variants or any(not name or not all(c.isalnum() or c in '_-' for c in name) for name in variants):
+        raise ValueError('variant names must contain only letters, numbers, _ or -')
+    output.mkdir(parents=True, exist_ok=False)
+    summaries = []
+    for name, agent in variants.items():
+        summaries.extend(run_probes(cases, agent, output=output/name, variant_name=name, **kwargs))
+    (output/'summary.json').write_text(json.dumps(summaries, indent=2, allow_nan=False) + '\n')
+    (output/'comparison.txt').write_text(render_variants(summaries))
     return summaries

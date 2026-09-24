@@ -5,6 +5,7 @@ mod connect6;
 mod evaluation;
 mod lost_cities;
 mod splendor;
+mod spotf;
 
 use meeple_bots_catalog::{
     configured_connect6_mcts, run_connect6_match_with_observer, run_connect6_match_with_trace,
@@ -2596,6 +2597,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAgentConfig>()?;
     module.add_class::<cant_stop::PyCantStopSession>()?;
     module.add_class::<connect6::Position>()?;
+    module.add_class::<spotf::Position>()?;
     module.add_function(wrap_pyfunction!(normalize_game_parameters, module)?)?;
     module.add_class::<splendor::PySplendorPosition>()?;
     module.add_class::<lost_cities::PyLostCitiesPosition>()?;

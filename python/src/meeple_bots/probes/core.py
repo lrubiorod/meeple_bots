@@ -22,6 +22,7 @@ class ProbeCase:
     action_label: Callable[[Any], str]
     candidate_actions: tuple = ()
     notes: str = ''
+    search: Callable | None = None
 
 
 def action_dict(action):
@@ -31,10 +32,12 @@ def action_dict(action):
     elif not isinstance(action, dict):
         from ..serialization import action_dict as serialize
         action = serialize(action)
-    def json_value(value):
-        if isinstance(value, dict):
-            return {k: json_value(v) for k, v in value.items()}
-        if isinstance(value, (tuple, list, bytes)):
-            return [json_value(v) for v in value]
-        return value
     return json_value(action)
+
+
+def json_value(value):
+    if isinstance(value, dict):
+        return {k: json_value(v) for k, v in value.items()}
+    if isinstance(value, (tuple, list, bytes)):
+        return [json_value(v) for v in value]
+    return value
