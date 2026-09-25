@@ -809,7 +809,7 @@ follow-up rounds per scalar tuner, preventing unbounded searches. Categorical
 selection/admission/structure comparisons use one round. The coupled PW tuner
 runs k, alpha, then one local k recheck, never enabling/disabling PW itself.
 
-Full study and local mode call the same candidate generators in `_study_tuners.py`.
+Full study and local mode call the same candidate generators in `studies/tuners.py`.
 Full stages explicitly wrap them when enabling a new selector or screening the PW
 family, calibrate private copies and then compare them with the retained incumbent. Local mode never
 uses those enabling wrappers. Tournament execution, cost planning, paired seeds,
@@ -849,7 +849,7 @@ from competitive uncertainty and from the absence of independent confirmation.
 
 ### Lost Cities and the SO-ISMCTS study profile
 
-Study tools are registered by **agent family** in `_study_profiles.py`. The game
+Study tools are registered by **agent family** in `studies/profiles.py`. The game
 catalog determines compatible families; backend restrictions can further reduce
 the family's tools (for example, stochastic MCTS does not support RAVE/PW).
 

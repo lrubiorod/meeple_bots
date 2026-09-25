@@ -88,6 +88,8 @@ class StudyCompatibilityTests(unittest.TestCase):
                                          all_search=True, second_pass=True,
                                          stage_games={'pw': 10}, progress=lambda _: None)
             request = runner.state['request']
+            self.assertIn('reference', request)
+            self.assertIsNone(request['reference'])
             actual = {'study_protocol': request['version'],
                       'max_extension_rounds': request['max_extension_rounds'],
                       'phase_names': request['phase_names'], 'seed': request['seed'],

@@ -80,7 +80,8 @@ separate calculations.
 Analyze's stable `meeple_bots.analysis` facade exposes the existing API.
 `analysis/measurement.py` owns sampling, calibration, phase/root diagnostics and
 operating points. `analysis/report.py` owns human output and both generic and
-legacy JSON projections; `cli.analyze_compat` is a compatibility import path.
+legacy JSON projections; `cli._evaluation_dict` remains a compatibility re-export
+from `analysis.report`.
 
 Probes retain `core.py`, `registry.py`, game fixtures, `runner.py`, and `cli.py`.
 `probes/metrics.py` owns canonical action identity, aggregation, and important
@@ -117,6 +118,10 @@ publish into the replacement. Can't Stop's existing move payload has no session 
 from an earlier session with the same event count is not distinguishable at the server boundary;
 the simple Match-based move payloads likewise have no session ID. Changing those contracts
 requires a separate frontend/API compatibility decision.
+
+The Python architecture refactor is complete through Phase 6. Public facades and
+supported historical formats remain; private compatibility paths with current
+test or documented consumers are retained until a separate removal decision.
 
 Report adapters share extraction-table validation and competitive statistics through
 `meeple_bots.reporting.common`. That module defines per-seat win/draw/loss records, score

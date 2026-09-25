@@ -185,13 +185,13 @@ class StudyRunner:
             raise ValueError('seed leaves insufficient room for tuning and random baseline')
         worker_count = resolve_workers(workers)
         self.game = create_game(game, game_params)
-        self.base, self.reference = baseline, reference
+        self.base = baseline
         self.output, self.budget = output.resolve(), budget
         self.progress, self.resume = progress, resume
         request = {"version": STUDY_VERSION, "max_extension_rounds": MAX_EXTENSION_ROUNDS, "execution_mode": "local_retune" if tune else "full_study", "minimum_evidence_pairs": 4, "tune": tune, "second_pass": second_pass, "widening_expansion_search": widening_expansion_search, "tuner_specs": specs, "phase_names": list(self.phase_names), "games_per_comparison": 2 * max_pairs, "stage_games": stage_games, "baseline_supplied": supplied, "selection_search": selection_search, "mechanism_search": mechanism_search, "depth_search": depth_search, "pw_search": pw_search, "pw_supported": pw_supported, "rave_search": rave_search, "mode": "full_depth" if heuristic is None else "heuristic_cutoff",
                    "heuristic": heuristic, "target_match_time": target_match_time, "safety_margin": 1.2,
                    "selection_policies": selectors, "game": game, **({"game_params": game_parameters(self.game)} if game_parameters(self.game) else {}), "baseline": profile_values(baseline),
-                   "reference": profile_values(reference) if reference else None,
+                   "reference": None,
                    "seed": seed, "max_pairs": max_pairs,
                    "decision_seconds": decision_seconds, "screening_seconds": screening_seconds,
                    "max_plies": max_plies, "workers": worker_count, "engine": _fingerprint()}
@@ -216,8 +216,6 @@ class StudyRunner:
             self.state = {"request": request, "budget_seconds": budget, "spent_seconds": 0,
                           "calibration": None, "phases": {}, "status": "pending"}
             export_profile(self.output / "baseline.toml", "starting-baseline", baseline)
-            if reference:
-                export_profile(self.output / "reference.toml", "held-out-reference", reference)
         if budget is not None and self.state.get("budget_seconds") is not None and budget < self.state["budget_seconds"]:
             raise ValueError("resumed budget cannot be smaller than the original budget")
         self.state["budget_seconds"] = budget
@@ -357,7 +355,7 @@ class StudyRunner:
         if self.profile:
             return calibrate_so(self.state, self.game, self.base, self.budget,
                                 lambda: self.spent, self._batch, self.save, self.progress)
-        return calibrate_mcts(self.state, self.game, self.base, self.reference,
+        return calibrate_mcts(self.state, self.game, self.base,
                               lambda: self.spent, self._pair, self.save, self.progress,
                               benchmark_mcts_agent)
 
@@ -415,7 +413,7 @@ class StudyRunner:
                 if phase is None:
                     phase = (self._random_phase() if name == 'random_baseline' else
                              build_so_phase(name, self.state, self.base) if self.profile else
-                             _build_phase(name, self.state, self.base, self.reference))
+                             _build_phase(name, self.state, self.base, None))
                     self._plan_phase(phase, index)
                     self.state["phases"][name] = phase
                     self.save()

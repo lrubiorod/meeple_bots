@@ -1,4 +1,4 @@
-"""Study public and transitional compatibility facade.
+"""Study public and private compatibility facade.
 
 Lazy exports keep Analyze's existing study_analysis metrics independent of the
 coordinator import while old Study entrypoints remain available.

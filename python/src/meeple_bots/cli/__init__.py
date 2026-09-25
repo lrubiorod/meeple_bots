@@ -1,9 +1,9 @@
-"""Stable CLI entrypoints and transitional documented helper exports."""
+"""Stable CLI entrypoints and documented compatibility helper exports."""
 
 from .commands import main, _match_agent
 from .parser import build_parser
 from .display import _serialized_rollout_policy_description
-from .analyze_compat import _evaluation_dict
+from ..analysis.report import _evaluation_dict
 from ..tournament_config import _load_tournament_config, _load_tournament_agents
 from ..tournaments import tournament_pairings as _tournament_pairings
 from ..serialization import agent_dict as _batch_agent_dict

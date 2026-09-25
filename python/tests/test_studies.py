@@ -444,6 +444,11 @@ class StudyTests(unittest.TestCase):
                             reference=MctsAgent(selection_policy='uct_rave'))
             self.assertFalse(output.exists())
 
+            with self.assertRaisesRegex(ValueError, '--reference was removed'):
+                StudyRunner('tic-tac-toe', generic_baseline('tic-tac-toe'),
+                            output=output, budget=60, reference=MctsAgent())
+            self.assertFalse(output.exists())
+
     def test_rave_progression_and_selector_comparison_order(self):
         state = self.populate(self.state_for_plan())
         for name, k in [('rave', 10000), ('rave_extend_1', 20000), ('rave_extend_2', 40000), ('rave_extend_3', 80000)]:

@@ -68,16 +68,14 @@ paired evidence, and frozen request are unchanged. Source relocation changes
 the strict `python-tree-v2` hash intentionally. Old checkpoints require their
 original source tree or an explicit mixed-engine continuation.
 
-`_study_profiles`, `_study_tuners`, and `_study_output` are temporary private
-compatibility paths for existing CLI/tests and any local users. Their classes
+`_study_profiles`, `_study_tuners`, and `_study_output` remain private
+compatibility paths with current CLI, test, or documented consumers. Their classes
 and generator functions re-export the authoritative Study definitions. The
 old output wrapper also preserves its historical `announce_extension(runner,
 phase)` state update; Study itself uses the pure report calculation and commits
-the flag in the coordinator. At Phase 2, `study_analysis` re-exported paired
-evidence and Study report functions while still defining `quantile` and
-`search_adequacy`; Phase 3 moves those shared definitions below. Assess private
-shim removal after external-use review in Phase 6; preserve the public Study
-facade. Tests patch actual dependencies at
+the flag in the coordinator. `study_analysis` re-exports paired evidence,
+Study report functions, and the neutral `search_metrics` functions. The public
+Study facade remains stable. Tests patch actual dependencies at
 `studies.coordinator.run_matches`, `studies.coordinator._fingerprint`, and
 `studies.planning.proposals` after relocation.
 
@@ -87,10 +85,11 @@ facade. Tests patch actual dependencies at
 remain stable. The package initializer re-exports previously imported profile
 helpers, tournament loaders, `_match_agent`, `_evaluation_dict`, and the test
 seams `_batch_agent_dict`/`_tournament_pairings`. Their implementations live in
-`_mcts_profiles`, `tournament_config`, `cli.commands`, `cli.analyze_compat`,
+`_mcts_profiles`, `tournament_config`, `cli.commands`, `analysis.report`,
 `serialization`, and `tournaments`, respectively. These private re-exports
-serve existing tests and documented CLI helper paths; assess their consumers
-in Phase 6 rather than treating them as permanent public APIs. No repository
+serve existing tests and documented CLI helper paths. The intermediate private
+`cli.analyze_compat` module was retired in Phase 6; `_evaluation_dict` remains
+available from `meeple_bots.cli`. No repository
 test patches `meeple_bots.cli` globals; Study's separate monkeypatch seams
 remain unchanged. Source relocation intentionally changes the strict Study
 fingerprint, so historical resumes still require a matching engine or the
@@ -101,8 +100,8 @@ explicit mixed-engine override.
 `meeple_bots.analysis` remains the public facade. `analysis.measurement` owns
 sampling, horizon/calibration and search summaries; `analysis.report` owns text,
 generic JSON and the supported legacy deterministic-MCTS projection. The former
-does not import the latter. `cli.analyze_compat` re-exports the legacy projection
-for Phase-1 compatibility; reassess this private path in Phase 6. The Analyze
+does not import the latter. `meeple_bots.cli._evaluation_dict` directly re-exports
+the legacy projection from `analysis.report`. The Analyze
 sampled-full horizon remains distinct from Study's practical terminal horizon.
 
 `search_metrics` now defines only `quantile` and `search_adequacy`. Old
@@ -115,8 +114,8 @@ important-action selection. `probes.report` re-exports those names for current
 tests and local users. `probes.artifacts` owns version-1 capture reads/writes and
 comparison artifact writes. `probes.compare` computes descriptive differences;
 `probes.report` renders them. The historical `probes.compare.render_comparison`
-import lazily re-exports the same function. Reassess these private shims in
-Phase 6. Existing captures are read without migration or regeneration, and
+import lazily re-exports the same function for current test consumers.
+Existing captures are read without migration or regeneration, and
 comparison remains search-free. Native-free package import remains outside the
 current contract.
 
@@ -137,6 +136,5 @@ validation are unchanged. `extraction` keeps `extract_tournament` as a facade;
 the pipeline, schema and game adapters preserve the CSV and manifest contracts.
 `reporting` keeps `generate_study_report` and its helper imports as a facade;
 renderers now depend on `reporting.base`/`reporting.common`, below dispatch.
-These compatibility paths have live tests and callers. Review private re-export
-removal only in Phase 6, after checking external use; retain the public facades.
+These compatibility paths have live tests and callers; retain the public facades.
 Pure source relocation changes Study's strict fingerprint as documented above.

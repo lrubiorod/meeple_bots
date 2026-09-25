@@ -17,7 +17,7 @@ def _iterations(agent: MctsAgent, count: int) -> MctsAgent:
     return replace(agent, iterations=max(1, min(2**32 - 1, count)), time_budget=None, root_diagnostics=False)
 
 
-def calibrate_mcts(state, game, base, reference, spent, pair, save, progress, benchmark_mcts_agent):
+def calibrate_mcts(state, game, base, spent, pair, save, progress, benchmark_mcts_agent):
     if state["calibration"]:
         return
     request = state["request"]
@@ -71,10 +71,6 @@ def calibrate_mcts(state, game, base, reference, spent, pair, save, progress, be
     depths = cutoff_depths(horizon["depth"]) if request["mode"] == "heuristic_cutoff" else []
     if request["mode"] == "heuristic_cutoff" and not depths and not request["baseline_supplied"]:
         raise ValueError("the reference horizon leaves no distinct heuristic cutoff depth")
-    if reference and not request["baseline_supplied"]:
-        if (request["mode"] == "full_depth" and reference.rollout_depth != horizon["depth"]) or (
-                request["mode"] == "heuristic_cutoff" and reference.rollout_depth >= horizon["depth"]):
-            raise ValueError("reference horizon belongs to another family; compare it in a separate tournament")
     operating_depth = base.rollout_depth if request["baseline_supplied"] else depths[len(depths)//2] if depths else horizon["depth"]
     if "position_timings" not in work:
         probe = replace(base if fixed_iterations else _timed(base, target), rollout_depth=operating_depth, root_diagnostics=True)

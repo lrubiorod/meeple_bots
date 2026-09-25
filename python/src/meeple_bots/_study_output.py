@@ -1,4 +1,4 @@
-"""Temporary compatibility wrapper for Study terminal output."""
+"""Private compatibility wrapper for Study terminal output."""
 from .studies.report import compute_budget, extension_notice, announce_plan as render_plan
 
 

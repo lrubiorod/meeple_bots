@@ -130,8 +130,9 @@ the same command with a new output path after future agent changes. Archived cap
 
 `meeple_bots/probes/core.py` defines `ProbeCase` and `ProbePosition`.
 `registry.py` registers concrete cases and filters IDs/games/tags.
-`runner.py` handles budgets, seeds and persistence; `report.py` aggregates generic
-action metrics. `games/lost_cities.py` owns all card/expedition semantics and labels.
+`runner.py` handles budgets and seeds; `artifacts.py` owns capture I/O;
+`metrics.py` aggregates generic action metrics; `report.py` renders them.
+`games/lost_cities.py` owns all card/expedition semantics and labels.
 
 A new game adds builders and labels and registers its cases; runner/reporting
 need no strategic game knowledge. The built-in suites support Lost Cities/SO-ISMCTS and SPOTF/MCTS. A different search API can provide

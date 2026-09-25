@@ -198,11 +198,6 @@ def _print_batch_result(
     print(f"  Total time: {result.elapsed_seconds:.3f}s")
 
 
-
-def _heuristic_name(heuristic: int | None) -> str:
-    return "none" if heuristic is None else str(heuristic)
-
-
 def _evaluator_name(evaluator: NeutralEvaluator | GameHeuristic | None) -> str:
     if isinstance(evaluator, GameHeuristic):
         params = ""
@@ -405,4 +400,3 @@ def _resolution_text(action: BoopAction) -> str:
         position = action.resolution.position
         return f"recover ({position.row}, {position.column})"
     return ""
-
