@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import read_analysis_csv, wilson_interval
+from .base import read_analysis_csv, wilson_interval
 
 
 def load_tables(

@@ -23,7 +23,7 @@ class Connect6:
     board_size: int
 
     def __init__(self, board_size: int | None = None):
-        from .game_config import normalize_game_parameters
+        from ._game_parameters import normalize_game_parameters
 
         params = {} if board_size is None else {'board_size': board_size}
         object.__setattr__(self, 'board_size', normalize_game_parameters('connect6', params)['board_size'])

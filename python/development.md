@@ -49,8 +49,16 @@ from `meeple_bots`.
 The Python facade is organized by responsibility:
 
 - `_agent_config.py` defines agent/evaluator/rollout configuration values and their
-  game-independent validation. `api.py` re-exports them and coordinates game-aware validation,
-  match/batch execution and native conversion.
+  game-independent validation. `api.py` remains the public facade and keeps the
+  supported evaluation/benchmark entrypoints. `game_types.py` owns lightweight
+  game/action values; `matches.models` owns match and batch result types;
+  `matches.execution` owns `Match` and `Batch`; and `matches.human` owns the
+  human callback and terminal adapter. The facade re-exports the same class objects.
+- `native_config.py` converts game-independent agent values to Rust configurations.
+  `native_bridge.py` owns game-aware validation and native trace/result adaptation.
+  The Lost Cities SO-ISMCTS observation adapter remains game-owned. Match/Batch
+  continue to invoke native execution; their seed and seat policies are distinct
+  from Tournament's paired scheduling.
 - `_mcts_profiles.py` parses TOML and inline MCTS profiles; `_search_profiles.py` selects
   the search family and decodes a TOML profile in one read. `tournament_config.py`
   owns tournament TOML validation and agent-grid expansion. The `cli/` package
@@ -102,6 +110,18 @@ aggregation, win-rate Wilson intervals and first-player advantage. Game modules 
 existing output columns and add domain-specific metrics and figures. Competitive results exclude
 self-play; the historical overall first-player statistic includes it and considers decisive games
 only. Wilson intervals describe win rate, not the score that awards half a point for draws.
+
+Version-1 match/agent/action codecs and tournament trace validation live in
+`matches.trace`. `serialization.py` and the trace names in `tournaments.py` re-export
+the authoritative functions and class for existing imports; remove those compatibility
+paths only after their documented callers migrate. `tournaments.py` still owns job
+scheduling, standings and its paired seed policy. `extraction.pipeline` owns trace
+streaming and atomic publication, `extraction.schema` owns CSV fields and common
+decoders, and Boop/SPOTF extraction adapters own their game tables. The
+`meeple_bots.extraction` facade preserves `extract_tournament`. Report dispatch is in
+`reporting.dispatch`; dependency-light labels/intervals are in `reporting.base`,
+while dataframe helpers remain in `reporting.common`. Renderers import helpers below
+dispatch, and optional plotting libraries load only when a report is generated.
 
 Rust remains the single source of truth for rules under the repository's top-level `games/`
 workspace. Python game packages provide presentation, reporting, and integration rather than a

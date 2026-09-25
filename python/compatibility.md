@@ -119,3 +119,24 @@ import lazily re-exports the same function. Reassess these private shims in
 Phase 6. Existing captures are read without migration or regeneration, and
 comparison remains search-free. Native-free package import remains outside the
 current contract.
+
+## Phase 4 API, trace, extraction and reporting ownership
+
+`meeple_bots` and `meeple_bots.api` keep their public class/function import
+paths. The authoritative match/batch result classes live in `matches.models`,
+`Match`/`Batch` in `matches.execution`, and human callbacks in `matches.human`;
+old paths re-export the identical objects. `native_config` and `native_bridge`
+own Rust configuration and game-aware conversion. `game_config` still exports
+`normalize_game_parameters` from the lower-level `_game_parameters` owner.
+
+`matches.trace` owns version-1 action, agent and result codecs plus tournament
+trace validation and resume I/O. `serialization` and `tournaments` retain their
+historical imports as re-exports of the same functions/classes. The schema,
+`agent_total_v1` timing meaning, append/flush behavior and strict resume
+validation are unchanged. `extraction` keeps `extract_tournament` as a facade;
+the pipeline, schema and game adapters preserve the CSV and manifest contracts.
+`reporting` keeps `generate_study_report` and its helper imports as a facade;
+renderers now depend on `reporting.base`/`reporting.common`, below dispatch.
+These compatibility paths have live tests and callers. Review private re-export
+removal only in Phase 6, after checking external use; retain the public facades.
+Pure source relocation changes Study's strict fingerprint as documented above.

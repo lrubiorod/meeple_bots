@@ -12,7 +12,9 @@ from ._mcts_profiles import (
     _configured_transpositions, _configured_tree_reuse,
     _mcts_budget_kwargs, sqrt_two,
 )
-from .api import Match, MctsAgent, RandomAgent, TicTacToe, ConnectFour, Boop, SpiritsOfTheForest
+from ._agent_config import MctsAgent, RandomAgent
+from .game_types import TicTacToe, ConnectFour, Boop, SpiritsOfTheForest
+from .matches.execution import Match
 from .game_config import PLAYABLE_GAMES, create_game
 from .serialization import game_name as _game_name
 from .tournaments import TournamentAgent as _TournamentAgent, TournamentConfig as _TournamentConfig

@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from . import decision_timing_description
+from .base import decision_timing_description
 from .common import (
     competitive_results as _competitive_results,
     performance as _performance,

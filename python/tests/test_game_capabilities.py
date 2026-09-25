@@ -47,7 +47,7 @@ class GameCapabilityTests(unittest.TestCase):
         metadata = {"heuristics": {3: {"new_parameter": {
             "default": 2.0, "minimum": 1.0, "maximum": 4.0,
         }}}, "turn_phase_conditions": False}
-        with patch("meeple_bots.api.game_search_capabilities", return_value=metadata):
+        with patch("meeple_bots.native_bridge.game_search_capabilities", return_value=metadata):
             Match(game=ConnectFour(), first=MctsAgent(
                 cutoff_evaluator=GameHeuristic(3, {"new_parameter": 2})))
             for value in (0, 5):

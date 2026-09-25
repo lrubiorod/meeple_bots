@@ -1,7 +1,8 @@
 """Public-chance Can't Stop sessions backed by authoritative Rust rules."""
 
 from ... import _native
-from ...api import MctsAgent, RandomAgent, _native_agent
+from ..._agent_config import MctsAgent, RandomAgent
+from ...native_config import native_agent_config
 
 
 class CantStopSession:
@@ -20,7 +21,7 @@ class CantStopSession:
             if not isinstance(agent, (MctsAgent, RandomAgent)):
                 raise TypeError("session seats must be None, MctsAgent or RandomAgent")
             # Native construction validates Can't Stop capabilities; conversion itself is generic.
-            return _native_agent(agent, game=None)
+            return native_agent_config(agent)
         self._session = _native.CantStopSession(seed, native(first), native(second))
 
     def snapshot(self):

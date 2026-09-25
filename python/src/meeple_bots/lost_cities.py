@@ -8,6 +8,21 @@ from dataclasses import dataclass, asdict, field
 from . import _native
 
 
+def _so_ismcts_search(
+    observation, legal_actions, iterations, exploration, seed,
+    time_budget, selection_policy, tree_reuse,
+):
+    """Adapt an observation-only Lost Cities search request to the native API."""
+    if not isinstance(observation, LostCitiesObservation):
+        raise TypeError("search requires a LostCitiesObservation")
+    result = _native.lost_cities_so_ismcts_search(
+        observation.to_dict(), [action.to_dict() for action in legal_actions],
+        iterations, exploration, seed, time_budget, selection_policy, tree_reuse,
+    )
+    result["action"] = LostCitiesAction.from_dict(result["action"])
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class LostCitiesAction:
     kind: str

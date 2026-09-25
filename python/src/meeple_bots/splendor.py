@@ -159,7 +159,8 @@ class SplendorSession:
     """Interactive Rust session. None seats are human; chance is always automatic."""
 
     def __init__(self, *, seed=0, first=None, second=None):
-        from .api import MctsAgent, RandomAgent, _native_agent
+        from ._agent_config import MctsAgent, RandomAgent
+        from .native_config import native_agent_config
         if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**64:
             raise ValueError("seed must be an unsigned 64-bit integer")
 
@@ -168,7 +169,7 @@ class SplendorSession:
                 return None
             if not isinstance(agent, (MctsAgent, RandomAgent)):
                 raise TypeError("session seats must be None, MctsAgent or RandomAgent")
-            return _native_agent(agent, game=None)
+            return native_agent_config(agent)
 
         self._session = _native.SplendorSession(seed, native(first), native(second))
 

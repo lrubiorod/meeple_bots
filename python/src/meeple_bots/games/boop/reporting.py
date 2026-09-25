@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from ...reporting import decision_timing_description, wilson_interval
+from ...reporting.base import decision_timing_description, wilson_interval
 
 from ...reporting.common import (
     boolean as _boolean,

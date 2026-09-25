@@ -61,16 +61,12 @@ class SoIsmctsAgent:
         No authoritative position or simulation world is accepted at this boundary.
         Standalone calls are fresh: reuse requires the native match lifecycle.
         """
-        from . import _native
-        from .lost_cities import LostCitiesObservation, LostCitiesAction
-        if not isinstance(observation, LostCitiesObservation):
-            raise TypeError("search requires a LostCitiesObservation")
-        result = _native.lost_cities_so_ismcts_search(
-            observation.to_dict(), [a.to_dict() for a in legal_actions],
-            self.iterations, self.exploration, seed, self.time_budget, self.selection_policy, self.tree_reuse,
+        from .lost_cities import _so_ismcts_search
+
+        return _so_ismcts_search(
+            observation, legal_actions, self.iterations, self.exploration,
+            seed, self.time_budget, self.selection_policy, self.tree_reuse,
         )
-        result["action"] = LostCitiesAction.from_dict(result["action"])
-        return result
 
 
 @dataclass(frozen=True, slots=True)
