@@ -26,7 +26,8 @@ def add_parser(subparsers):
 
 def run(args):
     if args.operation == 'compare':
-        from .compare import write_comparison, render_comparison
+        from .compare import write_comparison
+        from .report import render_comparison
         inputs = {}
         for value in args.input:
             name, separator, path = value.partition('=')

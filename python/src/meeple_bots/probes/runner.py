@@ -1,15 +1,15 @@
 """Independent fixed-observation searches, with streaming raw persistence."""
-from dataclasses import asdict, is_dataclass, replace
-from datetime import datetime, timezone
-from hashlib import sha256
-import json
+from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 from math import isfinite
 
 from ..serialization import agent_dict
-from .core import action_dict, json_value
-from .report import action_key, aggregate, render
+from .core import action_dict
+from .artifacts import (capture_metadata, write_capture_json, open_runs,
+                        append_run, write_capture_report, write_variant_artifacts)
+from .metrics import action_key, aggregate
+from .report import render
 
 
 def observation_search(agent, observation, legal_actions, *, seed):
@@ -47,25 +47,12 @@ def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
     for case, position in zip(cases, positions):
         if not position.legal_actions or any(a not in position.legal_actions for a in case.candidate_actions):
             raise ValueError(f'{case.id}: invalid legal/candidate actions')
-    # Exact executable fingerprint helps distinguish future baseline captures.
-    from .. import _native
-    native_path = Path(_native.__file__)
-    metadata = {'version': 1, 'created_utc': datetime.now(timezone.utc).isoformat(),
-                'native_sha256': sha256(native_path.read_bytes()).hexdigest(),
-                'iterations': list(iterations) if decision_seconds is None else [], 'decision_seconds': decision_seconds, 'variant': variant_name, 'search_seeds': list(range(seed, seed+seeds)),
-                'agent': agent_dict('probe', agent), 'q_orientation': 'root_player',
-                'fresh_search_per_run': True,
-                'probes': [{'id': c.id, 'game': c.game, 'description': c.description, 'tags': c.tags,
-                            'notes': c.notes, 'root_player': p.root_player,
-                            'candidate_actions': [action_dict(a) for a in c.candidate_actions],
-                            'observation': p.observation.to_dict() if hasattr(p.observation, 'to_dict') else asdict(p.observation) if is_dataclass(p.observation) else p.observation,
-                            'fixture': p.fixture} for c, p in zip(cases, positions)]}
+    metadata = capture_metadata(cases, positions, agent, iterations, decision_seconds,
+                                variant_name, seed, seeds)
     output.mkdir(parents=True, exist_ok=False)
-    def write(name, data):
-        (output/name).write_text(json.dumps(json_value(data), indent=2, allow_nan=False) + '\n')
-    write('metadata.json', metadata)
+    write_capture_json(output, 'metadata.json', metadata)
     runs = []
-    with (output/'runs.jsonl').open('x') as raw:
+    with open_runs(output) as raw:
         for index, (case, position) in enumerate(zip(cases, positions), 1):
             progress(f'Probe {index}/{len(cases)}: {case.id}')
             legal = {action_key(action_dict(a)): a for a in position.legal_actions}
@@ -96,8 +83,7 @@ def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
                            'search_seed': search_seed, 'selected_action': selected,
                            'root_visits': result['root_visits'], 'elapsed_seconds': elapsed,
                            'diagnostics': result.get('diagnostics', {}), 'root_actions': root}
-                    raw.write(json.dumps(row, allow_nan=False) + '\n')
-                    raw.flush()
+                    append_run(raw, row)
                     runs.append(row)
                     now = perf_counter()
                     if count == seeds or now-last_update >= 5:
@@ -105,8 +91,8 @@ def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
                         progress(f'  {budget_label}: {count}/{seeds} complete')
                         last_update = now
     summaries = aggregate(runs)
-    write('summary.json', summaries)
-    (output/'report.txt').write_text(render(summaries))
+    write_capture_json(output, 'summary.json', summaries)
+    write_capture_report(output, render(summaries))
     return summaries
 
 
@@ -121,6 +107,5 @@ def run_variants(cases, variants, *, output, **kwargs):
     summaries = []
     for name, agent in variants.items():
         summaries.extend(run_probes(cases, agent, output=output/name, variant_name=name, **kwargs))
-    (output/'summary.json').write_text(json.dumps(summaries, indent=2, allow_nan=False) + '\n')
-    (output/'comparison.txt').write_text(render_variants(summaries))
+    write_variant_artifacts(output, summaries, render_variants(summaries))
     return summaries

@@ -1,8 +1,8 @@
 """Offline comparison of archived probe captures. No search or game dependencies."""
-import json
 from pathlib import Path
 
-from .report import action_key, action_roles, aggregate, important_actions
+from .metrics import action_key, action_roles, aggregate
+from .artifacts import load_capture, write_comparison_artifacts
 
 
 def _budget(row):
@@ -21,17 +21,8 @@ def compare_captures(inputs, *, baseline=None, top_k=3):
     sources, captures, warnings = {}, {}, []
     for name in names:
         path = Path(inputs[name])
-        meta = json.loads((path / 'metadata.json').read_text())
-        if meta.get('version', 1) != 1:
-            raise ValueError(f'{name}: unsupported capture schema version')
-        if meta.get('q_orientation', 'root_player') != 'root_player':
-            raise ValueError(f'{name}: incompatible Q orientation')
-        for field in ('q_orientation', 'version'):
-            if field not in meta:
-                warnings.append(f'{name}: missing {field}; assuming legacy version-1 conventions')
-        rows = [json.loads(line) for line in (path / 'runs.jsonl').read_text().splitlines() if line.strip()]
-        if not rows:
-            raise ValueError(f'{name}: no saved runs')
+        meta, rows, capture_warnings = load_capture(path, name)
+        warnings.extend(capture_warnings)
         seen = set()
         for row in rows:
             identity = (row['probe_id'], _budget(row), row['search_seed'])
@@ -142,61 +133,20 @@ def compare_captures(inputs, *, baseline=None, top_k=3):
                                 for r in sorted(captures[name], key=lambda r: (r['probe_id'], str(_budget(r)), r['search_seed']))]}
 
 
-def render_comparison(data):
-    lines = ['Probe comparison', f'Game: {data["game"]}; baseline: {data["baseline"]}',
-             'Q: root-player utility; estimates, not objective move quality.',
-             'Fixed-iteration captures diagnose sample complexity, not equal-time competitive strength.',
-             'Same numeric search seeds do not imply statistically paired samples.',
-             'Missing metrics/actions: —. Share deltas are percentage points (pp).']
-    baseline_config = data['sources'][data['baseline']]['metadata'].get('agent', {})
-    for name in [data['baseline'], *sorted(set(data['sources']) - {data['baseline']})]:
-        source = data['sources'][name]
-        lines.append(f'{name}: {source["directory"]}')
-        config = source['metadata'].get('agent', {})
-        if name != data['baseline']:
-            diff = {k: {'baseline': baseline_config.get(k), 'variant': config.get(k)}
-                    for k in sorted(set(baseline_config) | set(config)) if baseline_config.get(k) != config.get(k)}
-            lines.append(f'  Saved config differences vs {data["baseline"]}: {json.dumps(diff, sort_keys=True)}')
-    lines.extend('WARNING: ' + warning for warning in data['warnings'])
-    def fmt(value, precision=3):
-        return '—' if value is None else f'{value:.{precision}f}'
-    for group in data['groups']:
-        budget = (f'{group["iterations"]:,} iterations' if group['iterations'] is not None
-                  else f'{group["decision_seconds"]:g}s/decision')
-        lines += [f'\nProbe: {group["probe_id"]} — {budget}', 'Dominant selection:']
-        for row in group['variants']:
-            leaders = [a for a in row['actions'] if a['dominant']]
-            lines.append(f'  {row["variant"]}: ' + ' / '.join(a['label'] for a in leaders)
-                         + f' ({leaders[0]["selected_percentage"]:.1f}% each)')
-        lines.append('Dominant agreement: ' + group['dominant_agreement'])
-        lines.append('Search cost:')
-        for row in group['variants']:
-            lines.append(f'  {row["variant"]}: {row["iterations_per_second"]:,.0f} iter/s; '
-                         f'median latency {1000*row["median_decision_seconds"]:.2f} ms; {row["runs"]} seeds')
-        lines.append('Action | Variant | Role | Selected (share) | Median visits | Median avail | Median Q | Share Δ vs baseline')
-        indexes = {r['variant']: {action_key(a['action']): a for a in r['actions']} for r in group['variants']}
-        for action in important_actions(group['variants'], data['top_k']):
-            for row in group['variants']:
-                a = indexes[row['variant']].get(action_key(action['action']))
-                prefix = f'{action["label"]} | {row["variant"]} | '
-                if a is None:
-                    lines.append(prefix + 'missing | — | — | — | — | —')
-                    continue
-                delta = a['share_delta_pp']
-                lines.append(prefix + f'{a["role"] or "comparison"} | {a["selected_count"]}/{row["runs"]} '
-                             f'({a["selected_percentage"]:.1f}%) | {fmt(a["median_visits"], 1)} | '
-                             f'{fmt(a["median_availability"], 1)} | {fmt(a["median_q"])} | '
-                             + ('—' if delta is None else f'{delta:+.1f} pp'))
-    return '\n'.join(lines) + '\n'
-
-
 def write_comparison(inputs, *, output, baseline=None, top_k=3):
+    from .report import render_comparison
+
     output = Path(output)
     if output.exists():
         raise ValueError(f'output already exists: {output}')
     data = compare_captures(inputs, baseline=baseline, top_k=top_k)
     report = render_comparison(data)
-    output.mkdir(parents=True, exist_ok=False)
-    (output / 'comparison.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
-    (output / 'comparison.txt').write_text(report)
+    write_comparison_artifacts(output, data, report)
     return data
+
+
+def __getattr__(name):
+    if name == 'render_comparison':
+        from .report import render_comparison
+        return render_comparison
+    raise AttributeError(name)

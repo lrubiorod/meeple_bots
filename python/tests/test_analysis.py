@@ -14,10 +14,28 @@ from meeple_bots.analysis import (operating_points, summarize_search, print_anal
                                  _add_game_search_estimates, _format_game_search_seconds, sampled_full_horizon, _ANALYZERS)
 from meeple_bots.cli import main
 from meeple_bots._search_budget import decision_budget
+from meeple_bots.search_metrics import quantile, search_adequacy
+from meeple_bots import study_analysis
+from meeple_bots.analysis import AnalysisReport
+from meeple_bots.analysis.measurement import AnalysisReport as MeasuredReport
 from meeple_bots import _native
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_analysis_facade_keeps_one_report_type(self):
+        self.assertIs(AnalysisReport, MeasuredReport)
+
+    def test_shared_work_metrics_keep_boundary_values_and_study_imports(self):
+        self.assertIs(study_analysis.quantile, quantile)
+        self.assertIs(study_analysis.search_adequacy, search_adequacy)
+        self.assertIsNone(quantile([], .95))
+        self.assertEqual(quantile([1, 2, 3, 4], .95), 3.8499999999999996)
+        for iterations, category in ((9, 'VERY LOW'), (10, 'LOW'), (100, 'MEDIUM'), (1000, 'HIGH')):
+            result = search_adequacy([{'iterations': iterations, 'legal_actions': 10,
+                                       'milliseconds': 100}], 60)
+            self.assertEqual(result['category'], category)
+            self.assertTrue(all('target_match_time' in row for row in result['suggested_targets']))
+
     def test_sampled_full_horizon_rounding(self):
         for p95, expected in ((100, 150), (101, 152), (124, 186), (1, 2), (0, 1), (2**32-1, 2**32-1)):
             self.assertEqual(sampled_full_horizon(p95), expected)
@@ -30,7 +48,7 @@ class AnalysisTests(unittest.TestCase):
         # Deliberately contradictory compatibility field must not influence any probe.
         legacy = replace(legacy, recommended_rollout_depth=1)
         measured = Mock(wraps=_ANALYZERS['mcts'])
-        with patch('meeple_bots.analysis.evaluate_game', return_value=legacy), patch.dict(_ANALYZERS, mcts=measured):
+        with patch('meeple_bots.analysis.measurement.evaluate_game', return_value=legacy), patch.dict(_ANALYZERS, mcts=measured):
             report = analyze_game(game, samples=2, max_depth=200, seed=42, target_time=.001)
         full = sampled_full_horizon(report.structural['estimated_depth'])
         self.assertTrue(all(call.args[1].rollout_depth == full for call in measured.call_args_list))
@@ -158,7 +176,7 @@ class AnalysisTests(unittest.TestCase):
                 self.assertEqual(_format_game_search_seconds(seconds), expected)
 
     def test_game_columns_reuse_structural_samples_for_all_profiles(self):
-        with patch('meeple_bots.analysis.analyze_structure', wraps=analyze_structure) as sample:
+        with patch('meeple_bots.analysis.measurement.analyze_structure', wraps=analyze_structure) as sample:
             report = analyze_game(LostCities(), samples=2, max_depth=500, target_time=.1,
                                   profiles=[('fixed', SoIsmctsAgent(iterations=2))])
             sample.assert_called_once()
@@ -216,7 +234,7 @@ class AnalysisTests(unittest.TestCase):
         self.assertIn('determinizations', output.getvalue())
 
     def test_wrong_family_rejected_before_sampling(self):
-        with patch('meeple_bots.analysis.analyze_structure') as sample:
+        with patch('meeple_bots.analysis.measurement.analyze_structure') as sample:
             with self.assertRaisesRegex(ValueError, 'compatible'):
                 analyze_game(LostCities(), search_family='mcts')
             sample.assert_not_called()

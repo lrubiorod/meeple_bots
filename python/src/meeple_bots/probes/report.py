@@ -1,69 +1,8 @@
-"""Game-independent aggregation and human rendering; never strategic assertions."""
+"""Human rendering of precomputed behavioral probe summaries."""
 import json
 from collections import defaultdict
-from statistics import median
+from .metrics import action_key, aggregate, action_roles, important_actions
 
-
-def action_key(action):
-    return json.dumps(action, sort_keys=True, separators=(',', ':'))
-
-
-def aggregate(runs):
-    groups = defaultdict(list)
-    for run in runs:
-        groups[(run['probe_id'], run.get('variant', 'probe'), run['iterations'], run.get('decision_seconds'))].append(run)
-    summaries = []
-    for (probe_id, variant, iterations, decision_seconds), rows in groups.items():
-        actions = []
-        indexes = [{action_key(e['action']): e for e in r['root_actions']} for r in rows]
-        keys = dict.fromkeys(key for index in indexes for key in index)
-        for key in keys:
-            samples = [index[key] for index in indexes if key in index]
-            edge = samples[0]
-            selected = sum(action_key(r['selected_action']) == key for r in rows)
-            def mid(field):
-                values = [e.get(field) for e in samples if e.get(field) is not None]
-                return median(values) if values else None
-            actions.append({'action': edge['action'], 'label': edge.get('label', key),
-                            'focused': any(e.get('focused', False) for e in samples),
-                            'selected_count': selected, 'selected_percentage': 100 * selected / len(rows),
-                            'median_visits': mid('visits'), 'median_availability': mid('availability'),
-                            'median_q': mid('q')})
-        seconds = [r.get('diagnostics', {}).get('search_seconds', r['elapsed_seconds']) for r in rows]
-        work = [r.get('diagnostics', {}).get('completed_iterations', r['iterations']) for r in rows]
-        summaries.append({'variant': variant, 'decision_seconds': decision_seconds,
-                          'median_iterations': median(work), 'median_decision_seconds': median(seconds),
-                          'iterations_per_second': sum(work) / sum(seconds) if sum(seconds) else 0, 'probe_id': probe_id, 'iterations': iterations, 'runs': len(rows),
-                          'agent': rows[0]['agent'], 'root_player': rows[0]['root_player'], 'actions': actions})
-    return summaries
-
-
-
-def action_roles(actions, top_k=3):
-    """Focus plus selected top-K and every tied leader; ties use canonical ordering."""
-    if top_k < 1:
-        raise ValueError('top_k must be positive')
-    ranked = sorted(actions, key=lambda a: (-a['selected_count'], action_key(a['action'])))
-    maximum = ranked[0]['selected_count'] if ranked else 0
-    top = {action_key(a['action']) for a in ranked[:top_k] if a['selected_count']}
-    roles = {}
-    for a in actions:
-        labels = []
-        if a['focused']:
-            labels.append('focus')
-        if a['selected_count'] == maximum and maximum:
-            labels.append('dominant')
-        elif action_key(a['action']) in top:
-            labels.append('top')
-        if labels:
-            roles[action_key(a['action'])] = '+'.join(labels)
-    return roles
-
-
-def important_actions(rows, top_k=3):
-    keys = set().union(*(set(action_roles(r['actions'], top_k)) for r in rows))
-    actions = {action_key(a['action']): a for r in rows for a in r['actions']}
-    return [actions[k] for k in sorted(keys)]
 
 def render(summaries):
     lines = ['Behavioral probes — measurements, no strategic verdicts.',
@@ -118,3 +57,51 @@ def render_variants(summaries):
             shares = [sum(a['selected_percentage'] for a in r['actions'] if action_key(a['action']) not in keys) for r in rows]
             lines.append(f'{"Other":<38}' + ''.join(f'{s:>19.1f}%' for s in shares))
     return '\n'.join(lines) + '\n\n' + render(summaries)
+
+
+def render_comparison(data):
+    lines = ['Probe comparison', f'Game: {data["game"]}; baseline: {data["baseline"]}',
+             'Q: root-player utility; estimates, not objective move quality.',
+             'Fixed-iteration captures diagnose sample complexity, not equal-time competitive strength.',
+             'Same numeric search seeds do not imply statistically paired samples.',
+             'Missing metrics/actions: —. Share deltas are percentage points (pp).']
+    baseline_config = data['sources'][data['baseline']]['metadata'].get('agent', {})
+    for name in [data['baseline'], *sorted(set(data['sources']) - {data['baseline']})]:
+        source = data['sources'][name]
+        lines.append(f'{name}: {source["directory"]}')
+        config = source['metadata'].get('agent', {})
+        if name != data['baseline']:
+            diff = {k: {'baseline': baseline_config.get(k), 'variant': config.get(k)}
+                    for k in sorted(set(baseline_config) | set(config)) if baseline_config.get(k) != config.get(k)}
+            lines.append(f'  Saved config differences vs {data["baseline"]}: {json.dumps(diff, sort_keys=True)}')
+    lines.extend('WARNING: ' + warning for warning in data['warnings'])
+    def fmt(value, precision=3):
+        return '—' if value is None else f'{value:.{precision}f}'
+    for group in data['groups']:
+        budget = (f'{group["iterations"]:,} iterations' if group['iterations'] is not None
+                  else f'{group["decision_seconds"]:g}s/decision')
+        lines += [f'\nProbe: {group["probe_id"]} — {budget}', 'Dominant selection:']
+        for row in group['variants']:
+            leaders = [a for a in row['actions'] if a['dominant']]
+            lines.append(f'  {row["variant"]}: ' + ' / '.join(a['label'] for a in leaders)
+                         + f' ({leaders[0]["selected_percentage"]:.1f}% each)')
+        lines.append('Dominant agreement: ' + group['dominant_agreement'])
+        lines.append('Search cost:')
+        for row in group['variants']:
+            lines.append(f'  {row["variant"]}: {row["iterations_per_second"]:,.0f} iter/s; '
+                         f'median latency {1000*row["median_decision_seconds"]:.2f} ms; {row["runs"]} seeds')
+        lines.append('Action | Variant | Role | Selected (share) | Median visits | Median avail | Median Q | Share Δ vs baseline')
+        indexes = {r['variant']: {action_key(a['action']): a for a in r['actions']} for r in group['variants']}
+        for action in important_actions(group['variants'], data['top_k']):
+            for row in group['variants']:
+                a = indexes[row['variant']].get(action_key(action['action']))
+                prefix = f'{action["label"]} | {row["variant"]} | '
+                if a is None:
+                    lines.append(prefix + 'missing | — | — | — | — | —')
+                    continue
+                delta = a['share_delta_pp']
+                lines.append(prefix + f'{a["role"] or "comparison"} | {a["selected_count"]}/{row["runs"]} '
+                             f'({a["selected_percentage"]:.1f}%) | {fmt(a["median_visits"], 1)} | '
+                             f'{fmt(a["median_availability"], 1)} | {fmt(a["median_q"])} | '
+                             + ('—' if delta is None else f'{delta:+.1f} pp'))
+    return '\n'.join(lines) + '\n'

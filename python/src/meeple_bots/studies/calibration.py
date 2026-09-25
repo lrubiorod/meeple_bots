@@ -7,7 +7,7 @@ from .._search_budget import decision_budget
 from .budget import _study_budget
 from .persistence import profile_values
 from .planning import cutoff_depths
-from ..study_analysis import search_adequacy
+from ..search_metrics import search_adequacy
 
 def _timed(agent: MctsAgent, seconds: float) -> MctsAgent:
     return replace(agent, iterations=None, time_budget=seconds, root_diagnostics=False)

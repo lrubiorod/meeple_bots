@@ -10,9 +10,36 @@ from unittest.mock import patch
 from meeple_bots.cli import main
 from meeple_bots.probes.compare import compare_captures, render_comparison, write_comparison
 from meeple_bots.probes.report import aggregate, action_roles, important_actions, render
+from meeple_bots.probes import artifacts, metrics, report
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_metrics_and_artifact_reader_preserve_existing_capture_contract(self):
+        self.assertIs(report.aggregate, metrics.aggregate)
+        self.assertIs(report.action_roles, metrics.action_roles)
+        self.assertEqual(metrics.action_key({'z': [1, 2], 'a': 3}),
+                         metrics.action_key({'a': 3, 'z': [1, 2]}))
+        path = self.capture('saved')
+        original = (path / 'runs.jsonl').read_bytes()
+        metadata, runs, warnings = artifacts.load_capture(path, 'saved')
+        self.assertEqual(metadata['version'], 1)
+        self.assertEqual(len(runs[0]['root_actions']), 100)
+        self.assertEqual(warnings, [])
+        self.assertEqual((path / 'runs.jsonl').read_bytes(), original)
+        del metadata['version'], metadata['q_orientation']
+        (path / 'metadata.json').write_text(json.dumps(metadata))
+        _, historical_runs, warnings = artifacts.load_capture(path, 'saved')
+        self.assertEqual(historical_runs, runs)
+        self.assertIn('missing version', '\n'.join(warnings))
+        self.assertIn('missing q_orientation', '\n'.join(warnings))
+        self.assertEqual((path / 'runs.jsonl').read_bytes(), original)
+
+    def test_compare_data_does_not_call_search_or_rebuild_fixtures(self):
+        a, b = self.capture('a'), self.capture('b')
+        with patch('meeple_bots.probes.runner.observation_search', side_effect=AssertionError('search')), \
+             patch('meeple_bots.probes.registry.select_cases', side_effect=AssertionError('fixtures')):
+            self.assertEqual(compare_captures({'a': a, 'b': b})['baseline'], 'a')
+
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

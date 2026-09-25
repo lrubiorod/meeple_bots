@@ -30,7 +30,7 @@ from ..serialization import (
 )
 from ..tournament_config import _load_tournament_config
 from ..tournaments import run_tournament
-from .analyze_compat import analysis_json
+from ..analysis.report import analysis_json
 from .display import (
     _print_extraction_summary, _print_report_summary, _print_tournament_summary,
     _print_tournament_start, _print_tournament_progress,

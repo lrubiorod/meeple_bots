@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from statistics import mean
 from .race import paired_interval
-from ..study_analysis import search_adequacy
+from ..search_metrics import search_adequacy
 from .planning import MAX_EXTENSION_ROUNDS, _phase_enabled
 from .race import _group_leaders
 from .tuners import TUNING_FIELDS

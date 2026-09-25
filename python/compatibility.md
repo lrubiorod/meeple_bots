@@ -73,10 +73,11 @@ compatibility paths for existing CLI/tests and any local users. Their classes
 and generator functions re-export the authoritative Study definitions. The
 old output wrapper also preserves its historical `announce_extension(runner,
 phase)` state update; Study itself uses the pure report calculation and commits
-the flag in the coordinator. `study_analysis` re-exports paired evidence and
-Study report functions, while retaining `quantile` and `search_adequacy` for
-Analyze. Assess private shim removal after Phase 3 and external-use review in
-Phase 6; preserve the public Study facade. Tests patch actual dependencies at
+the flag in the coordinator. At Phase 2, `study_analysis` re-exported paired
+evidence and Study report functions while still defining `quantile` and
+`search_adequacy`; Phase 3 moves those shared definitions below. Assess private
+shim removal after external-use review in Phase 6; preserve the public Study
+facade. Tests patch actual dependencies at
 `studies.coordinator.run_matches`, `studies.coordinator._fingerprint`, and
 `studies.planning.proposals` after relocation.
 
@@ -94,3 +95,27 @@ test patches `meeple_bots.cli` globals; Study's separate monkeypatch seams
 remain unchanged. Source relocation intentionally changes the strict Study
 fingerprint, so historical resumes still require a matching engine or the
 explicit mixed-engine override.
+
+## Phase 3 Analyze and Probe ownership
+
+`meeple_bots.analysis` remains the public facade. `analysis.measurement` owns
+sampling, horizon/calibration and search summaries; `analysis.report` owns text,
+generic JSON and the supported legacy deterministic-MCTS projection. The former
+does not import the latter. `cli.analyze_compat` re-exports the legacy projection
+for Phase-1 compatibility; reassess this private path in Phase 6. The Analyze
+sampled-full horizon remains distinct from Study's practical terminal horizon.
+
+`search_metrics` now defines only `quantile` and `search_adequacy`. Old
+`study_analysis` imports re-export those same functions; Study imports the
+neutral owner directly. The existing workflow-specific result keys and units
+remain unchanged.
+
+`probes.metrics` now defines canonical action identity, aggregation and
+important-action selection. `probes.report` re-exports those names for current
+tests and local users. `probes.artifacts` owns version-1 capture reads/writes and
+comparison artifact writes. `probes.compare` computes descriptive differences;
+`probes.report` renders them. The historical `probes.compare.render_comparison`
+import lazily re-exports the same function. Reassess these private shims in
+Phase 6. Existing captures are read without migration or regeneration, and
+comparison remains search-free. Native-free package import remains outside the
+current contract.

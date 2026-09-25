@@ -2,7 +2,7 @@
 from collections import defaultdict
 import math
 from statistics import mean, median
-from ..study_analysis import quantile
+from ..search_metrics import quantile
 
 def _timings(rows, role):
     moves = []

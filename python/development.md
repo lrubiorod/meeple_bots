@@ -64,8 +64,23 @@ Within `studies/`, `coordinator.py` owns mutable state and effect ordering;
 comparisons from explicit cost inputs; `calibration.py` keeps separate MCTS and
 SO-ISMCTS measurements; `persistence.py` handles profile codecs, fingerprints,
 checkpoint validation and trace recovery; and `report.py` renders progress,
-diagnostics and artifacts. `study_analysis.py` still exports the work metrics
-used by Analyze until Phase 3.
+diagnostics and artifacts. `search_metrics.py` owns only the shared `quantile`
+and `search_adequacy` work diagnostics; `study_analysis.py` keeps compatibility
+imports. Analyze's sampled-full horizon and Study's terminal-reach horizon remain
+separate calculations.
+
+Analyze's stable `meeple_bots.analysis` facade exposes the existing API.
+`analysis/measurement.py` owns sampling, calibration, phase/root diagnostics and
+operating points. `analysis/report.py` owns human output and both generic and
+legacy JSON projections; `cli.analyze_compat` is a compatibility import path.
+
+Probes retain `core.py`, `registry.py`, game fixtures, `runner.py`, and `cli.py`.
+`probes/metrics.py` owns canonical action identity, aggregation, and important
+action selection; `artifacts.py` owns version-1 capture/comparison I/O;
+`compare.py` validates and joins saved captures; `report.py` renders summaries.
+Offline comparison is descriptive and does not execute search. Package import
+may still initialize native-dependent modules; native-free offline comparison
+is not yet a supported installation mode.
 
 Public imports remain under `meeple_bots` and `meeple_bots.api`; internal modules do not import
 back from their entry points. CLI profile helper names remain available at their existing paths.
