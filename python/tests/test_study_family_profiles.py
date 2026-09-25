@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from meeple_bots import MctsAgent, SoIsmctsAgent
 from meeple_bots._study_profiles import PROFILES
+from meeple_bots.studies.planning import build_so_phase
 from meeple_bots._study_tuners import changes, proposals
 from meeple_bots.studies import StudyRunner, profile_values, agent_from_values, SEED_STRIDE
 from meeple_bots.tournaments import match_jobs
@@ -38,14 +39,14 @@ class FamilyStudyTests(unittest.TestCase):
             with TemporaryDirectory() as tmp:
                 r=self.runner(tmp,base,tune='selection'); r.calibrate()
                 name=next(iter(r.state['request']['tuner_specs']))
-                p=r.profile.build_phase(name,r.state,base)
+                p=build_so_phase(name,r.state,base)
                 challenger=agent_from_values(p['agents'][p['contrasts'][0]['b']])
                 self.assertEqual(set(changes(base,challenger)), {'selection_policy'})
                 self.assertEqual(challenger.time_budget, base.time_budget)
         with TemporaryDirectory() as tmp:
             r=self.runner(tmp,SoIsmctsAgent(iterations=1,selection_policy='ucb1_tuned'),selection_search=True)
             r.calibrate()
-            p=r.profile.build_phase('exploration_coarse',r.state,r.base)
+            p=build_so_phase('exploration_coarse',r.state,r.base)
             self.assertTrue(p['contrasts'])
             self.assertTrue(all(p['agents'][c['b']]['selection_policy']=='uct' for c in p['contrasts']))
             self.assertEqual(p['agents']['incumbent']['selection_policy'],'ucb1_tuned')
@@ -62,7 +63,7 @@ class FamilyStudyTests(unittest.TestCase):
                         r.calibrate()
                         name = next(n for n, s in r.state['request']['tuner_specs'].items()
                                     if s['dimension'] == 'tree-reuse')
-                        phase = r.profile.build_phase(name, r.state, base)
+                        phase = build_so_phase(name, r.state, base)
                         self.assertEqual(len(phase['contrasts']), 1)
                         challenger = agent_from_values(phase['agents'][phase['contrasts'][0]['b']])
                         self.assertEqual(set(changes(base, challenger)), {'tree_reuse'})
@@ -121,7 +122,7 @@ class FamilyStudyTests(unittest.TestCase):
                     yield row
                     if any(isinstance(a.agent,SoIsmctsAgent) for a in (jobs[0].agent_a,jobs[0].agent_b)):
                         raise RuntimeError('interrupt Random comparison')
-            with patch('meeple_bots.studies.run_matches',side_effect=interrupt):
+            with patch('meeple_bots.studies.coordinator.run_matches',side_effect=interrupt):
                 with self.assertRaisesRegex(RuntimeError,'interrupt Random'):
                     self.runner(tmp,vs_random=True).run()
             trace=Path(tmp)/'traces/random_baseline-00.jsonl'; prefix=trace.read_bytes()

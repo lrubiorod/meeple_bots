@@ -111,13 +111,13 @@ class StudyTunerTests(unittest.TestCase):
             first = _build_phase('depth_screen', runner.state, runner.base, None)
             first['status'] = 'complete'
             runner.state['phases']['depth_screen'] = first
-            with patch('meeple_bots.studies.proposals', wraps=proposals) as generator:
+            with patch('meeple_bots.studies.planning.proposals', wraps=proposals) as generator:
                 _build_phase('exploration', runner.state, runner.base, None)
                 self.assertEqual(generator.call_args.args[0], 'exploration')
             updated = replace(runner.base, exploration=1.5, rave_equivalence=9000)
             runner.state['selected_candidate'] = {'profile': profile_values(updated)}
             name = next(n for n in runner.phase_names if n.startswith('second-0-exploration'))
-            with patch('meeple_bots.studies.proposals', wraps=proposals) as generator:
+            with patch('meeple_bots.studies.planning.proposals', wraps=proposals) as generator:
                 local = _build_phase(name, runner.state, runner.base, None)
                 self.assertEqual(generator.call_args.args[:2], ('exploration', updated))
             self.assertEqual(local['agents']['incumbent'], profile_values(updated))
@@ -145,7 +145,7 @@ class StudyTunerTests(unittest.TestCase):
             self.assertIn('LOCAL RETUNE', report)
             seeds = [c['trace'] for p in state['phases'].values() for c in p['contrasts']]
             self.assertEqual(len(seeds), len(set(seeds)))
-            with patch('meeple_bots.studies.run_matches', side_effect=AssertionError('replayed')):
+            with patch('meeple_bots.studies.coordinator.run_matches', side_effect=AssertionError('replayed')):
                 self.assertEqual(StudyRunner('connect6', base, resume=True, **opts).run()['status'], 'complete')
 
     def test_coupled_pw_plan_keeps_enable_and_expansion_frozen(self):
@@ -248,7 +248,7 @@ class PwSiblingTests(unittest.TestCase):
             self.assertAlmostEqual(k_phase['agents']['random-incumbent']['progressive_widening_k'], 8/3)
             self.assertAlmostEqual(k_phase['agents']['rave-incumbent']['progressive_widening_k'], 1/3)
             for name in PHASES[PHASES.index('pw_k'):PHASES.index('pw_compare')]:
-                with patch('meeple_bots.studies.proposals', wraps=proposals) as generator:
+                with patch('meeple_bots.studies.planning.proposals', wraps=proposals) as generator:
                     phase = _build_phase(name, runner.state, runner.base, None)
                 if name == 'pw_k_extend_1':
                     calls = {call.args[1].progressive_widening_expansion: call for call in generator.call_args_list}

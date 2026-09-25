@@ -78,14 +78,14 @@ class StudyTests(unittest.TestCase):
             base = MctsAgent(iterations=4, rollout_depth=9)
             options = dict(output=Path(tmp), budget=60, progress=lambda _: None)
             original_engine = {'fingerprint_algorithm': 'python-tree-v2', 'git_revision': 'original', 'python_sha256': 'python', 'native_sha256': 'native'}
-            with patch('meeple_bots.studies._fingerprint', return_value=original_engine):
+            with patch('meeple_bots.studies.coordinator._fingerprint', return_value=original_engine):
                 StudyRunner('tic-tac-toe', base, **options)
             new_commit = {**original_engine, 'git_revision': 'new-commit'}
-            with patch('meeple_bots.studies._fingerprint', return_value=new_commit):
+            with patch('meeple_bots.studies.coordinator._fingerprint', return_value=new_commit):
                 resumed = StudyRunner('tic-tac-toe', base, resume=True, **options)
                 self.assertEqual(resumed.state['request']['engine'], original_engine)
             for key in ('python_sha256', 'native_sha256'):
-                with self.subTest(key=key), patch('meeple_bots.studies._fingerprint',
+                with self.subTest(key=key), patch('meeple_bots.studies.coordinator._fingerprint',
                                                 return_value={**new_commit, key: 'changed'}):
                     with self.assertRaisesRegex(ValueError, 'fingerprint changed'):
                         StudyRunner('tic-tac-toe', base, resume=True, **options)
@@ -103,13 +103,13 @@ class StudyTests(unittest.TestCase):
                 for result in real_run(*args, **kwargs):
                     yield result
                     raise RuntimeError('interruption')
-            with patch('meeple_bots.studies._fingerprint', return_value=old), patch('meeple_bots.studies.run_matches', side_effect=interrupt):
+            with patch('meeple_bots.studies.coordinator._fingerprint', return_value=old), patch('meeple_bots.studies.coordinator.run_matches', side_effect=interrupt):
                 with self.assertRaisesRegex(RuntimeError, 'interruption'):
                     StudyRunner('tic-tac-toe', base, **opts).run()
             trace = output / 'traces/calibration-00.jsonl'
             prefix = trace.read_bytes()
             checkpoint = (output / 'study.json').read_bytes()
-            with patch('meeple_bots.studies._fingerprint', return_value=new):
+            with patch('meeple_bots.studies.coordinator._fingerprint', return_value=new):
                 with self.assertRaisesRegex(ValueError, 'Python source fingerprint differs'):
                     StudyRunner('tic-tac-toe', base, resume=True, **opts)
                 with self.assertRaisesRegex(ValueError, 'configuration differs'):
@@ -133,7 +133,7 @@ class StudyTests(unittest.TestCase):
                 resumed = StudyRunner('tic-tac-toe', base, resume=True, **opts).run()
                 self.assertEqual(len(resumed['engine_changes']), 1)
                 self.assertEqual(trace.read_bytes().splitlines()[1], prefix.splitlines()[1])
-            with patch('meeple_bots.studies._fingerprint', return_value=old):
+            with patch('meeple_bots.studies.coordinator._fingerprint', return_value=old):
                 with self.assertRaisesRegex(ValueError, 'Python source fingerprint differs'):
                     StudyRunner('tic-tac-toe', base, resume=True, **opts)
 
@@ -162,7 +162,7 @@ class StudyTests(unittest.TestCase):
                 for item in real_run(*args, **options):
                     yield item
                     raise RuntimeError('simulated interruption')
-            with patch('meeple_bots.studies.run_matches', side_effect=interrupt):
+            with patch('meeple_bots.studies.coordinator.run_matches', side_effect=interrupt):
                 with self.assertRaisesRegex(RuntimeError, 'simulated interruption'):
                     StudyRunner('tic-tac-toe', base, **kwargs).run()
             pilot = output/'traces/calibration-00.jsonl'
@@ -275,7 +275,7 @@ class StudyTests(unittest.TestCase):
     def calibrated_fake(self, tmp, **kwargs):
         runner = StudyRunner('boop', output=Path(tmp), budget=1000, progress=lambda _: None, **kwargs)
         rows = [{'result': {'plies': 80, 'chance_events': [None]*500}} for _ in range(2)]
-        with patch.object(runner, '_pair', return_value=rows), patch('meeple_bots.studies.benchmark_mcts_agent', side_effect=self.fake_benchmark):
+        with patch.object(runner, '_pair', return_value=rows), patch('meeple_bots.studies.coordinator.benchmark_mcts_agent', side_effect=self.fake_benchmark):
             runner.calibrate()
         return runner
 
@@ -367,7 +367,7 @@ class StudyTests(unittest.TestCase):
             first = next((Path(tmp)/'traces').glob('rave-*.jsonl'))
             extracted = extract_tournament(first, Path(tmp)/'extracted')
             self.assertTrue(extracted['complete'])
-            with patch('meeple_bots.studies.run_matches', side_effect=AssertionError('replay')):
+            with patch('meeple_bots.studies.coordinator.run_matches', side_effect=AssertionError('replay')):
                 resumed = StudyRunner('tic-tac-toe', generic_baseline('tic-tac-toe'), resume=True, **options).run()
             self.assertEqual(resumed['status'], 'complete')
             self.assertTrue(all(p.read_bytes() == data for p,data in files.items()))
@@ -534,7 +534,7 @@ class StudyTests(unittest.TestCase):
                                  game_params={'board_size': 13}, progress=lambda _: None)
             self.assertEqual(runner.base, base)
             rows = [{'result': {'plies': 80}}]*2
-            with patch.object(runner, '_pair', return_value=rows), patch('meeple_bots.studies.benchmark_mcts_agent', side_effect=self.fake_benchmark):
+            with patch.object(runner, '_pair', return_value=rows), patch('meeple_bots.studies.coordinator.benchmark_mcts_agent', side_effect=self.fake_benchmark):
                 runner.calibrate()
             self.assertEqual(runner.state['calibration']['horizon']['kind'], 'baseline')
             for name in PHASES:
@@ -569,7 +569,7 @@ class StudyTests(unittest.TestCase):
                 for agent in phase['agents'].values():
                     self.assertEqual(agent['iterations'], 4)
                     self.assertNotIn('time_budget', agent)
-            with patch('meeple_bots.studies.run_matches', side_effect=AssertionError('unexpected rerun')):
+            with patch('meeple_bots.studies.coordinator.run_matches', side_effect=AssertionError('unexpected rerun')):
                 resumed = StudyRunner('tic-tac-toe', base, resume=True, **opts).run()
             self.assertEqual(resumed['status'], 'complete')
             report = (Path(tmp)/'report.html').read_text()
@@ -582,7 +582,7 @@ class StudyTests(unittest.TestCase):
             with TemporaryDirectory() as tmp:
                 runner = StudyRunner('splendor', base, output=Path(tmp), budget=60,
                                      decision_seconds=override, progress=lambda _: None)
-                with patch.object(runner, '_pair', return_value=[{'result': {'plies': 80}}]*2), patch('meeple_bots.studies.benchmark_mcts_agent', side_effect=self.fake_benchmark):
+                with patch.object(runner, '_pair', return_value=[{'result': {'plies': 80}}]*2), patch('meeple_bots.studies.coordinator.benchmark_mcts_agent', side_effect=self.fake_benchmark):
                     runner.calibrate()
                 phase = _build_phase('depth_screen', runner.state, base, None)
                 got = agent_from_values(phase['agents']['initial'])

@@ -290,7 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     study = commands.add_parser("study", help="automatically diagnose MCTS mechanisms, budgets and parameters")
     study.add_argument("--game", choices=tuple(_PLAYABLE_GAMES), required=True)
     study.add_argument("--baseline", "--agent-config", dest="baseline", type=Path, help="initial incumbent; preserves its evaluator, parameters and search budget")
-    from .._study_tuners import TUNING_FIELDS
+    from ..studies.tuners import TUNING_FIELDS
     study.add_argument("--vs-random", action="store_true", help="final champion vs Random; descriptive only, never used for selection")
     study.add_argument("--tune", choices=tuple(TUNING_FIELDS), help="retune only this dimension; requires --agent-config/--baseline")
     study.add_argument("--second-pass", action="store_true", help="append local C/RAVE/PW retuning on the final incumbent")

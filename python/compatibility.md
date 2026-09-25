@@ -57,6 +57,29 @@ Study comparison timing and statistical semantics, analyze estimates, and
 probe measurements remain separate contracts; similar field names do not make
 their implementations interchangeable.
 
+## Phase 2 Study ownership
+
+`meeple_bots.studies` is a lazy compatibility facade for `StudyRunner`,
+`run_study`, and the existing Study helper imports. The implementation now
+lives in `studies/coordinator.py`, `planning.py`, `profiles.py`, `tuners.py`,
+`calibration.py`, `race.py`, `budget.py`, `persistence.py`, and `report.py`.
+The protocol remains 23; stage IDs, extension limit 3, seed stride 100,000,
+paired evidence, and frozen request are unchanged. Source relocation changes
+the strict `python-tree-v2` hash intentionally. Old checkpoints require their
+original source tree or an explicit mixed-engine continuation.
+
+`_study_profiles`, `_study_tuners`, and `_study_output` are temporary private
+compatibility paths for existing CLI/tests and any local users. Their classes
+and generator functions re-export the authoritative Study definitions. The
+old output wrapper also preserves its historical `announce_extension(runner,
+phase)` state update; Study itself uses the pure report calculation and commits
+the flag in the coordinator. `study_analysis` re-exports paired evidence and
+Study report functions, while retaining `quantile` and `search_adequacy` for
+Analyze. Assess private shim removal after Phase 3 and external-use review in
+Phase 6; preserve the public Study facade. Tests patch actual dependencies at
+`studies.coordinator.run_matches`, `studies.coordinator._fingerprint`, and
+`studies.planning.proposals` after relocation.
+
 ## Phase 1 import locations
 
 `meeple_bots.cli` is now a package. Its `main` and `build_parser` entrypoints

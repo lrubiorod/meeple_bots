@@ -12,6 +12,7 @@ from meeple_bots import SoIsmctsAgent, MctsAgent
 from meeple_bots.cli import main
 from meeple_bots.studies import StudyRunner, _group_leaders, profile_values, agent_from_values, export_profile, SEED_STRIDE
 from meeple_bots._study_profiles import load_search_profile
+from meeple_bots.studies.planning import build_so_phase
 from meeple_bots._study_tuners import proposals, changes
 from meeple_bots.tournaments import match_jobs
 
@@ -57,7 +58,7 @@ class SoIsmctsStudyTests(unittest.TestCase):
             self.assertGreater(c['seconds_per_iteration'],0)
             self.assertGreater(c['root_action_coverage'],0)
             self.assertEqual(c['horizon'],{'kind':'unbounded','depth':None})
-            phase=r.profile.build_phase('exploration_coarse',r.state,r.base)
+            phase=build_so_phase('exploration_coarse',r.state,r.base)
             base=agent_from_values(phase['agents']['incumbent'])
             self.assertGreaterEqual(len(phase['contrasts']),3)
             for name,v in phase['agents'].items():
@@ -70,7 +71,7 @@ class SoIsmctsStudyTests(unittest.TestCase):
         base=SoIsmctsAgent(iterations=3,exploration=.5)
         with TemporaryDirectory() as tmp:
             r=self.calibrated(tmp,base,tune='exploration')
-            phase=r.profile.build_phase('exploration_coarse',r.state,base)
+            phase=build_so_phase('exploration_coarse',r.state,base)
             for v in phase['agents'].values():
                 a=agent_from_values(v)
                 self.assertEqual(a.iterations,3)
@@ -90,7 +91,7 @@ class SoIsmctsStudyTests(unittest.TestCase):
     def test_budget_prunes_breadth_not_evidence_and_inconclusive_keeps_control(self):
         with TemporaryDirectory() as tmp:
             r=self.calibrated(tmp)
-            phase=r.profile.build_phase('exploration_coarse',r.state,r.base)
+            phase=build_so_phase('exploration_coarse',r.state,r.base)
             r.budget=r.spent+10
             with patch.object(r,'_cost_pair',return_value=1):
                 r._plan_phase(phase,0)
@@ -101,7 +102,7 @@ class SoIsmctsStudyTests(unittest.TestCase):
                 c['result']={'seed_pairs':4,'score_b':.5,'seed_scores_b':{str(i):.5 for i in range(4)}}
             self.assertEqual(_group_leaders(phase)['main'],'incumbent')
             r.budget=r.spent+.01
-            phase=r.profile.build_phase('exploration_coarse',r.state,r.base)
+            phase=build_so_phase('exploration_coarse',r.state,r.base)
             with patch.object(r,'_cost_pair',return_value=1):
                 r._plan_phase(phase,0)
             self.assertFalse(phase['contrasts'])
@@ -111,7 +112,7 @@ class SoIsmctsStudyTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             r=self.calibrated(tmp)
             r.state['selected_candidate']['profile']=profile_values(SoIsmctsAgent(iterations=1,exploration=.75))
-            phase=r.profile.build_phase('confirmation',r.state,r.base)
+            phase=build_so_phase('confirmation',r.state,r.base)
             r._plan_phase(phase,3)
             config=r._trace_config(phase,0)
             jobs=list(match_jobs([(config.agents[0],config.agents[1])],config))
@@ -136,7 +137,7 @@ class SoIsmctsStudyTests(unittest.TestCase):
                     # Pilot random agents have no iteration configuration.
                     if isinstance(jobs[0].agent_a.agent, SoIsmctsAgent):
                         raise RuntimeError('pause during C race')
-            with patch('meeple_bots.studies.run_matches', side_effect=interrupt):
+            with patch('meeple_bots.studies.coordinator.run_matches', side_effect=interrupt):
                 with self.assertRaisesRegex(RuntimeError,'pause during C race'):
                     self.make_runner(tmp,base).run()
             trace=Path(tmp)/'traces/exploration_coarse-00.jsonl'
@@ -156,7 +157,7 @@ class SoIsmctsStudyTests(unittest.TestCase):
             root=Path(tmp);file=root/'base.toml';export_profile(file,'base',base)
             r=self.calibrated(root/'study',base,tune='exploration',target_match_time=100)
             self.assertEqual(r.state['calibration']['decision_seconds'],.0001)
-            for v in r.profile.build_phase('exploration_coarse',r.state,base)['agents'].values():
+            for v in build_so_phase('exploration_coarse',r.state,base)['agents'].values():
                 candidate=agent_from_values(v)
                 self.assertEqual(candidate.time_budget,.0001)
                 self.assertLessEqual(set(changes(base,candidate)),{'exploration'})

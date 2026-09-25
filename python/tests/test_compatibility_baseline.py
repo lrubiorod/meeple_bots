@@ -136,7 +136,7 @@ class StudyCompatibilityTests(unittest.TestCase):
                         raise RuntimeError('synthetic interruption')
 
             output = root / 'resume'
-            with patch('meeple_bots.studies.run_matches', side_effect=stop_once):
+            with patch('meeple_bots.studies.coordinator.run_matches', side_effect=stop_once):
                 with self.assertRaisesRegex(RuntimeError, 'synthetic interruption'):
                     studies.StudyRunner('tic-tac-toe', base, output=output, **options).run()
             resumed = studies.StudyRunner('tic-tac-toe', base, output=output,
@@ -172,7 +172,7 @@ class StudyCompatibilityTests(unittest.TestCase):
             opts = dict(output=root / 'study', budget=60, max_pairs=2,
                         max_plies=9, progress=lambda _: None)
             base = MctsAgent(iterations=4, rollout_depth=9)
-            with patch('meeple_bots.studies._package_source_root', return_value=source), \
+            with patch('meeple_bots.studies.persistence._package_source_root', return_value=source), \
                     patch.object(_native, '__file__', str(native)):
                 runner = studies.StudyRunner('tic-tac-toe', base, **opts)
                 stored = runner.state['request']['engine']

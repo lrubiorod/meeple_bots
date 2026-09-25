@@ -55,7 +55,17 @@ The Python facade is organized by responsibility:
   the search family and decodes a TOML profile in one read. `tournament_config.py`
   owns tournament TOML validation and agent-grid expansion. The `cli/` package
   owns argparse, command orchestration, terminal views and the legacy analyze
-  JSON compatibility projection. It delegates Study execution to `studies.py`.
+  JSON compatibility projection. It delegates Study execution to `studies/`.
+
+Study's stable `meeple_bots.studies` facade exposes `StudyRunner` and `run_study`.
+Within `studies/`, `coordinator.py` owns mutable state and effect ordering;
+`planning.py` builds frozen stages using `profiles.py` and `tuners.py`;
+`race.py` evaluates completed paired evidence; `budget.py` allocates fixed
+comparisons from explicit cost inputs; `calibration.py` keeps separate MCTS and
+SO-ISMCTS measurements; `persistence.py` handles profile codecs, fingerprints,
+checkpoint validation and trace recovery; and `report.py` renders progress,
+diagnostics and artifacts. `study_analysis.py` still exports the work metrics
+used by Analyze until Phase 3.
 
 Public imports remain under `meeple_bots` and `meeple_bots.api`; internal modules do not import
 back from their entry points. CLI profile helper names remain available at their existing paths.
