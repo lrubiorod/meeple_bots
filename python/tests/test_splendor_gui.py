@@ -35,7 +35,7 @@ class SplendorGuiTests(unittest.TestCase):
         try:
             with patch('meeple_bots.games.splendor.gui.SPLENDOR_BASELINE',
                        replace(SPLENDOR_BASELINE, heuristic=1)), \
-                 patch('meeple_bots.games.splendor.gui.controller.threading.Thread.start'):
+                 patch('meeple_bots.gui.step_session.threading.Thread.start'):
                 state = app.start({'first': {'kind': 'mcts'}, 'second': {'kind': 'mcts'}})
                 self.assertEqual([p['heuristic'] for p in state['players']], [1, 1])
                 for heuristic in (None, 0, 1):
@@ -64,7 +64,7 @@ class SplendorGuiTests(unittest.TestCase):
         app = SplendorApplication()
         self.assertEqual(app.snapshot()['players'][1], SPLENDOR_BASELINE.as_dict())
         try:
-            with patch('meeple_bots.games.splendor.gui.controller.threading.Thread.start'):
+            with patch('meeple_bots.gui.step_session.threading.Thread.start'):
                 state = app.start({'first': {'kind': 'mcts'}, 'second': {'kind': 'mcts'}})
                 self.assertEqual(state['players'], [SPLENDOR_BASELINE.as_dict()]*2)
                 state = app.start({'first': {'kind': 'mcts', 'time_budget': .01,

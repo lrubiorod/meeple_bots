@@ -1,5 +1,6 @@
 """Open-hand debug GUI: legal Rust transitions and isolated controller lifetimes."""
 import json
+from random import Random
 import shutil
 import subprocess
 import time
@@ -101,6 +102,23 @@ class LostCitiesGuiTests(unittest.TestCase):
         second = self.wait(lambda s: s['status'] == 'finished')
         self.assertEqual(first['events'], second['events'])
         self.assertEqual(first['scores'], second['scores'])
+
+    def test_chance_and_agent_rng_streams_keep_distinct_seed_namespaces(self):
+        seeds = []
+
+        def make_rng(seed):
+            seeds.append(seed)
+            return Random(seed)
+
+        with patch('meeple_bots.games.lost_cities.gui.controller.Random', side_effect=make_rng):
+            self.start('human', 'human')
+            self.wait(lambda s: s['status'] == 'waiting_human')
+        self.assertEqual(seeds, [
+            42 ^ 0x8EBC6AF09C88C6E3,
+            42 ^ 0xA0761D6478BD642F,
+            42 ^ 0xE7037ED1A0B428DB,
+        ])
+        self.assertEqual(len(set(seeds)), 3)
 
     def test_human_random_both_seat_orders(self):
         for first, second, human in [('human', 'random', 0), ('random', 'human', 1)]:

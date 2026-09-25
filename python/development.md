@@ -104,6 +104,20 @@ HTTP adapters share atomic controller replacement in `meeple_bots.gui.applicatio
 while each game retains its payload parsing. Cancellation remains asynchronous and does not
 interrupt native search immediately.
 
+The GUI has three execution lifecycles. Tic-Tac-Toe, Connect Four, Boop, SPOTF and Connect6
+continue through the Match-based `GuiController`. Can't Stop and Splendor use
+`gui.step_session.NativeStepGui` for the identical condition-protected publication, human wait,
+per-worker cancellation and post-step pacing; their native sessions still own chance and search
+RNGs. The game adapters retain their distinct terminal predicates and trace formats. Can't Stop
+identifies a decision by event count; Splendor also checks a controller UUID. Lost Cities keeps
+its separate administrative loop, explicit chance/search RNG streams and observation-only SO
+search; it does not save traces. The shared application constructs a replacement before cancelling
+the previous controller. Native search may finish after cancellation, but its old worker cannot
+publish into the replacement. Can't Stop's existing move payload has no session ID, so a click
+from an earlier session with the same event count is not distinguishable at the server boundary;
+the simple Match-based move payloads likewise have no session ID. Changing those contracts
+requires a separate frontend/API compatibility decision.
+
 Report adapters share extraction-table validation and competitive statistics through
 `meeple_bots.reporting.common`. That module defines per-seat win/draw/loss records, score
 aggregation, win-rate Wilson intervals and first-player advantage. Game modules select their
