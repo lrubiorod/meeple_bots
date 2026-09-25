@@ -62,8 +62,8 @@ The Python facade is organized by responsibility:
 - `_mcts_profiles.py` parses TOML and inline MCTS profiles; `_search_profiles.py` selects
   the search family and decodes a TOML profile in one read. `tournament_config.py`
   owns tournament TOML validation and agent-grid expansion. The `cli/` package
-  owns argparse, command orchestration, terminal views and the legacy analyze
-  JSON compatibility projection. It delegates Study execution to `studies/`.
+  owns argparse, command orchestration and terminal views. It consumes the legacy
+  Analyze JSON projection from `analysis.report` and delegates Study execution to `studies/`.
 
 Study's stable `meeple_bots.studies` facade exposes `StudyRunner` and `run_study`.
 Within `studies/`, `coordinator.py` owns mutable state and effect ordering;
@@ -91,8 +91,10 @@ Offline comparison is descriptive and does not execute search. Package import
 may still initialize native-dependent modules; native-free offline comparison
 is not yet a supported installation mode.
 
-Public imports remain under `meeple_bots` and `meeple_bots.api`; internal modules do not import
-back from their entry points. CLI profile helper names remain available at their existing paths.
+Public imports remain under `meeple_bots` and `meeple_bots.api`. Implementation modules
+should prefer authoritative owners directly; a few still import through the `api` or
+`serialization` facades. This residual coupling forms no implementation import cycle.
+CLI profile helper names remain available at their existing paths.
 `meeple_bots.cli:main` and `build_parser` remain the command entrypoints.
 
 Browser controllers share worker startup, cancellation, human waits, display pacing, trace

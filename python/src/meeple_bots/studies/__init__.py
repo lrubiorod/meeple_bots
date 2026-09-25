@@ -1,7 +1,8 @@
 """Study public and private compatibility facade.
 
-Lazy exports keep Analyze's existing study_analysis metrics independent of the
-coordinator import while old Study entrypoints remain available.
+Lazy exports preserve Study entrypoints without loading the coordinator until needed.
+Analyze obtains shared ``quantile`` and ``search_adequacy`` from ``search_metrics``;
+Study retains its own practical horizon, race/evidence, promotion and paired statistics.
 """
 from importlib import import_module
 
