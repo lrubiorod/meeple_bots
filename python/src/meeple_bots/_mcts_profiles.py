@@ -40,6 +40,10 @@ def _mcts_budget_kwargs(
 def _load_mcts_profile(path: Path) -> _MctsProfile:
     with path.open("rb") as profile_file:
         values = tomllib.load(profile_file)
+    return _mcts_profile_from_values(values, path)
+
+
+def _mcts_profile_from_values(values: dict[str, object], path: Path) -> _MctsProfile:
     allowed = {
         "name",
         "iterations",

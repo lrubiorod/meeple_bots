@@ -26,13 +26,21 @@ def resolve_family(game, requested=None, baseline=None):
 
 
 def load_search_profile(path):
-    from ._mcts_profiles import _load_mcts_profile
+    return load_named_search_profile(path).agent
+
+
+def load_named_search_profile(path):
+    """Read a profile once, retaining the caller-visible name projection."""
+    from types import SimpleNamespace
+    from ._mcts_profiles import _mcts_profile_from_values
     values = tomllib.loads(path.read_text())
     if values.get('agent', 'mcts') == 'mcts':
-        return _load_mcts_profile(path).agent
-    if values.get('agent') != 'so_ismcts':
+        agent = _mcts_profile_from_values(values, path).agent
+    elif values.get('agent') == 'so_ismcts':
+        agent = so_from_values(values)
+    else:
         raise ValueError('unknown search agent family')
-    return so_from_values(values)
+    return SimpleNamespace(name=values.get('name', path.stem), agent=agent)
 
 
 def so_from_values(values):

@@ -51,11 +51,15 @@ The Python facade is organized by responsibility:
 - `_agent_config.py` defines agent/evaluator/rollout configuration values and their
   game-independent validation. `api.py` re-exports them and coordinates game-aware validation,
   match/batch execution and native conversion.
-- `_mcts_profiles.py` parses TOML and inline MCTS profiles. `cli.py` imports these helpers and
-  handles command dispatch, study execution and terminal output.
+- `_mcts_profiles.py` parses TOML and inline MCTS profiles; `_search_profiles.py` selects
+  the search family and decodes a TOML profile in one read. `tournament_config.py`
+  owns tournament TOML validation and agent-grid expansion. The `cli/` package
+  owns argparse, command orchestration, terminal views and the legacy analyze
+  JSON compatibility projection. It delegates Study execution to `studies.py`.
 
 Public imports remain under `meeple_bots` and `meeple_bots.api`; internal modules do not import
 back from their entry points. CLI profile helper names remain available at their existing paths.
+`meeple_bots.cli:main` and `build_parser` remain the command entrypoints.
 
 Browser controllers share worker startup, cancellation, human waits, display pacing, trace
 completion and stale-callback protection in `meeple_bots.gui.controller.GuiController`.

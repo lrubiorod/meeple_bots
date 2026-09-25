@@ -56,3 +56,18 @@ environment-specific hashes, strategic outcomes, or every private function.
 Study comparison timing and statistical semantics, analyze estimates, and
 probe measurements remain separate contracts; similar field names do not make
 their implementations interchangeable.
+
+## Phase 1 import locations
+
+`meeple_bots.cli` is now a package. Its `main` and `build_parser` entrypoints
+remain stable. The package initializer re-exports previously imported profile
+helpers, tournament loaders, `_match_agent`, `_evaluation_dict`, and the test
+seams `_batch_agent_dict`/`_tournament_pairings`. Their implementations live in
+`_mcts_profiles`, `tournament_config`, `cli.commands`, `cli.analyze_compat`,
+`serialization`, and `tournaments`, respectively. These private re-exports
+serve existing tests and documented CLI helper paths; assess their consumers
+in Phase 6 rather than treating them as permanent public APIs. No repository
+test patches `meeple_bots.cli` globals; Study's separate monkeypatch seams
+remain unchanged. Source relocation intentionally changes the strict Study
+fingerprint, so historical resumes still require a matching engine or the
+explicit mixed-engine override.
