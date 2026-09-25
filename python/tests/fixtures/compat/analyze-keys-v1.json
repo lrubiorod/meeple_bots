@@ -1,0 +1,38 @@
+{
+  "generic": [
+    "configured_agent_benchmarks",
+    "properties",
+    "search_calibration",
+    "structural"
+  ],
+  "legacy": [
+    "actions_per_player_turn_max",
+    "actions_per_player_turn_mean",
+    "actions_per_player_turn_p95",
+    "calibration_positions",
+    "configured_agent_benchmarks",
+    "depth_is_lower_bound",
+    "depth_p50",
+    "effective_branching_factor",
+    "estimated_decision_time_ms",
+    "estimated_depth",
+    "estimated_tree_log10",
+    "game",
+    "initial_legal_actions",
+    "iterations_capped",
+    "max_depth",
+    "milliseconds_per_iteration",
+    "player_changes_p50",
+    "player_changes_p95",
+    "player_turn_choice_product_log10",
+    "player_turn_depth_p50",
+    "player_turn_depth_p95",
+    "recommended_iterations",
+    "recommended_rollout_depth",
+    "rollout_costs",
+    "samples",
+    "suggested_experiments",
+    "target_time_seconds",
+    "terminal_rate"
+  ]
+}

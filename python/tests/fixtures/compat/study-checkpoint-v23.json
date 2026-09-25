@@ -1,0 +1,35 @@
+{
+  "protocol": 23,
+  "fingerprint_algorithm": "python-tree-v2",
+  "seed": 71,
+  "phase_names": [
+    "local-0-exploration-0",
+    "local-0-exploration-1",
+    "local-0-exploration-2",
+    "local-0-exploration-3"
+  ],
+  "first_phase": "local-0-exploration-0",
+  "candidate_exploration": {
+    "incumbent": 1.4142135623730951,
+    "exploration-0": 0.9428090415820634,
+    "exploration-1": 1.885618083164127
+  },
+  "completed_comparisons": [
+    [
+      "incumbent",
+      "exploration-0",
+      4,
+      4,
+      0.5,
+      "exploratory"
+    ],
+    [
+      "incumbent",
+      "exploration-1",
+      4,
+      4,
+      0.5,
+      "exploratory"
+    ]
+  ]
+}

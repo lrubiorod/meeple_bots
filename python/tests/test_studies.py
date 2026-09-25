@@ -77,7 +77,7 @@ class StudyTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             base = MctsAgent(iterations=4, rollout_depth=9)
             options = dict(output=Path(tmp), budget=60, progress=lambda _: None)
-            original_engine = {'git_revision': 'original', 'python_sha256': 'python', 'native_sha256': 'native'}
+            original_engine = {'fingerprint_algorithm': 'python-tree-v2', 'git_revision': 'original', 'python_sha256': 'python', 'native_sha256': 'native'}
             with patch('meeple_bots.studies._fingerprint', return_value=original_engine):
                 StudyRunner('tic-tac-toe', base, **options)
             new_commit = {**original_engine, 'git_revision': 'new-commit'}
@@ -87,7 +87,7 @@ class StudyTests(unittest.TestCase):
             for key in ('python_sha256', 'native_sha256'):
                 with self.subTest(key=key), patch('meeple_bots.studies._fingerprint',
                                                 return_value={**new_commit, key: 'changed'}):
-                    with self.assertRaisesRegex(ValueError, 'configuration or engine changed'):
+                    with self.assertRaisesRegex(ValueError, 'fingerprint changed'):
                         StudyRunner('tic-tac-toe', base, resume=True, **options)
 
     def test_explicit_engine_change_preserves_games_and_records_boundary(self):
@@ -97,8 +97,8 @@ class StudyTests(unittest.TestCase):
             base = MctsAgent(iterations=4, rollout_depth=9)
             opts = dict(output=output, budget=60, decision_seconds=.00001,
                         max_pairs=2, max_plies=9, progress=lambda _: None)
-            old = {'git_revision': 'old', 'python_sha256': 'old-python', 'native_sha256': 'old-native'}
-            new = {'git_revision': 'new', 'python_sha256': 'new-python', 'native_sha256': 'new-native'}
+            old = {'fingerprint_algorithm': 'python-tree-v2', 'git_revision': 'old', 'python_sha256': 'old-python', 'native_sha256': 'old-native'}
+            new = {'fingerprint_algorithm': 'python-tree-v2', 'git_revision': 'new', 'python_sha256': 'new-python', 'native_sha256': 'new-native'}
             def interrupt(*args, **kwargs):
                 for result in real_run(*args, **kwargs):
                     yield result
@@ -110,7 +110,7 @@ class StudyTests(unittest.TestCase):
             prefix = trace.read_bytes()
             checkpoint = (output / 'study.json').read_bytes()
             with patch('meeple_bots.studies._fingerprint', return_value=new):
-                with self.assertRaisesRegex(ValueError, 'engine hashes differ'):
+                with self.assertRaisesRegex(ValueError, 'Python source fingerprint differs'):
                     StudyRunner('tic-tac-toe', base, resume=True, **opts)
                 with self.assertRaisesRegex(ValueError, 'configuration differs'):
                     StudyRunner('tic-tac-toe', base, resume=True, allow_engine_change=True, seed=99, **opts)
@@ -134,7 +134,7 @@ class StudyTests(unittest.TestCase):
                 self.assertEqual(len(resumed['engine_changes']), 1)
                 self.assertEqual(trace.read_bytes().splitlines()[1], prefix.splitlines()[1])
             with patch('meeple_bots.studies._fingerprint', return_value=old):
-                with self.assertRaisesRegex(ValueError, 'engine hashes differ'):
+                with self.assertRaisesRegex(ValueError, 'Python source fingerprint differs'):
                     StudyRunner('tic-tac-toe', base, resume=True, **opts)
 
     def test_engine_override_requires_existing_resume_and_cli_forwards_it(self):

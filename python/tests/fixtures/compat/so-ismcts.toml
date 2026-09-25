@@ -1,0 +1,5 @@
+agent = "so_ismcts"
+name = "information-set"
+iterations = 8
+selection_policy = "uct"
+tree_reuse = false

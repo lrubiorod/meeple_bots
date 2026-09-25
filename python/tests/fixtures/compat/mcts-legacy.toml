@@ -1,0 +1,5 @@
+name = "legacy-flat"
+iterations = 8
+rollout_depth = 9
+use_heuristic = true
+heuristic_index = 0

@@ -1,0 +1,144 @@
+{
+  "study_protocol": 23,
+  "max_extension_rounds": 3,
+  "phase_names": [
+    "depth_screen",
+    "exploration",
+    "selectors",
+    "rave",
+    "rave_extend_1",
+    "rave_extend_2",
+    "rave_extend_3",
+    "rave_exploration",
+    "rave_compare",
+    "mechanisms",
+    "pw_screen",
+    "pw_k",
+    "pw_k_extend_1",
+    "pw_k_extend_2",
+    "pw_k_extend_3",
+    "pw_alpha",
+    "pw_alpha_extend_1",
+    "pw_alpha_extend_2",
+    "pw_alpha_extend_3",
+    "pw_refine",
+    "pw_compare",
+    "admission-0-widening-expansion-0",
+    "second-0-exploration-0",
+    "second-0-exploration-1",
+    "second-0-exploration-2",
+    "second-0-exploration-3",
+    "second-0-rave-0",
+    "second-0-rave-1",
+    "second-0-rave-2",
+    "second-0-rave-3",
+    "second-0-progressive-widening-k-0",
+    "second-0-progressive-widening-k-1",
+    "second-0-progressive-widening-k-2",
+    "second-0-progressive-widening-k-3",
+    "second-1-progressive-widening-alpha-0",
+    "second-1-progressive-widening-alpha-1",
+    "second-1-progressive-widening-alpha-2",
+    "second-1-progressive-widening-alpha-3",
+    "second-2-progressive-widening-k-0"
+  ],
+  "seed": 71,
+  "seed_stride": 100000,
+  "games_per_comparison": 50,
+  "stage_games": {
+    "pw": 10
+  },
+  "tuner_specs": {
+    "admission-0-widening-expansion-0": {
+      "dimension": "widening-expansion",
+      "round": 0,
+      "chain": "admission-0-widening-expansion"
+    },
+    "second-0-exploration-0": {
+      "dimension": "exploration",
+      "round": 0,
+      "chain": "second-0-exploration"
+    },
+    "second-0-exploration-1": {
+      "dimension": "exploration",
+      "round": 1,
+      "chain": "second-0-exploration"
+    },
+    "second-0-exploration-2": {
+      "dimension": "exploration",
+      "round": 2,
+      "chain": "second-0-exploration"
+    },
+    "second-0-exploration-3": {
+      "dimension": "exploration",
+      "round": 3,
+      "chain": "second-0-exploration"
+    },
+    "second-0-rave-0": {
+      "dimension": "rave",
+      "round": 0,
+      "chain": "second-0-rave"
+    },
+    "second-0-rave-1": {
+      "dimension": "rave",
+      "round": 1,
+      "chain": "second-0-rave"
+    },
+    "second-0-rave-2": {
+      "dimension": "rave",
+      "round": 2,
+      "chain": "second-0-rave"
+    },
+    "second-0-rave-3": {
+      "dimension": "rave",
+      "round": 3,
+      "chain": "second-0-rave"
+    },
+    "second-0-progressive-widening-k-0": {
+      "dimension": "progressive-widening-k",
+      "round": 0,
+      "chain": "second-0-progressive-widening-k"
+    },
+    "second-0-progressive-widening-k-1": {
+      "dimension": "progressive-widening-k",
+      "round": 1,
+      "chain": "second-0-progressive-widening-k"
+    },
+    "second-0-progressive-widening-k-2": {
+      "dimension": "progressive-widening-k",
+      "round": 2,
+      "chain": "second-0-progressive-widening-k"
+    },
+    "second-0-progressive-widening-k-3": {
+      "dimension": "progressive-widening-k",
+      "round": 3,
+      "chain": "second-0-progressive-widening-k"
+    },
+    "second-1-progressive-widening-alpha-0": {
+      "dimension": "progressive-widening-alpha",
+      "round": 0,
+      "chain": "second-1-progressive-widening-alpha"
+    },
+    "second-1-progressive-widening-alpha-1": {
+      "dimension": "progressive-widening-alpha",
+      "round": 1,
+      "chain": "second-1-progressive-widening-alpha"
+    },
+    "second-1-progressive-widening-alpha-2": {
+      "dimension": "progressive-widening-alpha",
+      "round": 2,
+      "chain": "second-1-progressive-widening-alpha"
+    },
+    "second-1-progressive-widening-alpha-3": {
+      "dimension": "progressive-widening-alpha",
+      "round": 3,
+      "chain": "second-1-progressive-widening-alpha"
+    },
+    "second-2-progressive-widening-k-0": {
+      "dimension": "progressive-widening-k",
+      "round": 0,
+      "chain": "second-2-progressive-widening-k"
+    }
+  },
+  "engine_algorithm": "python-tree-v2"
+}

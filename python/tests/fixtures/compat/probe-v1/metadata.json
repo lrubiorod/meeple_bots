@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "q_orientation": "root_player",
+  "game": "fixture-game",
+  "search_seeds": [7],
+  "probes": [{"id": "fixture.probe", "root_player": 0, "candidate_actions": [{"move": 1}]}]
+}

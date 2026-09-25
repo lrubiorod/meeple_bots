@@ -49,6 +49,7 @@ GAMES = {"lost_cities": LostCities,"connect6": Connect6, "boop": Boop, "spotf": 
          "tic-tac-toe": TicTacToe, "splendor": Splendor}
 MAX_EXTENSION_ROUNDS = 3
 STUDY_VERSION = 23
+FINGERPRINT_ALGORITHM = "python-tree-v2"
 PHASES = ("depth_screen", "exploration", "selectors", "rave",
           *(f"rave_extend_{i}" for i in range(1, MAX_EXTENSION_ROUNDS + 1)),
           "rave_exploration", "rave_compare", "mechanisms", "pw_screen", "pw_k",
@@ -181,19 +182,62 @@ def _iterations(agent: MctsAgent, count: int) -> MctsAgent:
     return replace(agent, iterations=max(1, min(2**32 - 1, count)), time_budget=None, root_diagnostics=False)
 
 
-def _fingerprint() -> dict:
-    def digest(path):
-        return sha256(Path(path).read_bytes()).hexdigest()
-    package = Path(__file__).parent
-    # Refuse mixing different executors/search builds on resume, including uncommitted code.
+def _package_source_root() -> Path:
+    return Path(__file__).parent
+
+
+def _python_source_entries(package: Path) -> list[tuple[str, bytes]]:
+    """Production modules only, in checkout-independent relative-path order."""
+    ignored = {"__pycache__", "build", "dist", "target", ".venv", "tests", "docs", "local", "results"}
+    paths = (path for path in package.rglob("*.py")
+             if path.is_file() and not ignored.intersection(path.relative_to(package).parts))
+    return [(path.relative_to(package).as_posix(), path.read_bytes())
+            for path in sorted(paths, key=lambda path: path.relative_to(package).as_posix())]
+
+
+def _python_tree_digest(package: Path) -> str:
+    digest = sha256()
+    digest.update(FINGERPRINT_ALGORITHM.encode("ascii") + b"\0")
+    for relative_path, contents in _python_source_entries(package):
+        name = relative_path.encode("utf-8")
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(len(contents).to_bytes(8, "big"))
+        digest.update(contents)
+    return digest.hexdigest()
+
+
+def _legacy_python_digest(package: Path) -> str:
+    """Exact historical root-only algorithm for unversioned checkpoints."""
     sources = sorted(package.glob("*.py"))
-    python_hash = sha256(b"".join(p.name.encode() + p.read_bytes() for p in sources)).hexdigest()
+    return sha256(b"".join(path.name.encode() + path.read_bytes() for path in sources)).hexdigest()
+
+
+def _fingerprint() -> dict:
+    package = _package_source_root()
     try:
         revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=package, capture_output=True,
                                   text=True, check=True).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         revision = None
-    return {"git_revision": revision, "native_sha256": digest(_native.__file__), "python_sha256": python_hash}
+    return {"fingerprint_algorithm": FINGERPRINT_ALGORITHM, "git_revision": revision,
+            "native_sha256": sha256(Path(_native.__file__).read_bytes()).hexdigest(),
+            "python_sha256": _python_tree_digest(package)}
+
+
+def _engine_change_reason(saved: dict, current: dict) -> str | None:
+    algorithm = saved.get("fingerprint_algorithm", "legacy-root-v1")
+    if algorithm == "legacy-root-v1":
+        expected_python = _legacy_python_digest(_package_source_root())
+    elif algorithm == FINGERPRINT_ALGORITHM:
+        expected_python = current["python_sha256"]
+    else:
+        raise ValueError(f"unsupported study engine fingerprint algorithm: {algorithm}")
+    if saved.get("python_sha256") != expected_python:
+        return "Python source fingerprint differs"
+    if saved.get("native_sha256") != current["native_sha256"]:
+        return "native engine fingerprint differs"
+    return None
 
 
 def _save(path: Path, value: dict) -> None:
@@ -704,10 +748,12 @@ class StudyRunner:
                 raise ValueError("study configuration or engine changed: configuration differs; use a new output directory")
             previous_engine = self.state.get("active_engine", saved_request["engine"])
             current_engine = request["engine"]
-            # Git revision is provenance, not an execution compatibility key.
-            if {k: v for k, v in previous_engine.items() if k != "git_revision"} != {k: v for k, v in current_engine.items() if k != "git_revision"}:
+            # The frozen request is checked above. Legacy checkpoints retain their
+            # historical root-only comparison until an explicit engine override.
+            engine_change = _engine_change_reason(previous_engine, current_engine)
+            if engine_change:
                 if not allow_engine_change:
-                    raise ValueError("study configuration or engine changed: engine hashes differ; restore the original environment or explicitly use --resume --allow-engine-change to record a mixed-engine continuation")
+                    raise ValueError(f"study engine/source fingerprint changed: {engine_change}; restore the original environment or explicitly use --resume --allow-engine-change to record a mixed-engine continuation")
                 completed = {}
                 for trace in sorted((self.output / "traces").glob("*.jsonl")):
                     with trace.open() as handle:

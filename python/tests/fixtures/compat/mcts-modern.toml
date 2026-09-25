@@ -1,0 +1,5 @@
+name = "modern"
+iterations = 8
+rollout_depth = 9
+selection_policy = "ucb1_tuned"
+tree_reuse = true
