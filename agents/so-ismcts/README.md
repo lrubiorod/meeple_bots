@@ -116,7 +116,7 @@ transpositions, parallel search or stochastic-node search. `study` supports
 operating-budget calibration, UCT exploration, UCT/UCB1-Tuned selection and tree
 reuse tuning. UCB1-Tuned baselines are accepted, but cannot tune inactive C. See
 [Lost Cities study](../../python/studies.md#lost-cities-and-the-so-ismcts-study-profile). The Lost Cities debug GUI supports
-SO-ISMCTS in either seat with separate iteration/exploration settings and an
+SO-ISMCTS in either seat with separate iteration-or-time (seconds) and exploration settings and an
 observation-only search boundary, while displaying both hands for inspection.
 
 ## Optional realized-path tree reuse

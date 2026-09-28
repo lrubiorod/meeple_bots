@@ -5,10 +5,13 @@ PAGE = r'''<!doctype html>
 <style>
 :root{color-scheme:dark;font:15px system-ui;background:#101c24;color:#e5edf1}*{box-sizing:border-box}body{max-width:1300px;margin:auto;padding:24px}h1{margin:0;font-size:28px}h2{font-size:18px}small,.muted{color:#a8bac5}header{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-bottom:22px}.badge{border:1px solid #588293;border-radius:20px;padding:7px 12px}section{background:#192b36;border:1px solid #304752;border-radius:12px;padding:18px;margin:16px 0}.controls{display:flex;flex-wrap:wrap;gap:16px;align-items:end}label{display:grid;gap:6px}select,input,button{font:inherit;padding:9px;border-radius:6px;border:1px solid #526a77;background:#233d4c;color:inherit}input{width:130px}button{cursor:pointer}button:hover{background:#365b6f}button:disabled{opacity:.5;cursor:default}#start{background:#c1dfbb;color:#142218;font-weight:700}.columns{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.column{border-top:4px solid var(--c);background:#10212c;padding:12px;border-radius:6px;min-height:92px}.cards{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.card{display:inline-flex;align-items:center;justify-content:center;min-width:40px;height:52px;padding:5px;background:#edf1e9;color:#17252c;border:7px solid var(--c);border-radius:6px;font-weight:bold}.hand .card{height:76px;min-width:58px;border-width:10px}.hand button.card:hover{background:#fff;transform:translateY(-3px)}.hand button.card[aria-pressed="true"]{outline:3px solid #fff;outline-offset:3px;transform:translateY(-3px)}.card:focus-visible{outline:3px solid #fff;outline-offset:3px}.r{--c:#ed625d}.g{--c:#45b875}.b{--c:#4e98ee}.y{--c:#f0c844}.w{--c:#dce3e7}.empty{color:#8299a8;font-size:13px}.player-head{display:flex;justify-content:space-between;align-items:center}.active{outline:2px solid #b8d8b4}#status{font-weight:600}#error{color:#ffb4ac;white-space:pre-wrap}#actions{display:flex;flex-wrap:wrap;gap:8px}#log{max-height:260px;overflow:auto;font:13px monospace;line-height:1.7}summary{cursor:pointer}details .cards{margin:8px 0} @media(max-width:650px){body{padding:12px}.columns{gap:4px}.column{padding:5px}.card{min-width:28px;height:38px}header{align-items:start}.badge{font-size:12px}}
 .match-status{position:sticky;top:0;z-index:10;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;background:#192b36;border:1px solid #588293;border-radius:8px;padding:12px;margin:16px 0}.match-status #status{margin:0}.match-status #deck{white-space:nowrap;color:#c1dfbb}
+.budget-field[hidden]{display:none}
+input[type=checkbox]{width:auto}
 </style>
 <header><div><h1>Lost Cities</h1><small>Single-round experimental variant · 5 expeditions · 60 cards</small></div><span class="badge">Open-hand debug view</span></header>
-<div class="controls"><label>Player 1<select id="first"><option value="human">Human</option><option value="random">Random</option><option value="so_ismcts">SO-ISMCTS</option></select></label><label>Player 2<select id="second"><option value="random">Random</option><option value="human">Human</option><option value="so_ismcts">SO-ISMCTS</option></select></label><span id="search-settings"></span><label>Seed<input id="seed" type="number" min="0" value="42"></label><label>Step delay (s)<input id="delay" type="number" min="0" max="10" step="0.1" value="0.4"></label><button id="start">New match</button></div>
+<div class="controls"><label>Player 1<select id="first"><option value="human">Human</option><option value="random">Random</option><option value="so_ismcts">SO-ISMCTS</option></select></label><label>Player 2<select id="second"><option value="random">Random</option><option value="human">Human</option><option value="so_ismcts">SO-ISMCTS</option></select></label><span id="search-settings"></span><label>Seed<input id="seed" type="number" min="0" value="42"></label><label>Step delay (s)<input id="delay" type="number" min="0" max="10" step="0.1" value="0.4"></label><label><input id="save-trace" type="checkbox"> Save completed match (JSON)</label><button id="start">New match</button></div>
 <p class="muted">Both hands and private draws are visible for inspection. Agents use only their own observation and legal actions.</p>
+<p id="trace" class="muted"></p>
 <div class="match-status"><p id="status" role="status">Start a match.</p><strong id="deck" aria-live="polite" aria-atomic="true">Deck: — cards remaining</strong></div><p id="error" role="alert"></p>
 <section id="p1"></section><section><h2>Shared discard piles</h2><div id="discards" class="columns"></div><details><summary>Inspect remaining deck pool (unordered)</summary><div id="pool" class="cards"></div></details></section><section id="p0"></section>
 <section><h2 id="decision">Legal actions</h2><div id="actions"></div></section><section><h2>Transition log</h2><div id="log"></div></section>
@@ -17,13 +20,21 @@ const $=id=>document.getElementById(id), colors=['Red','Green','Blue','Yellow','
 let actionKey='', busy=false, polling=false, revision=0, selectedCard=null;
 for(const seat of ['first','second']){
  const settings=document.createElement('span');settings.id=seat+'-search';settings.hidden=true;
- settings.innerHTML=`<label>${seat==='first'?'Player 1':'Player 2'} iterations<input id="${seat}-iterations" type="number" min="1" max="4294967295" step="1" value="1000"></label><label>Exploration C<input id="${seat}-exploration" type="number" min="0" step="any" value="1.4142135623730951"></label>`;
+ settings.innerHTML=`<label>${seat==='first'?'Player 1':'Player 2'} budget<select id="${seat}-budget-mode"><option value="iterations">Iterations</option><option value="time">Time</option></select></label><label class="budget-field" id="${seat}-iterations-label">Iterations<input id="${seat}-iterations" type="number" min="1" max="4294967295" step="1" value="1000"></label><label class="budget-field" id="${seat}-time-label" hidden>Time per decision (s)<input id="${seat}-time-budget" type="number" min="0.001" step="any" value="1"></label><label>Exploration C<input id="${seat}-exploration" type="number" min="0" step="any" value="1.4142135623730951"></label>`;
  $('search-settings').append(settings);
  $(seat).onchange=()=>{settings.hidden=$(seat).value!=='so_ismcts';};
+ $(seat+'-budget-mode').onchange=()=>{const timed=$(seat+'-budget-mode').value==='time';$(seat+'-iterations-label').hidden=timed;$(seat+'-time-label').hidden=!timed;};
 }
 function playerConfig(seat){
  const kind=$(seat).value;
- return kind==='so_ismcts'?{kind,iterations:Number($(seat+'-iterations').value),exploration:Number($(seat+'-exploration').value)}:{kind};
+ if(kind!=='so_ismcts')return {kind};
+ const timed=$(seat+'-budget-mode').value==='time';
+ if(timed){
+  const value=$(seat+'-time-budget').value,seconds=Number(value);
+  if(!value||!Number.isFinite(seconds)||seconds<=0)throw Error('Time budget must be a positive number of seconds');
+  return {kind,iterations:null,time_budget:seconds,exploration:Number($(seat+'-exploration').value)};
+ }
+ return {kind,iterations:Number($(seat+'-iterations').value),exploration:Number($(seat+'-exploration').value)};
 }
 
 function card(c){return `<span class="card ${classes[c[0]]}" title="${colors[c[0]]} ${c[1]||'Wager'}">${c[1]||'W'}</span>`;}
@@ -58,6 +69,7 @@ function describe(a){const name=a.card?`${colors[a.card[0]]} ${a.card[1]||'wager
 async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(data.error||'Request failed');return data;}
 function render(s){
  $('status').textContent=s.status==='idle'?s.message:s.status==='finished'||s.status==='error'?s.message:`Player ${s.current_player+1} · ${s.phase==='draw_chance'?'Chance draw':s.phase.toUpperCase()} · ${s.status==='waiting_human'?'Choose an action':'Running'}`;
+ $('trace').textContent=s.trace_error?`Could not save match: ${s.trace_error}`:s.trace_path?`Saved match: ${s.trace_path}`:'';
  if(!s.hands)return;
  const key=JSON.stringify([s.session_id,s.turn,s.status]);
  if(key===actionKey)return;
@@ -71,6 +83,6 @@ function render(s){
  $('log').textContent=s.events.map((e,i)=>`${i+1}. P${e.player+1}${e.chance?' [chance]':''}: ${describe(e.action)}${e.search?' · '+e.search.completed_iterations+' iterations':''}`).join('\n');$('log').style.whiteSpace='pre-wrap';
 }
 async function poll(){if(polling||busy)return;polling=true;const version=revision;try{const r=await fetch('/api/state');const state=await r.json();if(version===revision&&!busy)render(state);}catch(e){$('error').textContent=e.message;}finally{polling=false;}}
-$('start').onclick=async()=>{if(busy)return;busy=true;revision++;$('start').disabled=true;try{render(await post('/api/start',{first:playerConfig('first'),second:playerConfig('second'),seed:Number($('seed').value),minimum_move_seconds:Number($('delay').value)}));$('error').textContent='';}catch(e){$('error').textContent=e.message;}finally{busy=false;$('start').disabled=false;}};
+$('start').onclick=async()=>{if(busy)return;busy=true;revision++;$('start').disabled=true;try{render(await post('/api/start',{first:playerConfig('first'),second:playerConfig('second'),seed:Number($('seed').value),minimum_move_seconds:Number($('delay').value),save_trace:$('save-trace').checked}));$('error').textContent='';}catch(e){$('error').textContent=e.message;}finally{busy=false;$('start').disabled=false;}};
 setInterval(poll,250);poll();
 </script></html>'''

@@ -3,6 +3,8 @@ import json
 from random import Random
 import shutil
 import subprocess
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 import unittest
 from unittest.mock import patch
@@ -10,6 +12,8 @@ from unittest.mock import patch
 from meeple_bots.cli import build_parser
 from meeple_bots.gui.server import run_gui
 from meeple_bots.games.lost_cities.gui import LostCitiesApplication, PAGE
+from meeple_bots.games.lost_cities.gui.player import parse_player
+from meeple_bots import LostCities, LostCitiesAction
 
 
 class LostCitiesGuiTests(unittest.TestCase):
@@ -74,6 +78,7 @@ class LostCitiesGuiTests(unittest.TestCase):
         self.start('human', 'human')
         before = self.wait(lambda s: s['status'] == 'waiting_human')
         for payload in ({'first': {'kind': 'mcts'}}, {'seed': -1}, {'seed': True},
+                        {'save_trace': 1}, {'save_trace': 'yes'},
                         {'minimum_move_seconds': float('nan')}, {'minimum_move_seconds': -1}):
             with self.assertRaises(ValueError):
                 self.app.start(payload)
@@ -152,6 +157,100 @@ class LostCitiesGuiTests(unittest.TestCase):
             repeated = self.wait(lambda s: s['status'] == 'finished')
             self.assertEqual(state['events'], repeated['events'])
 
+    def test_so_time_budget_reaches_native_observation_search(self):
+        from meeple_bots import LostCitiesObservation, SoIsmctsAgent
+
+        original_search = SoIsmctsAgent.search
+        calls = []
+
+        def record_search(agent, observation, legal_actions, *, seed):
+            calls.append((agent.iterations, agent.time_budget, observation, legal_actions))
+            return original_search(agent, observation, legal_actions, seed=seed)
+
+        with patch.object(SoIsmctsAgent, 'search', record_search):
+            self.app.start({'first': {'kind': 'so_ismcts', 'time_budget': .001},
+                            'second': {'kind': 'human'}, 'seed': 42,
+                            'minimum_move_seconds': 0})
+            state = self.wait(lambda s: s['status'] == 'waiting_human')
+
+        self.assertEqual(state['players'][0]['iterations'], None)
+        self.assertEqual(state['players'][0]['time_budget'], .001)
+        self.assertGreaterEqual(len(calls), 2)  # Play and draw are separate decisions.
+        for iterations, seconds, observation, legal in calls:
+            self.assertIsNone(iterations)
+            self.assertEqual(seconds, .001)
+            self.assertIsInstance(observation, LostCitiesObservation)
+            self.assertFalse(hasattr(observation, 'deck'))
+            self.assertFalse(hasattr(observation, 'hands'))
+            self.assertTrue(legal)
+        self.assertTrue(all(e['search']['completed_iterations'] >= 1
+                            for e in state['events'] if 'search' in e))
+
+    def test_save_completed_match_with_private_chance_events(self):
+        with TemporaryDirectory() as tmp:
+            app = LostCitiesApplication(Path(tmp))
+            self.addCleanup(app.cancel)
+            app.start({'first': {'kind': 'so_ismcts', 'time_budget': .001},
+                       'second': {'kind': 'random'}, 'seed': 42,
+                       'minimum_move_seconds': 0, 'save_trace': True})
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                state = app.snapshot()
+                if state['status'] == 'error':
+                    self.fail(state['message'])
+                if state['trace_path']:
+                    break
+                time.sleep(.005)
+            else:
+                self.fail('completed match was not saved')
+            self.assertEqual(state['status'], 'finished')
+            self.assertIsNone(state['trace_error'])
+            saved = json.loads(Path(state['trace_path']).read_text())
+            self.assertEqual(saved['format'], 'lost_cities_session_v1')
+            self.assertEqual(saved['seed'], 42)
+            self.assertEqual(saved['players'][0]['time_budget'], .001)
+            self.assertEqual(saved['events'], state['events'])
+            self.assertEqual(sum(e['chance'] for e in saved['events']), 44)
+            self.assertTrue(any('search' in e for e in saved['events']))
+            game = LostCities()
+            position = game.initial_state(saved['seed'])
+            for event in saved['events']:
+                action = LostCitiesAction.from_dict(event['action'])
+                position = (game.apply_chance_outcome(position, action) if event['chance']
+                            else game.apply_action(position, action))
+            self.assertEqual(position.status, 'terminal')
+            actual = json.loads(json.dumps(position.to_dict()))
+            for key in ('hands', 'deck', 'expeditions', 'discards', 'scores', 'phase'):
+                self.assertEqual(saved[key], actual[key])
+
+    def test_cancelled_and_unsaved_matches_do_not_write_files(self):
+        with TemporaryDirectory() as tmp:
+            app = LostCitiesApplication(Path(tmp))
+            self.addCleanup(app.cancel)
+            app.start({'first': {'kind': 'human'}, 'second': {'kind': 'human'},
+                       'seed': 42, 'minimum_move_seconds': 0, 'save_trace': True})
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and app.snapshot()['status'] != 'waiting_human':
+                time.sleep(.005)
+            self.assertEqual(app.snapshot()['status'], 'waiting_human')
+            app.start({'first': {'kind': 'random'}, 'second': {'kind': 'random'},
+                       'seed': 42, 'minimum_move_seconds': 0})
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and app.snapshot()['status'] != 'finished':
+                time.sleep(.005)
+            self.assertEqual(app.snapshot()['status'], 'finished')
+            self.assertIsNone(app.snapshot()['trace_path'])
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_so_default_and_iteration_payloads_keep_previous_budget(self):
+        self.assertEqual(parse_player({'kind': 'so_ismcts'}).as_dict(),
+                         {'kind': 'so_ismcts', 'iterations': 1000,
+                          'exploration': 2 ** .5})
+        self.assertEqual(parse_player({'kind': 'so_ismcts', 'iterations': 17}).as_dict()['iterations'], 17)
+        self.assertEqual(parse_player({'kind': 'so_ismcts', 'time_budget': .25}).as_dict(),
+                         {'kind': 'so_ismcts', 'iterations': None,
+                          'exploration': 2 ** .5, 'time_budget': .25})
+
     def test_search_boundary_and_restart_while_thinking(self):
         from threading import Event
         from meeple_bots import SoIsmctsAgent, LostCitiesObservation
@@ -198,7 +297,10 @@ class LostCitiesGuiTests(unittest.TestCase):
             self.wait(lambda s: s['status'] == 'waiting_human' and s['phase'] == 'play')
         before = self.app.snapshot()['session_id']
         for fields in ({'iterations': 0}, {'iterations': True}, {'exploration': float('nan')},
-                       {'exploration': -1}, {'tree_reuse': True}, {'time_budget': 1}, {'progressive_widening': True}):
+                       {'exploration': -1}, {'tree_reuse': True}, {'time_budget': 0},
+                       {'time_budget': -1}, {'time_budget': True}, {'time_budget': 'bad'},
+                       {'time_budget': float('nan')}, {'iterations': 2, 'time_budget': .01},
+                       {'progressive_widening': True}):
             with self.assertRaises((ValueError, TypeError)):
                 self.app.start({'first': {'kind': 'so_ismcts', **fields}})
             self.assertEqual(self.app.snapshot()['session_id'], before)
@@ -261,6 +363,21 @@ global.fetch=async(path,options)=>{if(options)requests.push(JSON.parse(options.b
  assert.equal(selectedCard,null);assert.equal($('actions').children.length,2);
  assert.doesNotMatch($('p0').innerHTML,/data-hand-index/);
  render({...s,turn:5,status:'playing',legal_actions:[]});assert.equal($('actions').children.length,0);
+ $('first').value='so_ismcts';$('first').onchange();
+ $('first-budget-mode').value='time';$('first-budget-mode').onchange();
+ $('first-time-budget').value='0.125';$('seed').value='42';$('delay').value='0';$('save-trace').checked=true;
+ assert.equal($('first-iterations-label').hidden,true);
+ assert.equal($('first-time-label').hidden,false);
+ assert.deepEqual(playerConfig('first'),{kind:'so_ismcts',iterations:null,time_budget:0.125,exploration:0.8});
+ assert.throws(()=>{$('first-time-budget').value='';playerConfig('first');},/positive number of seconds/);
+ $('first-time-budget').value='0.125';
+ await $('start').onclick();
+ assert.deepEqual(requests[1],{first:{kind:'so_ismcts',iterations:null,time_budget:0.125,exploration:0.8},second:{kind:'so_ismcts',iterations:29,exploration:1.2},seed:42,minimum_move_seconds:0,save_trace:true});
+ render({...s,trace_path:'results/gui/lost_cities/match.json'});
+ assert.match($('trace').textContent,/Saved match: results\/gui\/lost_cities\/match.json/);
+ $('first-budget-mode').value='iterations';$('first-budget-mode').onchange();
+ assert.equal($('first-iterations-label').hidden,false);
+ assert.deepEqual(playerConfig('first'),{kind:'so_ismcts',iterations:17,exploration:0.8});
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
         subprocess.run(['node'], input=harness + script + assertions, text=True,

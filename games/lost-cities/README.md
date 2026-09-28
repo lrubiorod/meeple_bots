@@ -124,7 +124,8 @@ exploration C under equal compute. For local C retuning, see
 ```
 
 Choose Human, Random or SO-ISMCTS independently for both seats. SO-ISMCTS exposes
-iterations and exploration C per player; uniform rollout and MostVisited stay fixed. The GUI intentionally shows
+iterations or time per decision (seconds), plus exploration C, for each player. The
+default remains 1000 iterations; uniform rollout and MostVisited stay fixed. The GUI intentionally shows
 **both hands**, all expeditions and discard stacks, scores, remaining deck count,
 an expandable unordered deck pool, and a transition log including private draws.
 This is an administrative test interface, not a private player view or remote
@@ -145,5 +146,9 @@ search releases the GIL and runs outside the controller lock so polling and rest
 remain responsive; stale/duplicate moves
 are rejected using session and decision tokens. Step delay controls inspection pace.
 A 10,000-decision execution safeguard reports an error without awarding a result.
-GUI trace-file saving is not provided; the current transition log is available in
-this debug view. Use native matches or Python tournaments for persisted validated match traces.
+Select **Save completed match (JSON)** to write an administrative session record under
+`results/gui/lost_cities/`. It contains the seed, player settings, final state and
+ordered player/chance events, including private cards. The GUI shows the saved path
+or a write error after completion; cancelled games are not saved. This session JSON
+is distinct from the validated tournament JSONL format. Use native matches or Python
+tournaments when that trace format is required.
