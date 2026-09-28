@@ -26,6 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub use meeple_bots_core::evaluation::StateEvaluator;
 use meeple_bots_core::{
     Agent, AgentDecisionStats, AgentError, DecisionContext, DeterministicGame, HeuristicGame,
     PerfectInformationGame, PlayerId, PositionStatus, RandomSource, RootActionStats,
@@ -156,15 +157,6 @@ impl<A: Eq + Hash> RolloutMemory<A> {
             };
         }
     }
-}
-
-pub trait StateEvaluator<G: meeple_bots_core::Game> {
-    fn evaluate(
-        &self,
-        game: &G,
-        state: &G::State,
-        root_player: PlayerId,
-    ) -> Result<f64, AgentError>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -3277,7 +3269,7 @@ mod tests {
     #[derive(Clone, Copy)]
     struct FixedEvaluator(f64);
 
-    impl StateEvaluator<TicTacToe> for FixedEvaluator {
+    impl meeple_bots_core::evaluation::StateEvaluator<TicTacToe> for FixedEvaluator {
         fn evaluate(
             &self,
             _game: &TicTacToe,

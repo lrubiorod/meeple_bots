@@ -3,6 +3,7 @@
 mod agent;
 mod capabilities;
 mod error;
+pub mod evaluation;
 mod game;
 mod player;
 mod random;
@@ -15,6 +16,7 @@ pub use capabilities::{
     HeuristicParameters, ImperfectInformationGame, PerfectInformationGame, TwoPlayerZeroSumGame,
 };
 pub use error::{AgentError, IllegalAction};
+pub use evaluation::StateEvaluator;
 pub use game::{Game, PositionStatus, validate_chance_probabilities};
 pub use player::PlayerId;
 pub use random::RandomSource;

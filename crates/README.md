@@ -89,6 +89,10 @@ Capability traits state additional guarantees required by algorithms:
 - `HeuristicGame`: the game exposes one or more indexed state evaluators.
 - `TwoPlayerZeroSumGame`: the current two-seat adversarial model.
 
+`meeple_bots_core::evaluation::StateEvaluator` owns the scalar state-evaluation contract with an
+explicit player perspective. Game-specific heuristics remain game-owned, while MCTS retains cutoff
+validation, rollout policies and selection mechanisms such as Progressive Bias, MAST and RAVE.
+
 MCTS expresses its supported domain through these trait bounds. An incompatible Rust game cannot
 silently enter a search that assumes determinism or full state access.
 

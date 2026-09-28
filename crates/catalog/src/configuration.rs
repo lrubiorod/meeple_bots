@@ -8,11 +8,11 @@ use meeple_bots_boop::Boop;
 use meeple_bots_connect_four::ConnectFour;
 use meeple_bots_connect6::Connect6;
 use meeple_bots_core::{
-    AgentError, Game, HeuristicGame, HeuristicParameters, PlayerId, RandomSource,
+    AgentError, Game, HeuristicGame, HeuristicParameters, PlayerId, RandomSource, StateEvaluator,
 };
 use meeple_bots_mcts_agent::{
     MctsAgent, MctsConfig, PolicyCondition, RolloutMemory, RolloutPolicy, RolloutPolicyConfig,
-    SearchBudget, SelectionBias, StateEvaluator, TranspositionMctsAgent, UniformRandom,
+    SearchBudget, SelectionBias, TranspositionMctsAgent, UniformRandom,
 };
 use meeple_bots_spirits_of_the_forest::{SpiritsOfTheForest, SpiritsOfTheForestAction, TurnPhase};
 use meeple_bots_tic_tac_toe::TicTacToe;

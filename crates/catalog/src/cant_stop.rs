@@ -8,10 +8,11 @@ use meeple_bots_cant_stop::{CantStop, CantStopAction, CantStopState, Phase};
 use meeple_bots_core::RandomSource;
 use meeple_bots_core::{
     Agent, AgentDecisionStats, AgentError, DecisionContext, Game, PlayerId, PositionStatus,
+    StateEvaluator,
 };
 use meeple_bots_mcts_agent::{
     PolicyCondition, ReusableStochasticMctsAgent, RolloutMemory, RolloutPolicy, SelectionBias,
-    StateEvaluator, StochasticMctsAgent,
+    StochasticMctsAgent,
 };
 use meeple_bots_simulation::SplitMix64;
 use std::time::{Duration, Instant};
