@@ -35,13 +35,13 @@ For an initial complete baseline:
 .venv/bin/python -m meeple_bots probe \
   --game lost_cities --agent so_ismcts \
   --iterations 1000,5000,20000 --seeds 16 \
-  --output results/probes/lost-cities-so-baseline-v1
+  --output results/probes/lost-cities-so-baseline-v2
 ```
 
-This schedules 480 independent searches and 4.16 million determinizations across
-ten positions. Uniform rollouts in early positions can be long; try one probe
+This schedules 768 independent searches and 6.656 million determinizations across
+sixteen positions. Uniform rollouts in early positions can be long; try one probe
 first. No wall-clock estimate is implied. The larger `1000,5000,20000,100000`
-with 32 seeds schedules 1,280 searches and 40.32 million determinizations.
+with 32 seeds schedules 2,048 searches and 64.512 million determinizations.
 The implementation is sequential and reports progress periodically within each
 budget and when each budget finishes; it does not print every seed.
 
@@ -53,7 +53,7 @@ iteration samples one fresh determinization. Existing TOML profiles are accepted
 with `--agent-config`; `--iterations` replaces their time/iteration budget for
 these measurements. Selector and other agent settings remain unchanged.
 
-## Initial Lost Cities suite
+## Lost Cities suite
 
 IDs have prefix `lost_cities.`; short CLI names accept underscores or hyphens.
 
@@ -69,6 +69,12 @@ IDs have prefix `lost_cities.`; short CLI names accept underscores or hyphens.
 | `dangerous_discard` | discard | Own Red 9, opponent's red expedition at 3 |
 | `safer_discard` | discard | Own Red 9, opponent's red expedition at 10 |
 | `discard_pile_vs_deck` | draw | Own Red 4, visible Red 6 discard, deck available |
+| `high_pair_commitment_early` | commitment | Empty red expedition; own Red 7 and 9 only, 44 deck cards |
+| `high_pair_commitment_late` | commitment | Same focal pair retained, four deck cards; other history differs |
+| `unsupported_two_opening_early` | commitment | Empty red expedition; only Red 2 held in that color |
+| `unplayable_discard_low_denial` | draw, denial | Red 4 discard below own Red 8 and opponent's public Red 10 |
+| `unplayable_discard_high_denial` | draw, denial | Same visible Red 4 and own Red 8; opponent's red expedition empty |
+| `premature_ten_closure_midgame` | ordering | Own red expedition at 2, Red 10 held; Red 3, 5, 6 and 8 unseen with 30 deck cards |
 
 All fixtures start from fixed seeded deals and use legal actions and explicit
 legal chance outcomes. They are reachable, card-conserving positions, not direct
@@ -78,6 +84,13 @@ They are interpretable contrasts, not controlled causal estimates of deck size
 alone, nor representative samples of normal play. Fixture metadata records every
 transition for replay. Draw choices in fixture construction are independent of
 search RNG and are not a rollout policy.
+
+The two unplayable-discard cases use the same deal and draw choices; one
+opponent public play differs, which also changes the subsequent opponent hand.
+Denial pressure is inferred from public expeditions, not hidden cards. The Red 2
+opening is a neutral control for unsupported Red 4. The 10 closure case concerns
+unseen intermediate cards; the older irreversible jump has both focal cards in
+hand. No fixture depends on the real next hidden draw.
 
 The game-specific builder converts the authoritative state to the legitimate
 root observation. Only that observation and **all** legal root actions enter the

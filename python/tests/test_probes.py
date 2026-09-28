@@ -104,9 +104,68 @@ class ProbeFixtureTests(unittest.TestCase):
         self.assertEqual(late.deck_size, 4)
         for obs in (early, late):
             self.assertEqual(sorted(v for c, v in obs.hand if c == 0), [4, 6, 8])
-        self.assertEqual(CASES[-1].builder().observation.phase, 'draw')
+        draw_case = next(c for c in CASES if c.id == 'lost_cities.discard_pile_vs_deck')
+        self.assertEqual(draw_case.builder().observation.phase, 'draw')
         self.assertEqual(CASES[7].builder().observation.expeditions[1][0][-1], (0, 3))
         self.assertEqual(CASES[8].builder().observation.expeditions[1][0][-1], (0, 10))
+
+    def test_new_lost_cities_questions_have_distinct_reachable_features(self):
+        def built(name):
+            self.assertIn('lost_cities.' + name, {case.id for case in CASES})
+            state, fixture = build_state(name)
+            observation = GAME.observation(state, 0)
+            self.assertEqual(fixture['state'], state.to_dict())
+            self.assertEqual(cards(state), FULL_DECK)
+            self.assertEqual(observation.current_player, 0)
+            return state, observation
+
+        for horizon, deck_size in (('early', 44), ('late', 4)):
+            state, obs = built('high_pair_commitment_' + horizon)
+            self.assertEqual(obs.phase, 'play')
+            self.assertEqual(obs.deck_size, deck_size)
+            self.assertEqual(sorted(v for c, v in obs.hand if c == 0), [7, 9])
+            self.assertEqual(obs.expeditions[0][0], ())
+            self.assertIn(LostCitiesAction('play', (0, 7)), GAME.legal_actions(state))
+
+        state, obs = built('unsupported_two_opening_early')
+        self.assertEqual(obs.phase, 'play')
+        self.assertEqual(obs.deck_size, 44)
+        self.assertEqual([v for c, v in obs.hand if c == 0 and v > 0], [2])
+        self.assertEqual(obs.expeditions[0][0], ())
+        self.assertIn(LostCitiesAction('play', (0, 2)), GAME.legal_actions(state))
+
+        low, low_obs = built('unplayable_discard_low_denial')
+        high, high_obs = built('unplayable_discard_high_denial')
+        for state, obs in ((low, low_obs), (high, high_obs)):
+            self.assertEqual(obs.phase, 'draw')
+            self.assertEqual(obs.deck_size, 40)
+            self.assertEqual(obs.discards[0][-1], (0, 4))
+            self.assertEqual(obs.expeditions[0][0][-1], (0, 8))
+            self.assertEqual(obs.hand, low_obs.hand)
+            self.assertIn(LostCitiesAction('draw_discard', color=0), GAME.legal_actions(state))
+            self.assertIn(LostCitiesAction('draw_deck'), GAME.legal_actions(state))
+        self.assertEqual(low_obs.expeditions[1][0][-1], (0, 10))
+        self.assertEqual(high_obs.expeditions[1][0], ())
+        self.assertEqual(low_obs.discards, high_obs.discards)
+        self.assertEqual(low.deck, high.deck)
+        low_steps = build_state('unplayable_discard_low_denial')[1]['transitions']
+        high_steps = build_state('unplayable_discard_high_denial')[1]['transitions']
+        self.assertEqual([t['action'] for t in low_steps if t['chance']],
+                         [t['action'] for t in high_steps if t['chance']])
+
+        state, obs = built('premature_ten_closure_midgame')
+        self.assertEqual(obs.phase, 'play')
+        self.assertEqual(obs.deck_size, 30)
+        self.assertEqual(obs.expeditions[0][0], ((0, 2),))
+        self.assertIn((0, 10), obs.hand)
+        for value in (3, 5, 6, 8):
+            card = (0, value)
+            self.assertNotIn(card, obs.hand)
+            self.assertNotIn(card, obs.expeditions[0][0])
+            self.assertNotIn(card, obs.expeditions[1][0])
+            self.assertNotIn(card, obs.discards[0])
+            self.assertIn(card, state.deck)  # Fixture fact; only its unseen status informs search.
+        self.assertIn(LostCitiesAction('play', (0, 10)), GAME.legal_actions(state))
 
     def test_hidden_deck_order_is_not_observable(self):
         # Authoritative gameplay uses a deck multiset; simulation worlds carry
@@ -125,8 +184,8 @@ class ProbeFrameworkTests(unittest.TestCase):
                           progress=lambda _: None, **kwargs)
 
     def test_registration_and_filters(self):
-        self.assertEqual(len(select_cases(game='lost_cities')), 10)
-        self.assertEqual(len(select_cases(suite='ordering')), 3)
+        self.assertEqual(len(select_cases(game='lost_cities')), 16)
+        self.assertEqual(len(select_cases(suite='ordering')), 4)
         self.assertEqual(select_cases(probe='preserve-low-sequence-early'), (CASES[0],))
         self.assertEqual(select_cases(probe=CASES[0].id), (CASES[0],))
         for kwargs in ({'game': 'missing'}, {'suite': 'missing'}, {'probe': 'missing'}, {'cases': (CASES[0], CASES[0])}):
@@ -253,7 +312,21 @@ class ProbeFrameworkTests(unittest.TestCase):
 
     def test_all_cases_native_smoke(self):
         with TemporaryDirectory() as tmp:
+            output = Path(tmp)/'run'
             summary = run_probes(CASES, SoIsmctsAgent(), iterations=(2,), seeds=1,
-                                 output=Path(tmp)/'run', progress=lambda _: None)
-            self.assertEqual(len(summary), 10)
+                                 output=output, progress=lambda _: None)
+            self.assertEqual(len(summary), 16)
             self.assertTrue(all(sum(a['selected_count'] for a in s['actions']) == 1 for s in summary))
+            for case, result in zip(CASES, summary):
+                self.assertEqual(result['probe_id'], case.id)
+                self.assertEqual(len(result['actions']), len(case.builder().legal_actions))
+            rows = [json.loads(line) for line in (output/'runs.jsonl').read_text().splitlines()]
+            self.assertEqual(len(rows), 16)
+            for case, row in zip(CASES, rows):
+                position = case.builder()
+                self.assertEqual(row['probe_id'], case.id)
+                self.assertEqual(row['root_visits'], 2)
+                self.assertEqual(row['diagnostics']['determinizations_sampled'], 2)
+                self.assertEqual(len(row['root_actions']), len(position.legal_actions))
+                self.assertIn(row['selected_action'], [action_dict(a) for a in position.legal_actions])
+                self.assertTrue(all(edge['availability'] == 2 for edge in row['root_actions']))

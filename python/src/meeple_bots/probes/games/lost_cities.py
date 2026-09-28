@@ -12,7 +12,8 @@ from ..core import ProbeCase, ProbePosition
 GAME = LostCities()
 COLORS = ('Red', 'Green', 'Blue', 'Yellow', 'White')
 SEEDS = {'ordering': 1647, 'jump': 3404, 'marginal': 22, 'support': 338,
-         'unsupported': 12, 'discard': 187, 'draw': 34}
+         'unsupported': 12, 'discard': 187, 'draw': 34, 'high_pair': 281,
+         'unsupported_two': 4, 'unplayable': 533, 'closure': 302}
 
 
 def label(action):
@@ -26,7 +27,11 @@ def label(action):
 
 def build_state(name):
     """Return authoritative state plus replayable fixture provenance."""
-    family = ('ordering' if name.startswith('preserve_') else 'jump' if name.startswith('avoid_') else
+    family = ('high_pair' if name.startswith('high_pair_') else
+              'unsupported_two' if name == 'unsupported_two_opening_early' else
+              'unplayable' if name.startswith('unplayable_discard_') else
+              'closure' if name == 'premature_ten_closure_midgame' else
+              'ordering' if name.startswith('preserve_') else 'jump' if name.startswith('avoid_') else
               'marginal' if name.startswith('marginal_') else 'unsupported' if name == 'wager_without_support' else
               'support' if name == 'wager_with_support' else 'draw' if name == 'discard_pile_vs_deck' else 'discard')
     seed = SEEDS[family]
@@ -39,14 +44,15 @@ def build_state(name):
         transitions.append({'chance': chance, 'action': action.to_dict()})
         state = (GAME.apply_chance_outcome if chance else GAME.apply_action)(state, action)
 
-    def turn(action):
+    def turn(action, *, avoid_red_draws=False):
         actor = state.current_player
         apply(action)
         apply(Action('draw_deck'))
         outcomes = [a for a, _ in GAME.chance_outcomes(state)]
         # Fixed environment choice, independent of search RNG. Keep red draws out
         # of the focal hand so marginal/ordering contrasts retain their structure.
-        preferred = [a for a in outcomes if (a.card[0] != 0) == (actor == 0)]
+        preferred = [a for a in outcomes if a.card[0] != 0] if avoid_red_draws else [
+            a for a in outcomes if (a.card[0] != 0) == (actor == 0)]
         apply(rng.choice(preferred or outcomes), chance=True)
 
     def discard():
@@ -63,6 +69,17 @@ def build_state(name):
         turn(discard())
         turn(Action('discard', (0, 6)))
         apply(discard())
+    elif family == 'unplayable':
+        # Same deal and draw choices; only the opponent's first public play
+        # differs. Red 4 remains the visible discard in both positions.
+        turn(Action('play', (0, 8)))
+        turn(Action('play', (0, 10)) if name.endswith('low_denial') else Action('play', (1, 3)))
+        turn(discard())
+        turn(Action('discard', (0, 4)))
+        apply(discard())
+    elif family == 'closure':
+        for i in range(14):
+            turn(Action('play', (0, 2)) if i == 0 else discard(), avoid_red_draws=True)
     if name.endswith('_late'):
         while len(state.deck) > 4:
             turn(discard())
@@ -108,4 +125,22 @@ CASES = (
     case('discard_pile_vs_deck', 'Draw phase: visible Red 6 versus hidden deck; own Red 4.',
          ['draw'], [Action('draw_discard', color=0), Action('draw_deck')],
          'Compare taking a visible compatible card with an unknown draw.'),
+    case('high_pair_commitment_early', 'Empty red expedition; hand holds only Red 7 and 9; 44 deck cards.',
+         ['commitment', 'early-game', 'optionality'], plays(7),
+         'Measure willingness to commit a sparse high pair while later profitable extensions remain uncertain.'),
+    case('high_pair_commitment_late', 'Empty red expedition; hand retains Red 7 and 9; four deck cards.',
+         ['commitment', 'late-game', 'optionality'], plays(7),
+         'Contrast with the early pair; public discards, other hand cards and hidden allocation also differ.'),
+    case('unsupported_two_opening_early', 'Empty red expedition; only Red 2 is held in that color.',
+         ['commitment', 'early-game'], plays(2),
+         'Low opening preserves every higher numbered continuation; a neutral control for unsupported Red 4.'),
+    case('unplayable_discard_low_denial', 'Draw phase: Red 4 discard is below both public red expeditions.',
+         ['draw', 'denial'], [Action('draw_discard', color=0), Action('draw_deck')],
+         'Measure taking a card unusable by either player in public expedition order.'),
+    case('unplayable_discard_high_denial', 'Draw phase: Red 4 discard is below own Red 8; opponent red is empty.',
+         ['draw', 'denial'], [Action('draw_discard', color=0), Action('draw_deck')],
+         'Contrast public denial pressure; one opponent play and subsequent hands differ from the low-denial case.'),
+    case('premature_ten_closure_midgame', 'Red expedition at 2; own Red 10 with lower red continuations unseen.',
+         ['ordering', 'optionality', 'midgame'], plays(10),
+         'Measure closing an expedition at 10 while Red 3, 5, 6 and 8 are publicly unseen at 30 deck cards.'),
 )
