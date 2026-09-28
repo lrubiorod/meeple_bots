@@ -1,4 +1,8 @@
 //! Random and observation-only SO-ISMCTS registration. Authoritative replay is an engine/admin API.
+#[cfg(test)]
+#[path = "lost_cities_no_leakage_tests.rs"]
+mod no_leakage_tests;
+
 use crate::{AgentConfig, CatalogAction, CatalogError, CatalogMatchReport, RecordedMove};
 use meeple_bots_core::{Game, PlayerId, PositionStatus};
 use meeple_bots_lost_cities::{

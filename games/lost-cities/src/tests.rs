@@ -206,6 +206,67 @@ fn hidden_worlds_have_equal_observation_and_hash() {
         LostCities.observation(&b, PlayerId::SECOND)
     );
 }
+
+#[test]
+fn determinization_depends_only_on_observation_not_real_hidden_partition() {
+    let mut state = ready(19);
+    let mut environment = SplitMix64::new(20);
+    // Reach a real midgame with public cards through legal transitions.
+    for _ in 0..4 {
+        let card = state.hands[state.current_player.index()][0];
+        LostCities.apply_action(&mut state, &Discard(card)).unwrap();
+        LostCities.apply_action(&mut state, &DrawDeck).unwrap();
+        let event = LostCities.sample_chance(&state, &mut environment).unwrap();
+        LostCities.apply_chance_outcome(&mut state, &event).unwrap();
+    }
+    for observer in [PlayerId::FIRST, PlayerId::SECOND] {
+        let mut other = state.clone();
+        let opponent = 1 - observer.index();
+        let i = other
+            .deck
+            .iter()
+            .position(|c| *c != other.hands[opponent][0])
+            .unwrap();
+        // Swap physical cards and restore canonical pools: conservation and all
+        // public/owned information remain unchanged, but the hidden hand differs.
+        std::mem::swap(&mut other.hands[opponent][0], &mut other.deck[i]);
+        other.hands[opponent].sort();
+        other.deck.sort();
+        LostCities.validate_state(&state).unwrap();
+        LostCities.validate_state(&other).unwrap();
+        assert_ne!(state.hands[opponent], other.hands[opponent]);
+        assert_ne!(state.deck, other.deck);
+        let observation = LostCities.observation(&state, observer);
+        let other_observation = LostCities.observation(&other, observer);
+        assert_eq!(observation, other_observation);
+        let mut unseen = state.hands[opponent].clone();
+        unseen.extend(&state.deck);
+        unseen.sort();
+        for seed in 0..8 {
+            let world = LostCities
+                .sample_determinization(&observation, observer, &mut SplitMix64::new(seed))
+                .unwrap();
+            let other_world = LostCities
+                .sample_determinization(&other_observation, observer, &mut SplitMix64::new(seed))
+                .unwrap();
+            assert_eq!(world, other_world); // Includes the complete sampled deck order.
+            world.validate().unwrap();
+            assert_eq!(world.observation(observer), observation);
+            assert_eq!(world.state().hands[observer.index()], observation.hand);
+            assert_eq!(world.state().expeditions, observation.expeditions);
+            assert_eq!(world.state().discards, observation.discards);
+            assert_eq!(
+                world.state().hands[opponent].len(),
+                observation.opponent_hand_size
+            );
+            assert_eq!(world.deck_order().len(), observation.deck_size);
+            let mut sampled_unseen = world.state().hands[opponent].clone();
+            sampled_unseen.extend(world.deck_order());
+            sampled_unseen.sort();
+            assert_eq!(sampled_unseen, unseen); // Preserve physical wager multiplicity too.
+        }
+    }
+}
 fn check_determinizations(s: &LostCitiesState) {
     for observer in [PlayerId::FIRST, PlayerId::SECOND] {
         let o = LostCities.observation(s, observer);
