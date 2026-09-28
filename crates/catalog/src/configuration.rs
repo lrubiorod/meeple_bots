@@ -414,9 +414,6 @@ pub fn configured_connect6_mcts(
         ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::UniformRandom) => {
             RolloutPolicyConfig::UniformRandom
         }
-        ConfiguredRolloutPolicy::Standard(RolloutPolicyConfig::Mast { epsilon }) => {
-            RolloutPolicyConfig::Mast { epsilon }
-        }
         _ => unreachable!("Connect6 rollout policy was validated"),
     };
     Ok(TranspositionMctsAgent::new(
