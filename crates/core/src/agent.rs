@@ -87,8 +87,9 @@ impl<'a, G: PerfectInformationGame> DecisionContext<'a, G> {
 /// Before registering hidden-information search agents, redesign these callbacks to supply
 /// player-filtered observations or use a separate contract; `DecisionContext::state`
 /// alone cannot prevent an agent from retaining private information from callbacks.
-/// Lost Cities currently registers only RandomAgent, whose callbacks are no-ops and
-/// whose decisions use only legal actions; it does not treat this lifecycle as isolated.
+/// Lost Cities uses a trusted participant adapter: its callbacks receive authoritative
+/// transitions, but only owner observations and legitimate actions reach SO-ISMCTS
+/// search and tree reuse. The general `Agent` lifecycle remains trusted.
 pub trait Agent<G: Game> {
     /// Starts a new match and assigns the seat controlled by this agent instance.
     fn on_match_start(&mut self, _game: &G, _state: &G::State, _player: PlayerId) {}

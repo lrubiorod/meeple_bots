@@ -101,10 +101,12 @@ actions, active player, and player observation. `DecisionContext::state()` requi
 The lifecycle methods `on_match_start`, `on_action_applied` and `on_match_end` receive the full
 `G::State` without that bound. An agent could retain private information received there; supplying
 a filtered `observation()` alone would not prevent this. Simulation observers also receive full
-state. The legacy lifecycle does not enforce hidden-information isolation. Lost Cities
-registers audited Random and SO-ISMCTS adapters with no-op lifecycle callbacks.
-The SO-ISMCTS search object receives only the owned player observation, root legal
-actions, observer and RNG; the adapter never forwards authoritative state. Lost Cities does
+state. The general `Agent` lifecycle is trusted and does not enforce hidden-information
+isolation. Lost Cities registers Random and an SO-ISMCTS participant adapter. The adapter
+handles lifecycle notifications and, when tree reuse is enabled, advances or resets the tree
+using legitimate actions and the owner's observation. It never forwards authoritative state or
+private chance events to SO search. The SO-ISMCTS search object receives only the owned player
+observation, root legal actions, observer and RNG. Lost Cities does
 not implement `PerfectInformationGame`, so both MCTS backends are excluded by type
 bounds as well as runtime catalog validation.
 
