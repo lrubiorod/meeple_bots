@@ -241,5 +241,5 @@ See [Lost Cities](../games/lost-cities/README.md) for the exact variant, observa
 fields, conservation/roundtrip invariants and currently supported interfaces.
 
 See the [agents guide](../agents/README.md) for current MCTS behavior, the
-[MCTS roadmap](../agents/MCTS_ROADMAP.md) for possible extensions, and the
+[agent/search roadmap](../agents/MCTS_ROADMAP.md) for future priorities, and the
 [evaluation guide](evaluation/README.md) for empirical analysis.

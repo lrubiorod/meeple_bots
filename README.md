@@ -94,13 +94,13 @@ Start with the guide that matches the question:
 - [Python interface](python/README.md): installation, public API, CLI, GUI, and studies.
 - [Rust architecture](crates/README.md): workspace layers, generic contracts, and dispatch.
 - [Game evaluation](crates/evaluation/README.md): structural metrics, timing, and limitations.
-- [MCTS roadmap](agents/MCTS_ROADMAP.md) ([Español](agents/MCTS_ROADMAP.es.md)): possible
-  stages for evolving the search agents.
+- [Agent/search roadmap](agents/MCTS_ROADMAP.md) ([Español](agents/MCTS_ROADMAP.es.md)):
+  priorities for stronger agents and strategy extraction.
 
 ## Repository map
 
 ```text
-agents/       Rust agent implementations and MCTS roadmap
+agents/       Rust agent implementations and agent/search roadmap
 configs/      Shared MCTS baselines and templates; personal configurations stay local
 crates/       Shared Rust contracts, simulation, catalog, evaluation, and bindings
 games/        Authoritative Rust rules for each game

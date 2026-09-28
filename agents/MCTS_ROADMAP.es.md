@@ -1,396 +1,289 @@
-# Hoja de ruta para el desarrollo de MCTS
+# Hoja de ruta para el desarrollo de agentes y búsqueda
 
 [English](MCTS_ROADMAP.md) | [**Español**](MCTS_ROADMAP.es.md)
 
-Este documento recoge posibles direcciones para evolucionar los agentes de búsqueda de Meeple
-Bots. Es un horizonte, no un calendario comprometido: cada etapa debe justificarse con mediciones
-antes de incorporarse al proyecto.
-
-La hoja de ruta avanza deliberadamente desde mejoras observables del MCTS clásico hasta búsquedas
-con azar e información imperfecta, y solo después llega a políticas y funciones de valor
-aprendidas. Así, cada concepto nuevo resulta lo bastante pequeño como para entenderlo y probarlo
-de manera independiente.
-
-## Principios rectores
-
-- Mantener las reglas de los juegos independientes de los algoritmos de búsqueda.
-- No exponer nunca el estado oculto autoritativo a un agente de información imperfecta.
-- Comparar agentes tanto por su fuerza de juego como por su coste en tiempo real. Una iteración no
-  cuesta lo mismo en distintos juegos o variantes de búsqueda.
-- Añadir una sola idea de búsqueda cada vez y conservar un baseline sencillo para comparar.
-- Preferir capacidades explícitas frente a suposiciones en tiempo de ejecución. Las combinaciones
-  no compatibles deben fallar claramente, idealmente en tiempo de compilación.
-- Hacer que los experimentos deterministas sean reproducibles a partir de su semilla y
-  configuración.
-- Tratar los algoritmos avanzados como agentes o políticas opcionales, en lugar de complicar
-  continuamente la implementación básica de MCTS.
-
-## Etapa 0: establecer baselines fiables
-
-### Objetivo
-
-Hacer medible el comportamiento del MCTS actual antes de modificar su algoritmo.
-
-### Posible trabajo
-
-- Registrar por decisión el número de nodos creados, profundidad máxima del árbol, acciones de
-  rollout, rollouts terminales y cortes evaluados mediante heurística.
-- Registrar visitas y utilidades medias de las acciones raíz, además de la acción seleccionada.
-- Permitir presupuestos de búsqueda expresados en iteraciones y en tiempo real.
-- Añadir configuraciones de benchmark para Tres en raya, Connect Four y Boop.
-- Comparar agentes por tasa de victoria, asiento, tiempo de decisión, nodos por segundo y memoria.
-- Validar las decisiones de Tres en raya frente a su árbol de juego resuelto.
-
-### Señal de finalización
-
-Los experimentos pueden explicar no solo qué agente gana, sino también cómo emplea su presupuesto
-de búsqueda.
-
-## Etapa 1: hacer modulares las políticas del MCTS clásico
-
-### Objetivo
-
-Crear puntos de extensión explícitos sin cambiar el comportamiento UCT predeterminado.
-
-### Posible trabajo
-
-- Separar la política de selección del árbol del almacenamiento de nodos.
-- Separar la política de rollout del evaluador de corte.
-- Separar de la selección UCT la regla que elige la acción final en la raíz.
-- Conservar como implementaciones baseline el rollout aleatorio uniforme, la evaluación neutral
-  en el corte y la selección final de la acción más visitada.
-- Permitir que cada política consulte únicamente las capacidades del juego que realmente necesita.
-
-### Conceptos que explorar
-
-- `TreePolicy`: selecciona un hijo durante el recorrido del árbol.
-- `ExpansionPolicy`: selecciona qué acción aún no expandida se añade.
-- `RolloutPolicy`: selecciona acciones simuladas fuera del árbol.
-- `CutoffEvaluator`: estima estados no terminales al alcanzar el límite del rollout.
-- `RootSelectionPolicy`: elige la acción real después de la búsqueda.
-
-### Señal de finalización
-
-Se pueden probar políticas alternativas sin duplicar el bucle MCTS completo.
-
-## Etapa 2: mejorar la calidad de las simulaciones
-
-### Objetivo
-
-Obtener información más útil de cada iteración sin recurrir a aprendizaje automático.
-
-### Posible trabajo
-
-- Añadir políticas de rollout heurísticas o basadas en reglas.
-- Permitir mezclas epsilon: elegir normalmente una acción heurística, pero algunas veces una al
-  azar.
-- Añadir progressive bias para que el conocimiento del juego influya en la selección inicial y se
-  desvanezca al aumentar las visitas. (Implementado con evaluadores condicionales opcionales y
-  valores de hijos almacenados en caché.)
-- Comparar rollouts completos con rollouts más cortos evaluados mediante heurística.
-- Investigar implicit minimax backups para juegos tácticos.
-- Ajustar la exploración de forma independiente para cada juego y política de búsqueda.
-
-### Riesgos
-
-- Una política de rollout sesgada puede ignorar repetidamente líneas de victoria poco habituales.
-- Las heurísticas fuertes pueden ocultar errores al hacer que agentes pequeños parezcan
-  competentes.
-- Una iteración más cara puede rendir peor con el mismo presupuesto temporal aunque necesite menos
-  iteraciones.
-
-### Señal de finalización
-
-Al menos una política informada supera al rollout aleatorio uniforme con el mismo coste temporal y
-el baseline sigue disponible.
-
-## Etapa 3: reutilizar y compartir información de búsqueda
-
-### Objetivo
-
-Evitar descartar trabajo válido dentro de una partida y entre caminos de búsqueda equivalentes.
-
-### Posible trabajo
-
-- Implementado: conservar y podar el subárbol seleccionado después de una acción aceptada.
-- Implementado: cambiar la raíz después de observar la acción real del oponente.
-- Implementado: verificar juego y estado, y reiniciar de forma segura si no coinciden.
-- Implementado: usar un ciclo de vida explícito para que una partida nueva no herede un árbol.
-- Implementado: añadir un grafo opcional de transposiciones por estado exacto para caminos que
-  llegan al mismo estado completo sin cambiar el backend básico de árbol.
-- Añadir límites configurables de memoria y políticas de poda.
-
-### Restricciones de diseño
-
-- La reutilización del árbol debe seguir siendo opcional porque no todas las variantes de búsqueda
-  asocian las estadísticas a estados exactos.
-- La reutilización en juegos de información perfecta no debe imponer `State: Eq + Hash` a agentes
-  no relacionados, salvo que el beneficio justifique la restricción.
-- Los agentes de información imperfecta deben identificar la reutilización mediante observaciones
-  legales, conjuntos de información o historiales públicos, nunca mediante el estado oculto
-  autoritativo.
-- Los cambios de perspectiva de utilidad, reglas, política de rollout o evaluador de corte deben
-  invalidar las estadísticas incompatibles.
-
-### Señal de finalización
-
-La búsqueda reutilizada produce las mismas decisiones legales que una búsqueda nueva, se reinicia
-de forma segura ante una discrepancia y aporta una mejora medida de fuerza o latencia.
-
-## Etapa 4: permitir juegos estocásticos
-
-### Objetivo
-
-Representar explícitamente las transiciones aleatorias del entorno y buscar correctamente a través
-de ellas.
-
-### Posible trabajo
-
-- Distinguir nodos de decisión del jugador, nodos de azar y nodos terminales.
-- Extender el contrato del juego para enumerar resultados aleatorios con sus probabilidades cuando
-  resulte práctico.
-- Permitir también muestrear un resultado aleatorio mediante un modelo generativo.
-- Validar que las probabilidades sean finitas, no negativas y estén normalizadas.
-- Retropropagar valores esperados a través de los nodos de azar, en lugar de maximizarlos o
-  minimizarlos.
-- Añadir progressive widening o muestreo de resultados cuando el espacio de azar sea muy grande.
-- Mantener separado el azar del entorno del azar del agente para que las partidas sigan siendo
-  reproducibles.
-- Añadir un juego de dados pequeño como banco de pruebas específico para búsqueda estocástica.
-
-### Preguntas que responder
-
-- ¿Debe resolver el azar el ejecutor de simulaciones o una API de transiciones propiedad del juego?
-- ¿Cuándo debe la búsqueda enumerar todos los resultados y cuándo debe muestrearlos?
-- ¿Cómo se representan los resultados aleatorios en las trazas de acciones y en el análisis de
-  repeticiones?
-
-### Señal de finalización
-
-Un juego estocástico de referencia ofrece partidas reproducibles, frecuencias de resultados
-estadísticamente correctas y decisiones MCTS que coinciden con las expectativas exactas en
-posiciones pequeñas.
-
-## Etapa 5: introducir búsqueda con información imperfecta
-
-### Objetivo
-
-Permitir que los agentes razonen a partir de observaciones sin obtener acceso al estado oculto.
-
-### Posible trabajo
-
-- Definir observaciones públicas, observaciones privadas e historiales de acciones observables.
-- Definir cómo muestrea un agente un estado completo compatible con su información.
-- Añadir validación de creencias o determinizaciones para impedir estados muestreados imposibles.
-- Implementar determinización simple como un baseline deliberadamente sencillo.
-- Implementar Information Set MCTS como agente o backend de búsqueda independiente.
-- Almacenar estadísticas por conjunto de información o historial observable, en lugar de por estado
-  oculto completo.
-- Añadir Kuhn Poker como juego de prueba compacto con azar, cartas ocultas, faroles y un equilibrio
-  conocido.
-- Medir la explotabilidad o la distancia a un equilibrio conocido, además de la tasa de victoria.
-
-### Conceptos que estudiar
-
-- Conjunto de información: estados que un jugador no puede distinguir entre sí.
-- Estado de creencia: distribución de probabilidad sobre posibles estados subyacentes.
-- Strategy fusion: elegir incorrectamente acciones distintas en estados ocultos que el jugador no
-  puede distinguir.
-- Non-locality: el valor de una decisión puede depender de elecciones estratégicas realizadas en
-  otras partes del juego.
-- Estrategia mixta: aleatorizar acciones intencionadamente para evitar ser explotado.
-
-### Riesgos
-
-- Una búsqueda determinista de información perfecta puede actuar accidentalmente como si conociera
-  hechos ocultos.
-- La tasa de victoria frente a un solo oponente no demuestra que una estrategia de información
-  oculta sea sólida.
-- Reutilizar estadísticas obtenidas bajo una distribución de creencias antigua puede sesgar una
-  búsqueda posterior.
-
-### Señal de finalización
-
-Las pruebas demuestran que el agente no puede inspeccionar el estado oculto, se rechazan las
-determinizaciones imposibles y el agente se aproxima a una estrategia razonable en un juego con
-solución conocida.
-
-## Etapa 6: añadir búsqueda guiada por políticas
-
-### Objetivo
-
-Guiar la expansión mediante preferencias previas sobre las acciones, conservando una simulación
-exacta del juego.
-
-### Posible trabajo
-
-- Introducir una interfaz de priors que devuelva una distribución normalizada sobre las acciones
-  legales.
-- Implementar selección PUCT junto a UCT.
-- Empezar con priors uniformes para establecer la equivalencia con el baseline.
-- Añadir priors escritos manualmente para un juego.
-- Entrenar priors tabulares o lineales sencillos a partir de partidas registradas.
-- Utilizar ruido de exploración en la raíz y temperatura para seleccionar acciones únicamente en
-  configuraciones de self-play.
-- Guardar las distribuciones de visitas como objetivos de políticas mejoradas.
-
-### Progresión del aprendizaje
-
-1. Priors uniformes.
-2. Priors escritos manualmente.
-3. Tablas de frecuencias aprendidas de partidas MCTS.
-4. Un modelo estadístico pequeño.
-5. Una política neuronal si los enfoques más sencillos han alcanzado sus límites.
-
-### Señal de finalización
-
-La búsqueda guiada mejora la fuerza de juego o reduce las simulaciones necesarias para alcanzar la
-fuerza del baseline, sin hacer posibles acciones ilegales.
-
-## Etapa 7: aprender valores de posiciones mediante self-play
-
-### Objetivo
-
-Sustituir rollouts largos o débiles por una estimación de valor entrenada a partir de experiencia.
-
-### Posible trabajo
-
-- Definir una codificación estable y específica de cada juego para sus estados.
-- Registrar ejemplos de entrenamiento que contengan el estado, la distribución de visitas en la
-  raíz, el jugador actual y la utilidad final.
-- Entrenar un modelo de valor que prediga el resultado final.
-- Combinar las predicciones de política y valor en un solo modelo cuando resulte útil.
-- Añadir una prueba de promoción: un modelo nuevo solo sustituye al actual tras superar una batería
-  reproducible de partidas.
-- Medir la calibración además del error de predicción; un valor de `0.8` debe tener una
-  interpretación significativa.
-- Evitar que las partidas de entrenamiento y evaluación compartan accidentalmente flujos
-  aleatorios o datos.
-
-### Bucle al estilo AlphaZero
-
-```text
-política y valor actuales
-          |
-          v
-      MCTS guiado
-          |
-          v
-       self-play
-          |
-          v
-estados + distribuciones de visitas + utilidades finales
-          |
-          v
- entrenar una política y un valor mejores
-```
-
-### Riesgos
-
-- El self-play puede amplificar sus propios puntos ciegos.
-- La infraestructura de entrenamiento puede dominar la complejidad del código del juego y la
-  búsqueda.
-- La inferencia neuronal puede costar más que las simulaciones que sustituye en juegos pequeños.
-- Las mejoras de fuerza deben compararse con el mismo cómputo total, no solo con las mismas
-  iteraciones MCTS.
-
-### Señal de finalización
-
-Un agente experimental al estilo AlphaZero aprende mediante self-play y supera a su baseline MCTS
-no guiado con un presupuesto de cómputo documentado.
-
-## Etapa 8: investigación avanzada en teoría de juegos y modelos aprendidos
-
-### Objetivo
-
-Mantener visibles líneas de investigación a largo plazo sin tratarlas como requisitos inmediatos.
-
-### Posibles direcciones
-
-- Counterfactual Regret Minimization como baseline para juegos de información imperfecta, suma
-  cero y dos jugadores.
-- Estados de creencia pública y resolución con profundidad limitada inspirados en ReBeL.
-- Búsqueda que combine mejora de políticas con razonamiento de teoría de juegos, inspirada en
-  Student of Games.
-- Selección de acciones mediante Gumbel para mejorar políticas de manera fiable con presupuestos
-  pequeños de simulaciones.
-- Búsqueda con muestreo de acciones y progressive widening para espacios de acciones extremadamente
-  grandes o continuos.
-- Evaluación de hojas por lotes y búsqueda paralela en el árbol.
-- Dinámicas aprendidas inspiradas en MuZero cuando no se disponga de reglas exactas o resulte
-  prohibitivamente caro simularlas.
-
-### Advertencia sobre el alcance
-
-MuZero no es automáticamente una mejora respecto a una búsqueda al estilo AlphaZero para Meeple
-Bots. El proyecto ya dispone de simuladores exactos escritos en Rust, por lo que sustituirlos por
-dinámicas aprendidas introduciría errores del modelo y una complejidad de entrenamiento
-considerable. Solo resulta relevante para entornos cuyas reglas sean desconocidas, inaccesibles o
-demasiado caras de ejecutar durante la búsqueda.
-
-La búsqueda basada en teoría de juegos también es una rama distinta, no una pequeña modificación
-de UCT. Debe construirse sobre un modelo de información imperfecta bien probado e incluir
-evaluaciones orientadas a la explotabilidad.
+Se conserva el nombre histórico del archivo para no romper los enlaces existentes. Meeple Bots
+busca construir agentes genéricos y fuertes para juegos de mesa modernos, incluidos los de azar
+público e información imperfecta, **y extraer información estratégica útil de sus decisiones**.
+Esta es una hoja de ruta de investigación, no el compromiso de implementar cada algoritmo. La
+fuerza, la propiedad genérica de los componentes, la reproducibilidad y la evidencia estratégica
+interpretable importan más que acumular técnicas.
+
+## Base actual
+
+Las capacidades siguientes ya están implementadas, aunque su beneficio estratégico depende del
+juego y del presupuesto medido:
+
+| Área | Capacidad actual |
+| --- | --- |
+| Medición | Diagnósticos de búsqueda y presupuestos de tiempo/iteraciones; Analyze, Probe, Study, partidas con semillas y experimentos emparejados. |
+| Búsqueda genérica | Selección compartida UCT y UCB1-Tuned; rollout y evaluación de corte configurables, rollouts heurísticos/epsilon, MAST, Progressive Bias, RAVE, Progressive Widening y admisión guiada por RAVE. |
+| Memoria de búsqueda | Reutilización opcional del árbol y transposiciones por estado exacto en búsqueda compatible de información perfecta; reutilización por trayectoria de observaciones en SO-ISMCTS de Lost Cities. |
+| Familias de juegos | MCTS determinista de información perfecta, MCTS de azar público para juegos compatibles y SO-ISMCTS basado en observaciones para Lost Cities. |
+| Propiedad de evaluación | `StateEvaluator` se define en Rust core y MCTS lo consume; las heurísticas específicas pertenecen a los juegos. |
+
+Por tanto, los mecanismos principales de las antiguas etapas de modularidad, búsqueda informada,
+reutilización, azar y observaciones son **base implementada**, no primeros pasos pendientes.
+Algunas señales antiguas de
+finalización, como mejoras universales de fuerza a igual tiempo, benchmarks de referencia
+exhaustivos, límites de memoria configurables o un juego de información oculta con equilibrio
+conocido, **no** se han establecido. La [guía de agentes](README.md) describe los mecanismos y
+configuraciones disponibles; las guías de [Probe](../python/probes.md),
+[Analyze](../crates/evaluation/README.md) y [Study](../python/studies.md) describen la medición.
+Actualmente no hay modelos aprendidos de valor o política, PUCT, Alpha-Beta, un bucle de
+entrenamiento AlphaZero ni un agente CFR.
+
+## Reglas arquitectónicas y experimentales
+
+- Los juegos poseen reglas, legalidad, azar, utilidad terminal y características específicas.
+  Las búsquedas genéricas en Rust consumen contratos del juego y evaluación opcional; no deben
+  ramificar por nombre de juego. El catálogo y los adaptadores componen combinaciones admitidas.
+  Rust posee reglas, búsqueda y simulación; Python posee orquestación experimental, entrenamiento,
+  publicación de datasets, análisis e informes. La elección del backend de inferencia sigue
+  abierta; una llamada a Python en cada hoja de búsqueda Rust no es el diseño predeterminado.
+- Mantener separadas las familias semánticas determinista de información perfecta, de azar público
+  y de información imperfecta. Cada algoritmo declara las capacidades que necesita; no hay una
+  búsqueda universal ni obligación de que todos los juegos admitan todos los agentes. Los
+  resultados del azar no son acciones del jugador. Random, MCTS, MCTS estocástico, SO-ISMCTS y los
+  futuros algoritmos siguen siendo consumidores independientes de pequeños contratos compartidos;
+  la infraestructura neuronal es opcional.
+- Orientar el valor según el jugador solicitado explícitamente y seleccionar según el **actor
+  real**, no la paridad de profundidad. En juegos actuales existen acciones consecutivas de un
+  mismo jugador. Un modelo puede asesorar a la búsqueda, pero nunca sustituye la legalidad, las
+  transiciones ni los resultados terminales autoritativos.
+- El lifecycle general de `Agent` es trusted y puede recibir estado autoritativo. Lost Cities usa
+  un adaptador trusted que filtra eventos antes de entregarlos a la búsqueda SO, que solo recibe
+  observaciones. Los futuros evaluadores y agentes de información oculta necesitan el mismo
+  límite explícito; el lifecycle genérico por sí solo no es un sandbox.
+- Evaluar con semillas nuevas de partida, asientos equilibrados, configuraciones guardadas y
+  procedencia de modelos/datos. Las iteraciones fijas ayudan a diagnosticar reproducibilidad;
+  **el tiempo real medido e igualado** es la comparación principal entre algoritmos con distinto
+  coste por iteración. Usar datos de evaluación separados, ablaciones y probes de comportamiento.
+  No convertir una preferencia estratégica no forzada en una aserción CI; reservar las pruebas de
+  corrección para invariantes y resultados matemáticamente forzados.
+
+## Siguiente paso: diagnosticar cuellos de botella estratégicos
+
+**Objetivo y motivo.** Averiguar por qué las búsquedas actuales toman decisiones cuestionables
+antes de construir un sistema grande de aprendizaje. Lost Cities SO-ISMCTS es el primer caso:
+las jugadas aparentemente obvias que se han señalado aportan una hipótesis concreta que
+comprobar, no un diagnóstico demostrado.
+
+**Posible trabajo.** Usar los Probes existentes sobre posiciones fijas, varios presupuestos de
+iteraciones y semillas de búsqueda. Observar acción elegida, visitas raíz, Q desde la perspectiva
+del jugador raíz, disponibilidad, estabilidad y convergencia. Separar presupuesto/eficiencia de
+muestreo insuficientes, señal débil de rollout o evaluación de corte y límites estructurales de
+la determinización/SO-ISMCTS. Repetir los hallazgos decisivos con posiciones nuevas y tiempo
+medido. Los Probes describen comportamiento; torneos y estudios miden fuerza.
+
+**Riesgo y señal de finalización.** Más iteraciones pueden reforzar una estimación sesgada; una
+elección estable no es necesariamente sólida. Terminar con capturas reproducibles y una
+clasificación clara de si los errores desaparecen, persisten o siguen siendo inciertos al crecer
+el presupuesto. No se necesita un oráculo estratégico en CI.
+
+## Aprendizaje I: valor escalar antes que política
+
+**Objetivo y motivo.** Comprobar si una evaluación estratégica mejor cambia las decisiones de
+agentes que ya buscan. La función de valor es la cantidad estimada; una red neuronal es uno de
+sus posibles aproximadores. Comparar un baseline neutral, una señal manual donde exista y un
+valor aprendido. Un modelo lineal/estadístico puede servir de control; un MLP pequeño es un
+primer experimento neuronal concreto. GPU, transformers, batching, entrenamiento de políticas y
+un bucle AlphaZero no son requisitos previos.
+
+**Posible trabajo.** Mantener genérico el contrato de evaluación escalar (`StateEvaluator` ya
+tiene un owner neutral en Rust). Situar la codificación de características específica del juego
+y la adaptación del modelo en un límite que conoce el juego, no en búsqueda genérica. No existe
+un tensor universal de tablero. El primer dataset puede vincular observación/estado legítimo de
+una decisión, perspectiva del jugador activo y resultado final. En Lost Cities, usar solo la
+observación del jugador activo: puede codificar su mano, expediciones/descarte/puntuaciones
+públicos, cartas restantes del mazo y fase/historial observados legítimamente; no puede incluir
+la mano oculta rival ni el orden real futuro del mazo. El objetivo estima el resultado esperado
+condicionado a la información disponible y la política de datos, no la verdad oculta. Los
+resultados ocultos producen objetivos ruidosos. Mantener autoritativa la utilidad terminal.
+SO-ISMCTS no integra hoy valor aprendido; su futura vía de evaluación segura respecto a
+observaciones debe establecerse explícitamente, no deducirse del trait que consume MCTS.
+Versionar codificador/modelo y registrar procedencia; no reutilizar silenciosamente estadísticas
+de búsqueda con un modelo distinto.
+
+**Riesgos.** Un self-play débil puede copiar sus propios puntos ciegos; partidas correlacionadas
+entre entrenamiento y evaluación pueden exagerar el progreso; una fuga de estado oculto puede
+hacer que un modelo inválido parezca excelente; precisión predictiva no implica mejor juego; el
+coste de inferencia puede borrar la ganancia de búsqueda. Separar partidas de
+entrenamiento/validación/test, usar semillas nuevas de evaluación e informar de calibración y
+fuerza a igual tiempo.
+
+**Señal de finalización.** El codificador supera comprobaciones del límite de información; se
+informa de predicción y calibración en datos separados; una búsqueda adecuada consume el valor
+sin ramificar por juego; las comparaciones neutral/manual/aprendido igualan el tiempo real medido
+y equilibran asientos; se repiten los Probes de Lost Cities. Un resultado negativo bien medido
+es investigación válida.
+
+**Punto de decisión.** Si un valor mejor corrige sustancialmente las decisiones SO observadas,
+continuar hacia búsqueda guiada por política y segura respecto a observaciones. Si persisten los
+errores con presupuestos grandes pese a mejorar el valor, priorizar métodos de conjuntos de
+información/teoría de juegos o de creencias. Un valor aprendido no elimina por sí solo strategy
+fusion, sesgo de determinización, límites del modelado del oponente ni desajustes de creencias.
+
+## Aprendizaje II: política sobre acciones legales
+
+**Objetivo y motivo.** Aprender `P(acción | información/estado)` para mejorar orden de acciones,
+expansión y eficiencia de muestreo, y revelar preferencias estratégicas. Fases anchas como la
+colocación de gemas en SPOTF motivan este trabajo sin enseñar a la búsqueda genérica qué es una
+gema.
+
+**Posible trabajo.** Asociar puntuaciones o probabilidades con las **acciones legales** que
+proporciona el juego; una salida conceptual es `[(acción, puntuación), ...]`. Un vector global
+fijo es opcional y puede no encajar con acciones dinámicas o dependientes de la fase. Los
+codificadores/adaptadores propiedad del juego pueden proporcionar índices estables cuando sea
+útil. Con información oculta, la entrada de la política es una observación legítima. Mantener
+separados el consejo de política, la legalidad del juego y el valor escalar.
+
+**Riesgo y señal de finalización.** Identidad de acciones, normalización, máscaras y versión del
+modelo deben ser estables entre entrenamiento e inferencia. Mostrar asociación con acciones
+legales, medidas de política en datos separados y comparación de agentes a igual tiempo sin
+ramificar por juego concreto en la búsqueda genérica.
+
+## Búsqueda guiada: PUCT después del contrato de política
+
+**Objetivo y motivo.** Comprobar si priors sobre acciones legales más valor mejoran la búsqueda,
+y exportar visitas raíz como señal de política analizable.
+
+**Posible trabajo.** Añadir priors en aristas de decisión, normalización/validación genéricas,
+selección PUCT y distribuciones de visitas raíz vinculadas a acciones legales y al contexto del
+modelo. Empezar en Tres en raya o Connect Four con priors/valor sencillos. Más adelante,
+Progressive Widening guiado por política puede decidir qué acción pendiente entra al árbol; la
+admisión guiada por RAVE ya existe, pero sus puntuaciones AMAF **no** son priors de política
+aprendida. Integrar RAVE/MAST, PUCT estocástico o SO-PUCT y batching no es necesario para el
+primer experimento.
+
+**Riesgo y señal de finalización.** Conservar orientación por actor real y distinguir aristas de
+decisión de resultados de azar; no confundir el diagnóstico de hijos admitidos con una política
+completa de acciones legales. Mostrar acciones legales, priors validados, visitas raíz
+reproducibles y comparaciones a igual tiempo.
+
+## Rama de self-play: experimentos al estilo AlphaZero
+
+**Objetivo y motivo.** Estudiar la mejora de política/valor con simuladores exactos de Rust en
+juegos donde encajan los supuestos clásicos de determinismo, secuencia e información perfecta.
+Tres en raya y Connect Four son las primeras comprobaciones del pipeline; Connect6, Boop y SPOTF
+requieren codificación y asociación explícita de acciones, incluidas las fases/acciones
+consecutivas del mismo jugador. Esta rama no es el destino de todos los juegos.
+
+**Posible trabajo.** Combinar inferencia de política/valor, PUCT, ruido exploratorio en raíz,
+muestreo de acciones de self-play según temperatura, objetivos de visitas legales en raíz,
+resultados finales orientados por jugador, versiones congeladas del modelo durante la partida y
+una puerta de evaluación. Rust expone decisiones de búsqueda y simulación exacta; Python publica
+datasets, entrena/selecciona modelos y orquesta experimentos. Juegos de azar como Can't Stop y
+Splendor necesitan una extensión explícita consciente del azar; PUCT ordinario no se aplica sin
+cambios. Lost Cities necesita un tratamiento de observaciones/creencias, no una red clásica de
+estado omnisciente.
+
+**Riesgo y señal de finalización.** El self-play puede reforzar puntos ciegos y los cambios de
+modelo pueden invalidar datos de búsqueda reutilizados. Demostrar un bucle reproducible completo,
+registros de entrenamiento legales y versionados, evaluación separada/a igual tiempo y salidas
+de decisión interpretables. Ganar una sola partida no es evidencia suficiente.
+
+## Rama de investigación de información imperfecta
+
+**Objetivo y motivo.** Investigar estrategias mixtas intencionales y razonamiento por conjuntos
+de información cuando los errores SO-ISMCTS parezcan estructurales. Ganar a un solo oponente no
+demuestra robustez; la explotabilidad o la distancia a un equilibrio conocido pueden informar más
+en juegos pequeños adecuados. La familia CFR interesa tanto para la fuerza como para extraer
+estrategia, sin presumir que supera a SO-ISMCTS.
+
+**Posible trabajo.** Reubicar Kuhn Poker como futuro banco de pruebas compacto con equilibrio
+conocido para CFR y estrategias mixtas; estudiar después variantes de CFR/Deep CFR o regret
+neuronal y métodos de creencia pública. Comparar con SO-ISMCTS en problemas ocultos más ricos
+solo tras validar los límites de información y la medición. Los métodos tipo ReBeL son una
+dirección posterior consciente de creencias, no un sinónimo de SO-ISMCTS ni AlphaZero.
+
+**Riesgo y señal de finalización.** Distinguir strategy fusion, sesgo de determinización, modelo
+del oponente y desajuste de creencias; un valor o política aprendidos no resuelven ninguno
+automáticamente. Un pequeño experimento de referencia debe aportar evidencia reproducible de
+estrategia/explotabilidad antes de escalar a un juego moderno.
+
+## Ramas de referencia opcionales y horizonte de investigación
+
+- **Alpha-Beta:** Búsqueda opcional didáctica/de referencia para juegos deterministas, de
+  información perfecta, suma cero y dos jugadores. Comparar minimax sistemático con MCTS,
+  resolver posiciones pequeñas y probar el evaluador escalar compartido. La identidad del actor,
+  no la paridad de profundidad, debe controlar maximizar/minimizar. No es la ruta crítica hacia
+  agentes aprendidos ni un atajo para juegos de información oculta.
+- **Expectiminimax:** Referencia opcional de azar público para juegos pequeños; MCTS estocástico ya
+  proporciona la ruta principal de búsqueda con azar.
+- **Trabajo avanzado:** Deep CFR, métodos de creencia pública/tipo ReBeL, ideas de Student of
+  Games, búsqueda Gumbel, muestreo de acciones, inferencia por lotes y búsqueda paralela siguen
+  siendo opciones. Las dinámicas aprendidas tipo MuZero tienen baja prioridad mientras exista
+  simulación exacta en Rust; reconsiderarlas solo si faltan reglas o simularlas resulta demasiado
+  caro.
+
+## Extracción de estrategia e interpretabilidad
+
+Es un resultado transversal, no un efecto secundario de una tasa de victoria mayor. Conservar
+visitas raíz, estimaciones Q/valor, distribuciones sobre acciones legales, disponibilidad SO
+cuando proceda, fase/contexto, características de observación legítimas, versión del
+modelo/codificador y estabilidad entre semillas. Preguntar dónde hay grandes cambios de valor,
+qué acciones son robustas entre determinizaciones, qué patrones se relacionan con el valor,
+dónde una política se concentra o mezcla, qué fases cuestan búsqueda y dónde discrepan los
+agentes. Distinguir incertidumbre de preferencia fuerte; una red no se explica sola.
+
+Las trayectorias de valor y comparaciones condicionadas a acciones son útiles, pero
+`V(después) - V(antes)` no es automáticamente el valor estratégico de una acción: perspectiva,
+azar, información oculta y respuesta rival pueden cambiar su interpretación. Preferir
+comparaciones controladas en la raíz/contrafactuales y anotar sus supuestos. Los Probes describen
+decisiones, los datasets separados evalúan modelos y los estudios/torneos emparejados miden fuerza.
 
 ## Orden de implementación sugerido
 
-Las etapas no tienen que completarse como un único proyecto lineal. Un orden práctico sería:
+1. Usar la infraestructura existente Probe/Analyze/Study para diagnosticar decisiones SO de Lost
+   Cities en posiciones fijas, presupuestos y semillas; registrar tiempo medido.
+2. Usar el contrato escalar ya alojado en core; crear un codificador seguro de observación o
+   específico del estado y un pequeño modelo de valor aprendido.
+3. Integrar el valor en una búsqueda adecuada sin fuga de estado oculto; comparar señales
+   neutrales, manuales (donde existan) y aprendidas a igual tiempo y con semillas nuevas.
+4. Repetir Probes y dejar que la evidencia elija entre experimentos SO guiados por política o una
+   rama de conjuntos de información/creencias.
+5. Añadir una política aprendida sobre acciones legales; después, priors genéricos, PUCT y salida
+   de distribución de visitas raíz en un juego sencillo de información perfecta.
+6. Validar un bucle de self-play al estilo AlphaZero en ese juego adecuado; extenderlo luego a
+   juegos compatibles más complejos mediante adaptadores propiedad de los juegos.
+7. Construir un baseline compacto CFR/de equilibrio y comparar métodos de información oculta
+   cuando lo justifique la evidencia; abordar técnicas avanzadas solo ante límites concretos.
 
-1. Diagnósticos de búsqueda y comparaciones basadas en tiempo.
-2. Políticas modulares de rollout y árbol.
-3. Rollouts informados y progressive bias.
-4. Reutilización opcional del árbol y transposiciones para juegos de información perfecta.
-5. Nodos de azar explícitos y un juego de dados pequeño.
-6. Historiales de observaciones, determinización y Kuhn Poker.
-7. Information Set MCTS.
-8. PUCT con priors uniformes y escritos manualmente.
-9. Modelos tabulares o ligeros de política y valor.
-10. Un experimento de self-play al estilo AlphaZero.
-11. Búsqueda basada en teoría de juegos o dinámicas aprendidas únicamente cuando las requiera un
-    juego concreto.
+Los pasos son condicionales, no una jerarquía algorítmica obligatoria. Alpha-Beta y
+expectiminimax siguen como ramas opcionales de referencia.
 
 ## Resumen de prioridades
 
-| Dirección | Valor didáctico | Valor esperado | Complejidad | Prioridad cercana |
-| --- | --- | --- | --- | --- |
-| Diagnósticos de búsqueda | Alto | Alto | Baja | Muy alta |
-| Políticas de búsqueda modulares | Alto | Alto | Media | Muy alta |
-| Mejores políticas de rollout | Alto | Alto | Baja a media | Alta |
-| Reutilización del árbol | Medio | Medio a alto | Media | Media |
-| Tablas de transposición | Medio | Depende del juego | Media | Media |
-| Nodos de azar | Alto | Alto | Media | Alta |
-| Baseline por determinización | Alto | Medio | Media | Alta tras azar |
-| Information Set MCTS | Muy alto | Alto | Alta | Alta tras determinización |
-| PUCT y priors de acciones | Muy alto | Alto | Media | Media |
-| Función de valor aprendida | Muy alto | Potencialmente alto | Alta | Posterior |
-| Self-play al estilo AlphaZero | Muy alto | Depende del juego | Muy alta | Posterior |
-| Ideas de ReBeL o Student of Games | Muy alto | Especializado | Muy alta | Investigación |
-| Dinámicas al estilo MuZero | Alto | Bajo con simuladores exactos | Muy alta | Investigación |
+| Dirección | Estado | Prioridad cercana | Dependencia clave |
+| --- | --- | --- | --- |
+| Diagnóstico de comportamiento y extracción de estrategia | Siguiente / transversal | Muy alta | Probes existentes y posiciones reproducibles |
+| Codificación segura y valor aprendido | Siguiente | Muy alta | Entrada legítima, datos separados, evaluador neutral |
+| Política aprendida sobre acciones legales | Después del valor | Alta | Asociación de acciones y procedencia del modelo |
+| PUCT y widening guiado por política | Después de la política | Alta | Priors y política raíz sobre acciones legales |
+| Self-play tipo AlphaZero | Rama de juegos adecuados | Media/alta tras las bases | PUCT, datos versionados y puerta de evaluación |
+| CFR y métodos de información/creencias | Rama de investigación | Alta si persisten errores SO | Referencia compacta y medidas de teoría de juegos |
+| Alpha-Beta / expectiminimax | Referencia opcional | Opcional / didáctica | Semántica elegible del juego |
+| Búsqueda por lotes/paralela y métodos avanzados | Horizonte de investigación | Según evidencia | Cuello de botella medido |
+| Dinámicas tipo MuZero | Horizonte de investigación | Baja con simuladores exactos | Reglas exactas ausentes o costosas |
 
-## Checklist de evaluación para cada etapa
+## Checklist de evaluación
 
-Antes de aceptar una técnica de búsqueda nueva, responder:
-
-- ¿Conserva el juego legal y los límites de información del agente?
-- ¿Se puede reproducir el experimento a partir de su configuración y semilla?
-- ¿Mejora la fuerza con el mismo tiempo real?
-- ¿Cuánta memoria adicional necesita?
-- ¿Funciona de forma consistente en ambos asientos y contra distintos oponentes?
-- ¿Puede aislarse su contribución mediante una ablación o comparación con un baseline?
-- ¿Introduce conocimiento específico de un juego en un crate genérico?
-- ¿Existe un fallback seguro cuando el juego no ofrece la capacidad necesaria?
-- ¿Afecta a la configuración, trazas, bindings de Python o documentación de usuario?
+En cada experimento, preguntar si se respetan legalidad, orientación por actor y límites de
+información; si quedan registradas configuración, procedencia de código/modelo/codificador y
+datos; si se separan partidas de entrenamiento/validación/test y semillas de comparación; si se
+equilibran asientos y oponentes; si se informan calibración en datos separados, fuerza a igual
+tiempo y coste de inferencia; si baseline y ablación aíslan la señal nueva; y si las salidas
+permiten analizar estrategia con cuidado. Las iteraciones siguen sirviendo de diagnóstico, no
+de medida principal de equidad entre métodos de distinto coste.
 
 ## Recomendación actual
 
-El camino inmediato más útil consiste en instrumentar el MCTS existente, modularizar sus políticas
-y experimentar con rollouts informados. En paralelo, se pueden diseñar los contratos de juego para
-transiciones de azar explícitas sin debilitar el límite actual de información perfecta. Un juego
-estocástico pequeño seguido de Kuhn Poker proporcionaría una progresión controlada desde el azar
-hasta la información oculta.
-
-El MCTS guiado por políticas debe comenzar con priors manuales o tabulares antes de introducir
-redes neuronales. Así se expone la idea esencial de AlphaZero mientras los experimentos siguen
-siendo comprensibles. Las dinámicas aprendidas y los solucionadores avanzados de teoría de juegos
-deben permanecer como opciones a largo plazo, activadas por los requisitos de un juego concreto y
-no únicamente por esta hoja de ruta.
+Determinar primero si los errores estratégicos actuales, en especial los de Lost Cities
+SO-ISMCTS, se deben a presupuesto/eficiencia de muestreo insuficientes, evaluación estratégica
+débil o límites más profundos de conjuntos de información. Usar Probes de posiciones fijas con
+varios presupuestos y semillas. Después entrenar un modelo pequeño de valor con codificación
+legítima de observación/estado, integrarlo mediante el contrato escalar genérico y compararlo
+con los baselines actuales a igual tiempo. Si el valor mejor corrige los errores observados,
+avanzar hacia política aprendida y búsqueda guiada; si persisten, priorizar CFR o métodos de
+creencias antes de limitarse a ampliar la red o el presupuesto.

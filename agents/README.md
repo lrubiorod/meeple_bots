@@ -390,8 +390,8 @@ candidate agents at equal wall-clock time whenever possible. The
 The deterministic MCTS backend does not handle chance or hidden information.
 Public-chance MCTS and observation-only SO-ISMCTS are separate implementations.
 Parallel search and learned policies/values are not provided. Tree reuse and exact-state transpositions are optional for
-compatible perfect-information games. The possible development stages are recorded in the
-[MCTS roadmap](MCTS_ROADMAP.md) and its
+compatible perfect-information games. Future priorities are recorded in the
+[agent/search roadmap](MCTS_ROADMAP.md) and its
 [Spanish translation](MCTS_ROADMAP.es.md).
 
 ## Human
