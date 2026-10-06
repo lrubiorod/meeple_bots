@@ -80,8 +80,7 @@ Rust catalog, Python `LostCities`, CLI matches, batches and tournament JSONL are
 available. Trace replay validates both player actions and setup/draw Chance events.
 Authoritative positions, exact Chance distributions and saved match traces are
 engine/administrative data, **not player observations**; traces disclose private draws.
-Live match observers, PIMC/MO-ISMCTS/RIS-MCTS and heuristics
-are intentionally not implemented. A separate administrative
+Live match observers and PIMC/MO-ISMCTS/RIS-MCTS are intentionally not implemented. A separate administrative
 GUI supports human, random and SO-ISMCTS players (see below). `study` generates its
 normal HTML report, and `analyze` provides structural/search-cost output. Tournament
 artifacts include summaries and validated JSON traces, but no Lost Cities tournament
@@ -152,3 +151,35 @@ ordered player/chance events, including private cards. The GUI shows the saved p
 or a write error after completion; cancelled games are not saved. This session JSON
 is distinct from the validated tournament JSONL format. Use native matches or Python
 tournaments when that trace format is required.
+
+## Initial handcrafted values
+
+The game owns `LostCitiesEvaluator`, implementing
+`ObservationEvaluator<LostCitiesObservation>`; authoritative states and sampled
+worlds cannot be passed to it. The requested player must equal the observer.
+Neutral returns zero. V0 (index 0) returns `tanh(public_score_difference / tau)`.
+V1 (index 1) projects the best continuation using only the observer's current hand,
+then subtracts the opponent's **current public score** and applies the same scale.
+Terminal results remain authoritative in search. These are normalized heuristic
+utilities, not calibrated win probabilities.
+
+V1 enumerates known-card subsets per color in legal ascending order, with wagers
+before numbers, and uses the existing `expedition_score` for every continuation.
+It includes opening cost, wager multiplication and the unmultiplied eight-card
+bonus exactly once. An unopened expedition can remain empty. A small dynamic
+program shares one play-opportunity budget across all five colors; no extra bonuses
+or penalties are assigned to low cards, jumps, wagers or blocked cards.
+
+The budget assumes every future draw consumes the deck. In Play, the current player
+has `ceil(deck_size / 2)` remaining plays and the other has `floor(deck_size / 2)`.
+In Draw/DrawChance, the current play is already spent; after subtracting the pending
+deck draw, the next player has the ceiling and the current player the floor.
+The final draw's card cannot be played. Finished positions have no future plays.
+The computation caps its budget at the known hand size, at most eight.
+
+This projection is deliberately asymmetric: it invents no opponent hand and values
+no future acquisitions. It ignores discard access, unknown cards and beliefs.
+Discard draws can extend the true horizon, so the budget is a conservative reference,
+not an exact game horizon. Unsupported openings may be undervalued; the opponent's
+future development is also omitted. Strength must be measured against full-depth
+at equal wall-clock; behavioral probe preferences are not correctness labels.

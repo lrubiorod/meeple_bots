@@ -332,7 +332,7 @@ impl PyLostCitiesWorld {
 }
 
 /// Observation-only search/debug API. No authoritative position handle crosses this boundary.
-#[pyfunction(signature = (observation, legal_actions, iterations, exploration, seed, time_budget=None, selection_policy="uct", tree_reuse=false))]
+#[pyfunction(signature = (observation, legal_actions, iterations, exploration, seed, time_budget=None, selection_policy="uct", tree_reuse=false, rollout_depth=None, cutoff_evaluator="neutral", cutoff_heuristic=None, cutoff_params=None))]
 #[allow(clippy::too_many_arguments)] // Python API keeps existing positional parameters compatible.
 pub fn lost_cities_so_ismcts_search(
     py: Python<'_>,
@@ -344,6 +344,10 @@ pub fn lost_cities_so_ismcts_search(
     time_budget: Option<f64>,
     selection_policy: &str,
     tree_reuse: bool,
+    rollout_depth: Option<u32>,
+    cutoff_evaluator: &str,
+    cutoff_heuristic: Option<u32>,
+    cutoff_params: Option<std::collections::BTreeMap<String, f64>>,
 ) -> PyResult<Py<PyDict>> {
     use meeple_bots_so_ismcts::{SoIsmctsAgent, SoIsmctsConfig};
     let observation = parse_observation(observation)?;
@@ -356,20 +360,30 @@ pub fn lost_cities_so_ismcts_search(
             budget: super::parse_search_budget(iterations, time_budget)?,
             exploration,
             tree_reuse,
-            rollout_depth: None,
+            rollout_depth,
             selection_policy: super::parse_bandit_policy(selection_policy)?,
         },
     };
+    let config = meeple_bots_catalog::SoIsmctsAgentConfig {
+        search: search.config.clone(),
+        cutoff_evaluator: super::parse_evaluator(
+            cutoff_evaluator,
+            cutoff_heuristic,
+            cutoff_params,
+        )?,
+    };
+    let evaluator = config.lost_cities_evaluator().map_err(error)?;
     // The GUI worker must not hold Python's GIL while searching; polling/restarts
     // remain responsive. All inputs here are owned values, without position handles.
     let result = py
         .detach(|| {
-            search.search(
+            search.search_with_evaluator(
                 &LostCities,
                 &observation,
                 observation.observer,
                 &legal,
                 &mut SplitMix64::new(seed),
+                &evaluator,
             )
         })
         .map_err(error)?;
@@ -392,6 +406,14 @@ pub fn lost_cities_so_ismcts_search(
         result.diagnostics.terminal_simulations,
     )?;
     d.set_item("cutoff_simulations", result.diagnostics.cutoff_simulations)?;
+    d.set_item(
+        "heuristic_evaluations",
+        result.diagnostics.heuristic_evaluations,
+    )?;
+    d.set_item(
+        "safety_cutoff_simulations",
+        result.diagnostics.safety_cutoff_simulations,
+    )?;
     out.set_item("diagnostics", d)?;
     let mut nodes = Vec::new();
     for node in result.nodes {

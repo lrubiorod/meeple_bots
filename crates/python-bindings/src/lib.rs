@@ -81,7 +81,7 @@ impl PyAgentConfig {
             .validate()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
-            inner: PythonAgentConfig::Automated(Box::new(AgentConfig::SoIsmcts(config))),
+            inner: PythonAgentConfig::Automated(Box::new(AgentConfig::SoIsmcts(config.into()))),
         })
     }
     #[staticmethod]

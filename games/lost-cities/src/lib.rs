@@ -1,5 +1,8 @@
 //! Lost Cities single-round experimental variant: five colors, 60 cards, two players.
 //! State is authoritative. Only Observation is suitable as input to a hidden-information policy.
+mod evaluation;
+pub use evaluation::{LostCitiesEvaluator, remaining_play_opportunities};
+
 use meeple_bots_core::{
     Game, IllegalAction, ImperfectInformationGame, PlayerId, PositionStatus, RandomSource,
     TwoPlayerZeroSumGame,

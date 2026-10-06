@@ -7,13 +7,16 @@ use meeple_bots_so_ismcts::{SearchResult, SoIsmctsConfig};
 use std::num::NonZeroU32;
 
 fn config(iterations: u32, tree_reuse: bool, selection_policy: BanditPolicy) -> AgentConfig {
-    AgentConfig::SoIsmcts(SoIsmctsConfig {
-        budget: SearchBudget::Iterations(NonZeroU32::new(iterations).unwrap()),
-        exploration: 1.,
-        tree_reuse,
-        rollout_depth: None,
-        selection_policy,
-    })
+    AgentConfig::SoIsmcts(
+        SoIsmctsConfig {
+            budget: SearchBudget::Iterations(NonZeroU32::new(iterations).unwrap()),
+            exploration: 1.,
+            tree_reuse,
+            rollout_depth: None,
+            selection_policy,
+        }
+        .into(),
+    )
 }
 
 fn midgame(owner: PlayerId, turns: usize) -> LostCitiesState {
@@ -86,7 +89,7 @@ fn assert_fresh_invariance(a: &LostCitiesState, b: &LostCitiesState, owner: Play
                 unreachable!()
             };
             let search = SoIsmctsAgent {
-                config: config.clone(),
+                config: config.search.clone(),
             };
             let run = |state: &LostCitiesState| {
                 search
@@ -327,6 +330,47 @@ fn real_draws_are_identical_without_search_and_with_small_or_larger_search() {
             );
             assert_eq!(control.chance_events, searched.chance_events);
             assert_eq!(control.lost_cities_state, searched.lost_cities_state);
+        }
+    }
+}
+
+#[test]
+fn cutoff_participants_are_invariant_with_all_evaluators_and_reuse_modes() {
+    for owner in [PlayerId::FIRST, PlayerId::SECOND] {
+        let a = midgame(owner, 4);
+        let b = different_hidden_hand(&a, owner);
+        same_information(&a, &b, owner);
+        for reuse in [false, true] {
+            for index in [None, Some(0), Some(1)] {
+                let AgentConfig::SoIsmcts(mut cfg) = config(16, reuse, BanditPolicy::Uct) else {
+                    unreachable!()
+                };
+                cfg.search.rollout_depth = Some(0);
+                cfg.cutoff_evaluator = index.map_or(
+                    crate::EvaluatorConfig::Neutral,
+                    crate::EvaluatorConfig::game_heuristic,
+                );
+                let mut left =
+                    LostCitiesParticipant::new(AgentConfig::SoIsmcts(cfg.clone())).unwrap();
+                let mut right = LostCitiesParticipant::new(AgentConfig::SoIsmcts(cfg)).unwrap();
+                left.on_match_start(&LostCities, &a, owner);
+                right.on_match_start(&LostCities, &b, owner);
+                assert_eq!(
+                    left.select_action(
+                        DecisionContext::new(&LostCities, &a, owner),
+                        &mut SplitMix64::new(7)
+                    )
+                    .unwrap(),
+                    right
+                        .select_action(
+                            DecisionContext::new(&LostCities, &b, owner),
+                            &mut SplitMix64::new(7)
+                        )
+                        .unwrap()
+                );
+                assert_eq!(left.last_decision_stats(), right.last_decision_stats());
+                assert_eq!(left.last_decision_stats().cutoff_simulations, Some(16));
+            }
         }
     }
 }

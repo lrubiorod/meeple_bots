@@ -8,9 +8,9 @@ mod configuration;
 pub use configuration::{
     AgentConfig, BoopMctsAgent, ConfiguredRolloutPolicy, ConfiguredSelectionBias,
     Connect6MctsAgent, ConnectFourMctsAgent, EvaluatorConfig, MctsAgentConfig,
-    RolloutConditionConfig, SpiritsOfTheForestMctsAgent, TicTacToeMctsAgent, configured_boop_mcts,
-    configured_connect_four_mcts, configured_connect6_mcts, configured_spirits_of_the_forest_mcts,
-    configured_tic_tac_toe_mcts,
+    RolloutConditionConfig, SoIsmctsAgentConfig, SpiritsOfTheForestMctsAgent, TicTacToeMctsAgent,
+    configured_boop_mcts, configured_connect_four_mcts, configured_connect6_mcts,
+    configured_spirits_of_the_forest_mcts, configured_tic_tac_toe_mcts,
 };
 
 mod participant;

@@ -3,13 +3,50 @@
 #[path = "lost_cities_no_leakage_tests.rs"]
 mod no_leakage_tests;
 
-use crate::{AgentConfig, CatalogAction, CatalogError, CatalogMatchReport, RecordedMove};
+use crate::{
+    AgentConfig, CatalogAction, CatalogError, CatalogMatchReport, EvaluatorConfig, RecordedMove,
+    SoIsmctsAgentConfig,
+};
 use meeple_bots_core::{Game, PlayerId, PositionStatus};
 use meeple_bots_lost_cities::{
     LostCities, LostCitiesAction, LostCitiesObservation, LostCitiesState,
 };
 use meeple_bots_random_agent::RandomAgent;
 use meeple_bots_simulation::{MatchConfig, TracedChance, TracedMatchResult, play_match_with_trace};
+impl SoIsmctsAgentConfig {
+    pub fn lost_cities_evaluator(
+        &self,
+    ) -> Result<meeple_bots_lost_cities::LostCitiesEvaluator, AgentError> {
+        use meeple_bots_lost_cities::LostCitiesEvaluator;
+        self.search.validate()?;
+        let evaluator = match &self.cutoff_evaluator {
+            EvaluatorConfig::Neutral => LostCitiesEvaluator::Neutral,
+            EvaluatorConfig::GameHeuristic { index, parameters } => {
+                if self.search.rollout_depth.is_none() {
+                    return Err(AgentError::message("game heuristic requires rollout_depth"));
+                }
+                if parameters.keys().any(|name| name != "tau") {
+                    return Err(AgentError::message(
+                        "Lost Cities evaluators accept only tau",
+                    ));
+                }
+                let tau = parameters.get("tau").copied().unwrap_or(40.0);
+                match index {
+                    0 => LostCitiesEvaluator::PublicScore { tau },
+                    1 => LostCitiesEvaluator::KnownContinuation { tau },
+                    _ => {
+                        return Err(AgentError::message(
+                            "Lost Cities heuristic index must be 0 or 1",
+                        ));
+                    }
+                }
+            }
+        };
+        evaluator.validate()?;
+        Ok(evaluator)
+    }
+}
+
 pub const SEARCH_UNAVAILABLE: &str = "Lost Cities has imperfect information: standard MCTS is not compatible; use SO-ISMCTS or RandomAgent";
 /// Perfect-information searches cannot implement Agent<LostCities>.
 /// ```compile_fail
@@ -186,19 +223,29 @@ use std::time::Instant;
 /// Private chance events and authoritative states never cross the search boundary.
 pub struct LostCitiesParticipant {
     search: Option<SoIsmctsAgent>,
+    evaluator: meeple_bots_lost_cities::LostCitiesEvaluator,
     stats: AgentDecisionStats,
-    reuse: Option<ReusableSoIsmcts<LostCities, LostCitiesObservation>>,
+    reuse: Option<
+        ReusableSoIsmcts<
+            LostCities,
+            LostCitiesObservation,
+            meeple_bots_lost_cities::LostCitiesEvaluator,
+        >,
+    >,
     pending_draw: Option<(PlayerId, LostCitiesAction)>,
 }
 impl LostCitiesParticipant {
     pub fn new(config: AgentConfig) -> Result<Self, CatalogError> {
+        let mut evaluator = meeple_bots_lost_cities::LostCitiesEvaluator::Neutral;
         let search = match config {
             AgentConfig::Random => None,
             AgentConfig::SoIsmcts(config) => {
-                config.validate().map_err(|_| {
-                    CatalogError::InvalidMctsConfig("invalid SO-ISMCTS exploration")
+                evaluator = config.lost_cities_evaluator().map_err(|_| {
+                    CatalogError::InvalidMctsConfig("invalid SO-ISMCTS cutoff/evaluator")
                 })?;
-                Some(SoIsmctsAgent { config })
+                Some(SoIsmctsAgent {
+                    config: config.search,
+                })
             }
             AgentConfig::Mcts(_) => {
                 return Err(CatalogError::InvalidMctsConfig(SEARCH_UNAVAILABLE));
@@ -207,9 +254,10 @@ impl LostCitiesParticipant {
         let reuse = search
             .as_ref()
             .filter(|s| s.config.tree_reuse)
-            .map(|s| ReusableSoIsmcts::new(s.config.clone()));
+            .map(|s| ReusableSoIsmcts::with_evaluator(s.config.clone(), evaluator));
         Ok(Self {
             search,
+            evaluator,
             reuse,
             pending_draw: None,
             stats: AgentDecisionStats::default(),
@@ -220,6 +268,7 @@ impl Clone for LostCitiesParticipant {
     fn clone(&self) -> Self {
         Self {
             search: self.search.clone(),
+            evaluator: self.evaluator,
             reuse: self.reuse.clone(),
             pending_draw: None,
             stats: AgentDecisionStats::default(),
@@ -244,7 +293,14 @@ impl Agent<LostCities> for LostCitiesParticipant {
                 let r = reuse.search(&LostCities, &observation, observer, &legal, rng)?;
                 (&r.search, Some(r.reuse), r.new_nodes)
             } else {
-                fresh = search.search(&LostCities, &observation, observer, &legal, rng)?;
+                fresh = search.search_with_evaluator(
+                    &LostCities,
+                    &observation,
+                    observer,
+                    &legal,
+                    rng,
+                    &self.evaluator,
+                )?;
                 let count = fresh.diagnostics.tree_nodes as u64;
                 (&fresh, None, count)
             };
@@ -376,13 +432,16 @@ mod so_ismcts_tests {
     use std::num::NonZeroU32;
 
     fn config() -> AgentConfig {
-        AgentConfig::SoIsmcts(SoIsmctsConfig {
-            selection_policy: meeple_bots_core::BanditPolicy::Uct,
-            tree_reuse: false,
-            rollout_depth: None,
-            budget: meeple_bots_core::SearchBudget::Iterations(NonZeroU32::new(2).unwrap()),
-            exploration: 1.0,
-        })
+        AgentConfig::SoIsmcts(
+            SoIsmctsConfig {
+                selection_policy: meeple_bots_core::BanditPolicy::Uct,
+                tree_reuse: false,
+                rollout_depth: None,
+                budget: meeple_bots_core::SearchBudget::Iterations(NonZeroU32::new(2).unwrap()),
+                exploration: 1.0,
+            }
+            .into(),
+        )
     }
     #[test]
     fn seeded_so_random_and_so_so_matches_replay() {

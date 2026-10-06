@@ -21,9 +21,24 @@ use meeple_bots_tic_tac_toe::TicTacToe;
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentConfig {
-    SoIsmcts(meeple_bots_so_ismcts::SoIsmctsConfig),
+    SoIsmcts(SoIsmctsAgentConfig),
     Random,
     Mcts(MctsAgentConfig),
+}
+
+/// Catalog composition: generic SO search plus an observation-safe game evaluator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoIsmctsAgentConfig {
+    pub search: meeple_bots_so_ismcts::SoIsmctsConfig,
+    pub cutoff_evaluator: EvaluatorConfig,
+}
+impl From<meeple_bots_so_ismcts::SoIsmctsConfig> for SoIsmctsAgentConfig {
+    fn from(search: meeple_bots_so_ismcts::SoIsmctsConfig) -> Self {
+        Self {
+            search,
+            cutoff_evaluator: EvaluatorConfig::Neutral,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
