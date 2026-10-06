@@ -8,7 +8,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..matches.models import RootActionDiagnostic, TreeReuseDiagnostic
+from ..matches.models import MatchTermination, RootActionDiagnostic, TreeReuseDiagnostic
 
 _COMMON_OUTPUT_FILES = {
     "agents": "agents.csv",
@@ -95,6 +95,7 @@ _MATCH_FIELDS = (
     "winner_player",
     "winner_agent",
     "plies",
+    "termination",
     "utility_0",
     "utility_1",
 )
@@ -145,6 +146,10 @@ class _MatchContext:
     plies: int
     raw_moves: list[object]
     raw_result: dict[str, object]
+
+    @property
+    def termination(self) -> MatchTermination:
+        return MatchTermination.from_result(self.raw_result)
 
 class _CsvWriter:
     def __init__(self, writer: csv.DictWriter, *, with_provenance: bool = False) -> None:
@@ -400,7 +405,7 @@ def _validate_header(header: object) -> str:
     if header.get("schema_version") != 1:
         raise ValueError("extract supports tournament schema_version 1")
     game = header.get("game")
-    if game not in {"boop", "connect-four", "spotf", "tic-tac-toe", "splendor", "connect6"}:
+    if game not in {"boop", "connect-four", "spotf", "tic-tac-toe", "splendor", "connect6", "lost_cities"}:
         raise ValueError(f"unknown tournament game: {game}")
     return game
 

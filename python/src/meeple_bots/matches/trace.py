@@ -7,6 +7,7 @@ from dataclasses import asdict
 from ..connect6 import Connect6, Connect6Action
 from ..game_config import game_parameters
 from ..splendor import Splendor, SplendorAction
+from ..lost_cities import validate_trace_result as _validate_lost_cities_result
 from ..lost_cities import LostCities, LostCitiesAction
 
 from .._agent_config import (
@@ -19,13 +20,15 @@ from ..game_types import (
     GameAction, MoveSpiritGemstone, PlaceSpiritGemstone, SkipSpiritGemstone,
     TakeSpiritTile, TicTacToeAction,
 )
-from .models import MatchResult
+from .models import MatchResult, MatchTermination
 
 
 def match_result_dict(result: MatchResult) -> dict[str, object]:
     """Serialize one match result using the version-1 trace representation."""
 
     payload = {
+        "termination": result.termination.value,
+        **({"ply_limit_reached": True} if result.ply_limit_reached else {}),
         "unassigned_maintenance_seconds": list(result.unassigned_maintenance_seconds),
         "seed": result.seed,
         "plies": result.plies,
@@ -411,12 +414,15 @@ def _validate_splendor_result(result: dict) -> None:
         events = tuple(ChanceEvent(integer(e['after_ply'], 'chance after_ply', 1), SplendorChanceOutcome(integer(e['outcome']['card'], 'refill card', 0, 89))) for e in result['chance_events'])
         if any(e['outcome'].get('kind') != 'refill' or e['outcome'].get('type') != 'splendor' for e in result['chance_events']):
             raise ValueError("invalid Splendor chance outcome")
-        state = replay_splendor(seed, parsed_moves, events)
+        adjudicated = MatchTermination.from_result(result) is MatchTermination.PLY_LIMIT
+        state = replay_splendor(seed, parsed_moves, events, allow_partial=True)
         if state != SplendorState.from_dict(result['splendor_state']):
             raise ValueError("Splendor replay final state differs")
         if result.get('scores') != [player.prestige for player in state.players]:
             raise ValueError("Splendor replay scores differ")
-        actual_utilities = state._native_position().utilities()
+        MatchTermination.from_result(result).validate_endpoint(
+            terminal=state.status == 'terminal', resolved=state.status == 'player_turn')
+        actual_utilities = [0.0, 0.0] if adjudicated else state._native_position().utilities()
         winner = next((i for i, value in enumerate(actual_utilities) if value > 0), None)
         if result.get('winner') != winner:
             raise ValueError("Splendor replay winner differs")
@@ -428,8 +434,34 @@ def _validate_splendor_result(result: dict) -> None:
         raise ValueError("invalid Splendor trace") from error
 
 
+def _validate_deterministic_result(result: dict, game) -> None:
+    from .models import Move
+    from ..native_bridge import _action_from_native, _analyze_trace
+    reason = MatchTermination.from_result(result)
+    try:
+        moves = tuple(Move(m['player'], _action_from_native(m['action'])) for m in result['moves'])
+        analysis = _analyze_trace(game, moves, seed=result['seed'], termination=reason.value)
+        winner = analysis['winner']
+        utilities = [0.0, 0.0] if winner is None else [1.0 if i == winner else -1.0 for i in range(2)]
+        if analysis.get('utilities', utilities) != result['utilities'] or winner != result['winner']:
+            raise ValueError('replay outcome differs from result')
+        if isinstance(game, SpiritsOfTheForest) and list(analysis['final_scores']) != result['scores']:
+            raise ValueError('replay scores differ from result')
+    except (KeyError, TypeError, OverflowError) as error:
+        raise ValueError('invalid deterministic trace') from error
+
+
+def _validate_limit_policy(result: dict, header: dict) -> None:
+    reason = MatchTermination.from_result(result)
+    if reason is MatchTermination.PLY_LIMIT:
+        if header.get('draw_on_ply_limit') is not True or result['plies'] != header['max_plies']:
+            raise ValueError('Ply-limit draw differs from the configured limit policy')
+        if result['winner'] is not None or result['utilities'] != [0, 0]:
+            raise ValueError('Ply-limit result must be a draw')
+
+
 def _validate_completed_record(record: dict, header: dict) -> None:
-    """Validate persisted job identity and required result data without running games."""
+    """Validate job identity, replay legality and the declared completion policy."""
     def integer(value, label, minimum=0, maximum=2**64 - 1):
         if type(value) is not int or not minimum <= value <= maximum:
             raise ValueError(f"Invalid {label}")
@@ -471,6 +503,8 @@ def _validate_completed_record(record: dict, header: dict) -> None:
     if integer(result.get("seed"), "result seed") != seed:
         raise ValueError("Recorded seed differs from the pairing plan")
     plies = integer(result.get("plies"), "plies", 1, header["max_plies"])
+    adjudicated = MatchTermination.from_result(result) is MatchTermination.PLY_LIMIT
+    _validate_limit_policy(result, header)
     moves = result.get("moves")
     if not isinstance(moves, list) or len(moves) != plies:
         raise ValueError("Move count differs from result plies")
@@ -492,26 +526,17 @@ def _validate_completed_record(record: dict, header: dict) -> None:
     utility_winner = None if utilities[0] == 0 else 0 if utilities[0] > 0 else 1
     if utilities[0] != -utilities[1] or utility_winner != winner:
         raise ValueError("Utilities differ from winner")
+    if adjudicated and (winner is not None or utilities != [0, 0]):
+        raise ValueError("Ply-limit result must be a draw")
     number(record.get("duration_seconds"), "duration_seconds")
     if header["game"] == "connect6":
         _validate_connect6_result(result, header.get("game_params"))
     if header["game"] == "lost_cities":
-        from .. import _native
-        from ..lost_cities import LostCitiesState
-        try:
-            position = _native.LostCitiesPosition.replay(result['moves'], result['chance_events'])
-            state = LostCitiesState.from_dict(position.snapshot())
-            if state != LostCitiesState.from_dict(result['lost_cities_state']):
-                raise ValueError('Lost Cities final state differs from replay')
-            if tuple(result['scores']) != state.scores:
-                raise ValueError('Lost Cities scores differ from replay')
-            expected = None if state.scores[0] == state.scores[1] else int(state.scores[1] > state.scores[0])
-            if result['winner'] != expected:
-                raise ValueError('Lost Cities winner differs from replay')
-        except (KeyError, TypeError, ValueError) as error:
-            raise ValueError('invalid Lost Cities trace') from error
-    if header["game"] == "splendor":
+        _validate_lost_cities_result(result)
+    elif header["game"] == "splendor":
         _validate_splendor_result(result)
+    else:
+        _validate_deterministic_result(result, create_game(header["game"], header.get("game_params")))
     action_type = {
         "tic-tac-toe": "tic_tac_toe", "connect-four": "connect_four",
         "boop": "boop", "spotf": "spotf", "splendor": "splendor", "connect6": "connect6", "lost_cities": "lost_cities",
@@ -658,7 +683,9 @@ def _validate_connect6_result(result, parameters):
         if state.current_player != move['player'] or move['action'].get('type') != 'connect6':
             raise ValueError('Connect6 trace has invalid player or action type')
         state = state.apply_action(Connect6Action(move['action']['position']))
-    if not state.terminal or state.winner != result['winner']:
+    adjudicated = MatchTermination.from_result(result) is MatchTermination.PLY_LIMIT
+    MatchTermination.from_result(result).validate_endpoint(terminal=state.terminal)
+    if not adjudicated and state.winner != result['winner']:
         raise ValueError('Connect6 replay result differs from trace')
     if 'final_board' in result and [list(row) for row in state.board] != result['final_board']:
         raise ValueError('Connect6 replay board differs from trace')

@@ -137,7 +137,7 @@ class Splendor:
         return SplendorState.from_dict(position.snapshot(), position)
 
 
-def replay_splendor(seed, moves, chance_events):
+def replay_splendor(seed, moves, chance_events, *, allow_partial=False):
     """Replay recorded events, never resample; reject missing or extra outcomes."""
     game = Splendor()
     state = game.initial_state(seed)
@@ -150,7 +150,7 @@ def replay_splendor(seed, moves, chance_events):
         while event is not None and event.after_ply == ply:
             state = game.apply_chance_outcome(state, event.outcome)
             event = next(events, None)
-    if event is not None or state.status != "terminal":
+    if event is not None or (not allow_partial and state.status != "terminal"):
         raise ValueError("incomplete Splendor replay or extra chance events")
     return state
 

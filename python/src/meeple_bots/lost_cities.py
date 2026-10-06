@@ -171,3 +171,23 @@ class LostCitiesSimulationWorld:
 
     def validate(self):
         self._world.validate()
+
+
+def validate_trace_result(result: dict) -> None:
+    from .matches.models import MatchTermination
+    try:
+        position = _native.LostCitiesPosition.replay(
+            result['moves'], result['chance_events'], allow_partial=True)
+        state = LostCitiesState.from_dict(position.snapshot())
+        reason = MatchTermination.from_result(result)
+        reason.validate_endpoint(terminal=state.status == 'terminal', resolved=state.status == 'player')
+        if state != LostCitiesState.from_dict(result['lost_cities_state']):
+            raise ValueError('Lost Cities final state differs from replay')
+        if tuple(result['scores']) != state.scores:
+            raise ValueError('Lost Cities scores differ from replay')
+        utilities = [0.0, 0.0] if reason is MatchTermination.PLY_LIMIT else position.utilities()
+        winner = next((i for i, value in enumerate(utilities) if value > 0), None)
+        if result['utilities'] != utilities or result['winner'] != winner:
+            raise ValueError('Lost Cities replay outcome differs')
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError('invalid Lost Cities trace') from error

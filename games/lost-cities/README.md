@@ -17,6 +17,10 @@ replacement from a canonical multiset, using its existing environment RNG, indep
 of agent RNGs. Drawing the last card immediately ends the round. Discard draws do not
 consume the deck, so `maximum_decision_horizon()` is `None`. Generic match safety limits
 are execution safeguards, not rules and not scored terminal positions.
+For tournaments, `draw_on_ply_limit = true` optionally adjudicates a nonterminal position
+as a draw at `max_plies`. The trace marks `ply_limit_reached` and retains its nonterminal
+state and scores; the default still raises an error. This does not change search utilities
+or the rules of a round.
 
 An empty expedition scores zero. Otherwise its score is
 `(sum(numbers) - 20) * (1 + wagers)`, plus **20 after multiplication** when at least
@@ -83,10 +87,10 @@ engine/administrative data, **not player observations**; traces disclose private
 Live match observers and PIMC/MO-ISMCTS/RIS-MCTS are intentionally not implemented. A separate administrative
 GUI supports human, random and SO-ISMCTS players (see below). `study` generates its
 normal HTML report, and `analyze` provides structural/search-cost output. Tournament
-artifacts include summaries and validated JSON traces, but no Lost Cities tournament
-HTML report or extraction analysis is provided. Python `Batch` and `TournamentAgent`
-accept SO-ISMCTS; batch profile loading and tournament TOML entries also accept
-observation-safe cutoff evaluator parameters.
+artifacts include summaries and validated JSON traces. Extraction provides generic match,
+move and chance-event tables; no Lost Cities tournament HTML report is provided.
+Python `Batch`, `TournamentAgent`, batch profile loading and tournament TOML entries
+accept SO-ISMCTS, including observation-safe cutoff evaluator parameters.
 
 ```bash
 .venv/bin/python -m meeple_bots match --game lost_cities \

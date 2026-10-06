@@ -71,6 +71,7 @@ pub struct CategoryScoreAnalysis {
 pub struct SpiritsReplayAnalysis {
     pub turns: Vec<SpiritsTurnAnalysis>,
     pub winner: Option<PlayerId>,
+    pub final_status: PositionStatus,
     pub final_scores: [i16; 2],
     pub categories: Vec<CategoryScoreAnalysis>,
 }
@@ -119,6 +120,18 @@ impl fmt::Display for SpiritsReplayError {
 impl Error for SpiritsReplayError {}
 
 pub fn analyze_replay(
+    game: &SpiritsOfTheForest,
+    recorded_actions: &[(PlayerId, SpiritsOfTheForestAction)],
+) -> Result<SpiritsReplayAnalysis, SpiritsReplayError> {
+    let analysis = analyze_replay_prefix(game, recorded_actions)?;
+    if analysis.final_status != PositionStatus::Terminal {
+        return Err(SpiritsReplayError::NonTerminalTrace);
+    }
+    Ok(analysis)
+}
+
+/// Analyze a legal prefix without imposing a match completion policy.
+pub fn analyze_replay_prefix(
     game: &SpiritsOfTheForest,
     recorded_actions: &[(PlayerId, SpiritsOfTheForestAction)],
 ) -> Result<SpiritsReplayAnalysis, SpiritsReplayError> {
@@ -184,13 +197,14 @@ pub fn analyze_replay(
         state = next_state;
     }
 
-    if !matches!(game.status(&state), PositionStatus::Terminal) {
-        return Err(SpiritsReplayError::NonTerminalTrace);
-    }
-
     Ok(SpiritsReplayAnalysis {
         final_scores: game.scores(&state),
-        winner: game.winner(&state),
+        winner: if game.status(&state) == PositionStatus::Terminal {
+            game.winner(&state)
+        } else {
+            None
+        },
+        final_status: game.status(&state),
         categories: category_scores(&state),
         turns,
     })

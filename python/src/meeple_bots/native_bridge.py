@@ -44,7 +44,7 @@ def _native_game(game: Game) -> str:
         return "spotf"
     return "boop"
 
-def _analyze_trace(game: Game, moves: tuple[Move, ...], *, seed: int = 0):
+def _analyze_trace(game: Game, moves: tuple[Move, ...], *, seed: int = 0, termination: str = "game_terminal"):
     """Dispatch a completed trace to the selected game's native analyzer."""
 
     native_moves = []
@@ -126,7 +126,7 @@ def _analyze_trace(game: Game, moves: tuple[Move, ...], *, seed: int = 0):
             if not isinstance(move.action, TicTacToeAction):
                 raise TypeError("tic-tac-toe trace contains a non-tic-tac-toe action")
             native_moves.append((move.player, (move.action.row, move.action.column)))
-    return _native.analyze_trace(_native_game(game), native_moves, seed, game_params=game_parameters(game))
+    return _native.analyze_trace(_native_game(game), native_moves, seed, game_params=game_parameters(game), termination=termination)
 
 
 def _action_from_native(raw: dict[str, object]) -> GameAction:
@@ -278,7 +278,8 @@ def _boop_action_from_selector(raw) -> BoopAction:
 def _boop_resolution_from_native(raw) -> BoopResolution:
     if raw["type"] == "graduate":
         return BoopGraduateLine(
-            tuple(BoopPosition(row, column) for row, column in raw["positions"])
+            tuple(BoopPosition(p["row"], p["column"]) if isinstance(p, dict) else BoopPosition(*p)
+                  for p in raw["positions"])
         )
     if raw["type"] == "recover":
         return BoopRecoverPiece(BoopPosition(raw["row"], raw["column"]))

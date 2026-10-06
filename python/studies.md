@@ -73,6 +73,21 @@ only duplicate the same match. `self_play = true` adds that same-configuration p
 including its games in competitive standings. Different names may intentionally use identical
 parameters.
 
+`max_plies` counts player decisions, including separate play/draw decisions in Lost Cities.
+By default, reaching the limit in a nonterminal position raises an execution error. Set
+`draw_on_ply_limit = true` to adjudicate that position as a draw instead. A terminal result
+on the last allowed decision takes priority, including its pending chance transition.
+Each result records `termination = "game_terminal"` or `termination = "ply_limit"`.
+Adjudicated results have zero utilities, no winner and the compatibility flag
+`ply_limit_reached = true`; their recorded state remains nonterminal.
+Replay, extraction and resume validate legal transitions first, then require a terminal
+endpoint for `game_terminal` or a resolved nonterminal endpoint for `ply_limit`.
+Real terminal completion takes priority, including after pending chance outcomes.
+Readers accept older traces without `termination`, using the legacy flag (absent means
+`game_terminal`), and reject conflicting reason metadata. The tournament summary counts these
+separately as `ply_limit_draws`. Scores in such traces describe the unfinished position,
+not a scored end of the game. Chance-loop safeguards and other errors remain errors.
+
 For ordered parameter sweeps, `pairing_mode = "adjacent"` reduces only the internal pairings of
 each `[[agents]]` grid. Two variants from the same entry are paired when they differ in exactly one
 array dimension and use consecutive positions in that array. Variants from different entries still
@@ -342,7 +357,7 @@ Extraction is available for every supported game. It starts with five generic st
 - `studies.csv`: one row per source trace, including whether it came from a batch or tournament;
 - `agents.csv`: one row per configured agent, with the full recorded configuration in
   `config_json` alongside the usual analysis columns;
-- `matches.csv`: game-independent outcomes, seats, durations, and utilities.
+- `matches.csv`: game-independent outcomes, seats, durations, utilities and `termination`.
 - `moves.csv`: one row per ply with its player, agent, outcome, action JSON, decision time,
   search iterations/nodes, root diagnostics, and tree-reuse metrics.
 
@@ -387,7 +402,11 @@ SPOTF additionally produces:
 - `categories.csv`: final counts, count gaps, scoring contribution, absence penalties, and lost
   majorities for all 12 categories and both players.
 
-Splendor extraction emits the common tables plus `chance_events.csv`: `match_number`,
+Analysis schema 10 records match termination and avoids labeling administrative endpoints
+as terminal moves. SPOTF player-turn rows include `turn_completed_after`; a final unfinished
+turn remains extractable and has gemstone action `unfinished` when none was made.
+
+Splendor and Lost Cities extraction emit the common tables plus `chance_events.csv`: `match_number`,
 source provenance, `event_index`, `after_ply`, and `outcome_json`. Refills remain separate
 from player moves and timing statistics. The extractor shares native replay validation
 with tournament resume and rejects inconsistent outcomes, scores and final states.

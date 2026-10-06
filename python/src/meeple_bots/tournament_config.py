@@ -70,6 +70,7 @@ def tournament_config_from_values(values: dict[str, object], path: Path) -> _Tou
         "matches_per_pair",
         "seed",
         "max_plies",
+        "draw_on_ply_limit",
         "workers",
         "agents",
     }
@@ -109,6 +110,9 @@ def tournament_config_from_values(values: dict[str, object], path: Path) -> _Tou
     max_plies = _positive_tournament_integer(
         "max_plies", values.get("max_plies", 10_000)
     )
+    draw_on_ply_limit = values.get("draw_on_ply_limit", False)
+    if type(draw_on_ply_limit) is not bool:
+        raise TypeError("tournament draw_on_ply_limit must be a boolean")
     workers = resolve_workers(values.get("workers", "auto"))
     seed = values.get("seed", 0)
     if isinstance(seed, bool) or not isinstance(seed, int):
@@ -139,6 +143,7 @@ def tournament_config_from_values(values: dict[str, object], path: Path) -> _Tou
         matches_per_pair=matches_per_pair,
         seed=seed,
         max_plies=max_plies,
+        draw_on_ply_limit=draw_on_ply_limit,
         workers=workers,
         agents=agents,
     )

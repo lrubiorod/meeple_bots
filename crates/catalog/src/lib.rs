@@ -20,7 +20,8 @@ use std::{error::Error, fmt, num::NonZeroU32};
 
 use meeple_bots_boop::{
     Boop, BoopAction, BoopReplayAnalysis, GraduateLine, PieceKind as BoopPieceKind,
-    Position as BoopPosition, Resolution as BoopResolution, analyze_replay as analyze_boop_replay,
+    Position as BoopPosition, Resolution as BoopResolution,
+    analyze_replay_prefix as analyze_boop_replay,
 };
 use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_connect6::{Connect6, Connect6Action};
@@ -43,10 +44,11 @@ use meeple_bots_simulation::{
     BatchConfig, MatchError, MatchObserver, SplitMix64, TracedMatchResult, play_batch, play_match,
     play_match_with_trace as play_typed_match_with_trace, play_match_with_trace_and_observer,
 };
-pub use meeple_bots_simulation::{MatchConfig, MatchResult};
+pub use meeple_bots_simulation::{MatchConfig, MatchResult, MatchTermination};
 use meeple_bots_spirits_of_the_forest::{
     ForestPosition, GemstoneSacrifice, PowerSource, Spirit, SpiritsOfTheForest,
-    SpiritsOfTheForestAction, SpiritsReplayAnalysis, analyze_replay as analyze_spirits_replay,
+    SpiritsOfTheForestAction, SpiritsReplayAnalysis,
+    analyze_replay_prefix as analyze_spirits_replay,
 };
 use meeple_bots_tic_tac_toe::{TicTacToe, TicTacToeAction};
 
@@ -325,6 +327,7 @@ pub struct CatalogMatchReport {
     pub splendor_state: Option<meeple_bots_splendor::SplendorState>,
     pub seed: u64,
     pub plies: u32,
+    pub termination: MatchTermination,
     pub utilities: Vec<f32>,
     pub winner: Option<usize>,
     pub moves: Vec<RecordedMove>,
@@ -335,6 +338,12 @@ pub struct CatalogMatchReport {
     pub spirit_collections: Option<[CatalogSpiritCollection; 2]>,
     pub gemstone_pools: Option<[CatalogGemstonePool; 2]>,
     pub scores: Option<[i16; 2]>,
+}
+
+impl CatalogMatchReport {
+    pub fn ply_limit_reached(&self) -> bool {
+        self.termination == MatchTermination::PlyLimit
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -552,6 +561,16 @@ pub fn analyze_seeded_trace(
     moves: &[RecordedMove],
     seed: u64,
 ) -> Result<CatalogTraceAnalysis, CatalogError> {
+    analyze_completed_trace(game, moves, seed, MatchTermination::GameTerminal)
+}
+
+/// Replay legality is independent of the reason the match stopped.
+pub fn analyze_completed_trace(
+    game: GameId,
+    moves: &[RecordedMove],
+    seed: u64,
+    termination: MatchTermination,
+) -> Result<CatalogTraceAnalysis, CatalogError> {
     match game {
         GameId::LostCities => Err(CatalogError::AnalysisUnavailable(game)),
         GameId::Splendor => Err(CatalogError::InvalidTrace {
@@ -573,12 +592,18 @@ pub fn analyze_seeded_trace(
                     Ok((player, action))
                 })
                 .collect::<Result<Vec<_>, CatalogError>>()?;
-            analyze_boop_replay(&actions)
-                .map(CatalogTraceAnalysis::Boop)
-                .map_err(|error| CatalogError::InvalidTrace {
+            let analysis =
+                analyze_boop_replay(&actions).map_err(|error| CatalogError::InvalidTrace {
                     game,
                     message: error.to_string(),
-                })
+                })?;
+            termination
+                .validate_status(analysis.final_status)
+                .map_err(|message| CatalogError::InvalidTrace {
+                    game,
+                    message: message.to_owned(),
+                })?;
+            Ok(CatalogTraceAnalysis::Boop(analysis))
         }
         GameId::SpiritsOfTheForest => {
             let actions = moves
@@ -596,33 +621,44 @@ pub fn analyze_seeded_trace(
                 })
                 .collect::<Result<Vec<_>, CatalogError>>()?;
             let configured_game = spirits_of_the_forest_game(seed);
-            analyze_spirits_replay(&configured_game, &actions)
-                .map(CatalogTraceAnalysis::SpiritsOfTheForest)
-                .map_err(|error| CatalogError::InvalidTrace {
+            let analysis = analyze_spirits_replay(&configured_game, &actions).map_err(|error| {
+                CatalogError::InvalidTrace {
                     game,
                     message: error.to_string(),
-                })
+                }
+            })?;
+            termination
+                .validate_status(analysis.final_status)
+                .map_err(|message| CatalogError::InvalidTrace {
+                    game,
+                    message: message.to_owned(),
+                })?;
+            Ok(CatalogTraceAnalysis::SpiritsOfTheForest(analysis))
         }
         GameId::Connect6(size) => {
-            analyze_generic_replay(game, &connect6_game(size)?, moves, |action| {
+            analyze_generic_replay(game, &connect6_game(size)?, moves, termination, |action| {
                 let CatalogAction::Connect6 { position } = action else {
                     return Err("expected Connect6 action");
                 };
                 Ok(Connect6Action::Place(*position))
             })
         }
-        GameId::ConnectFour => analyze_generic_replay(game, &ConnectFour, moves, |action| {
-            let CatalogAction::ConnectFour { column } = action else {
-                return Err("expected a connect-four action");
-            };
-            ConnectFourAction::new(*column).ok_or("column is outside the board")
-        }),
-        GameId::TicTacToe => analyze_generic_replay(game, &TicTacToe, moves, |action| {
-            let CatalogAction::TicTacToe { row, column } = action else {
-                return Err("expected a tic-tac-toe action");
-            };
-            TicTacToeAction::new(*row, *column).ok_or("position is outside the board")
-        }),
+        GameId::ConnectFour => {
+            analyze_generic_replay(game, &ConnectFour, moves, termination, |action| {
+                let CatalogAction::ConnectFour { column } = action else {
+                    return Err("expected a connect-four action");
+                };
+                ConnectFourAction::new(*column).ok_or("column is outside the board")
+            })
+        }
+        GameId::TicTacToe => {
+            analyze_generic_replay(game, &TicTacToe, moves, termination, |action| {
+                let CatalogAction::TicTacToe { row, column } = action else {
+                    return Err("expected a tic-tac-toe action");
+                };
+                TicTacToeAction::new(*row, *column).ok_or("position is outside the board")
+            })
+        }
     }
 }
 
@@ -632,6 +668,7 @@ fn analyze_generic_replay<G: DeterministicGame>(
     id: GameId,
     game: &G,
     moves: &[RecordedMove],
+    termination: MatchTermination,
     action_from_catalog: impl Fn(&CatalogAction) -> Result<G::Action, &'static str>,
 ) -> Result<CatalogTraceAnalysis, CatalogError> {
     let mut state = game.initial_state();
@@ -651,10 +688,15 @@ fn analyze_generic_replay<G: DeterministicGame>(
         game.apply_action(&mut state, &action)
             .map_err(|error| invalid_trace(id, index, error))?;
     }
-    if game.status(&state) != PositionStatus::Terminal {
-        return Err(CatalogError::InvalidTrace {
+    termination
+        .validate_status(game.status(&state))
+        .map_err(|message| CatalogError::InvalidTrace {
             game: id,
-            message: "trace does not end in a terminal position".to_owned(),
+            message: message.to_owned(),
+        })?;
+    if termination == MatchTermination::PlyLimit {
+        return Ok(CatalogTraceAnalysis::Generic {
+            utilities: [0.0; 2],
         });
     }
     let mut utilities = [0.0; 2];
@@ -1071,6 +1113,7 @@ fn connect6_report(
             .map(|time| time.as_secs_f64()),
         seed: traced.result.seed,
         plies: traced.result.plies,
+        termination: traced.result.termination,
         utilities: traced.result.utilities,
         winner,
         moves,
@@ -1129,6 +1172,7 @@ fn connect_four_report(traced: TracedMatchResult<ConnectFourAction>) -> CatalogM
             .map(|time| time.as_secs_f64()),
         seed: traced.result.seed,
         plies: traced.result.plies,
+        termination: traced.result.termination,
         utilities: traced.result.utilities,
         winner,
         moves,
@@ -1188,6 +1232,7 @@ fn tic_tac_toe_report(traced: TracedMatchResult<TicTacToeAction>) -> CatalogMatc
             .map(|time| time.as_secs_f64()),
         seed: traced.result.seed,
         plies: traced.result.plies,
+        termination: traced.result.termination,
         utilities: traced.result.utilities,
         winner,
         moves,
@@ -1264,6 +1309,7 @@ fn boop_report(traced: TracedMatchResult<BoopAction>) -> CatalogMatchReport {
             .map(|time| time.as_secs_f64()),
         seed: traced.result.seed,
         plies: traced.result.plies,
+        termination: traced.result.termination,
         utilities: traced.result.utilities,
         winner,
         moves,
@@ -1355,6 +1401,7 @@ fn spirits_of_the_forest_report(
             .map(|time| time.as_secs_f64()),
         seed: traced.result.seed,
         plies: traced.result.plies,
+        termination: traced.result.termination,
         utilities: traced.result.utilities,
         winner,
         moves,
@@ -1533,6 +1580,31 @@ fn run_tic_tac_toe_batch(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completed_prefixes_keep_legality_and_completion_checks_separate() {
+        for game in [
+            GameId::TicTacToe,
+            GameId::ConnectFour,
+            GameId::Connect6(6),
+            GameId::Boop,
+            GameId::SpiritsOfTheForest,
+        ] {
+            let mut config = MatchConfig::new(17, NonZeroU32::new(1).unwrap());
+            config.draw_on_ply_limit = true;
+            let report =
+                run_match_with_trace(game, AgentConfig::Random, AgentConfig::Random, config)
+                    .unwrap();
+            assert_eq!(report.termination, MatchTermination::PlyLimit);
+            assert!(analyze_completed_trace(game, &report.moves, 17, report.termination).is_ok());
+            assert!(analyze_seeded_trace(game, &report.moves, 17).is_err());
+            let mut illegal = report.moves;
+            illegal[0].player = 1;
+            assert!(
+                analyze_completed_trace(game, &illegal, 17, MatchTermination::PlyLimit).is_err()
+            );
+        }
+    }
+
     #[test]
     fn game_parameters_are_validated_by_the_catalog() {
         use super::*;
@@ -2221,7 +2293,7 @@ mod tests {
         else {
             panic!("boop trace returned the wrong analysis type");
         };
-        assert_eq!(analysis.winner.index(), expected_winner);
+        assert_eq!(analysis.winner.unwrap().index(), expected_winner);
 
         let spirits_report = run_match_with_trace(
             GameId::SpiritsOfTheForest,

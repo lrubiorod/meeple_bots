@@ -49,7 +49,7 @@ from .game_types import (
 )
 from .matches.models import (
     BatchMatchResult, BatchProgress, BatchProgressCallback,
-    BatchProgressStatus, BatchResult, MatchResult,
+    BatchProgressStatus, BatchResult, MatchResult, MatchTermination,
     Move, RootActionDiagnostic, TreeReuseDiagnostic,
     _BatchJob, _BatchMatchOutcome,
 )

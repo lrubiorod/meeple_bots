@@ -12,9 +12,11 @@ from pathlib import Path
 from ..connect6 import Connect6, Connect6Action
 from ..game_config import create_game, game_parameters
 from ..game_types import Boop, ConnectFour, ConnectFourAction, SpiritsOfTheForest, TicTacToe, TicTacToeAction
-from ..matches.models import Move
+from ..matches.models import Move, MatchTermination
+from ..matches.trace import _validate_limit_policy
 from ..native_bridge import _analyze_trace
 from ..splendor import Splendor
+from ..lost_cities import LostCities
 from ..games.boop.extraction import (
     _BOOP_OUTPUT_FILES, _BOOP_MATCH_FIELDS, _TURN_FIELDS, _BOOP_FIELDS,
     _RESOLUTION_FIELDS, _WINNING_LINE_FIELDS, _extract_boop_match,
@@ -208,7 +210,7 @@ def extract_tournament(
                 "both_players_have_cats": "both players have acquired at least one cat",
             },
         }
-    elif isinstance(game, Splendor):
+    elif isinstance(game, (Splendor, LostCities)):
         extract_match = _extract_chance_events
         game_output_files = {"chance_events": "chance_events.csv"}
         game_writer_fields = {
@@ -319,6 +321,9 @@ def extract_tournament(
                                 f"invalid JSON in {study.path} on line {line_number}: "
                                 f"{error.msg}"
                             ) from error
+                        if not isinstance(record, dict) or not isinstance(record.get('result'), dict):
+                            raise ValueError('match record must contain a result object')
+                        _validate_limit_policy(record['result'], study.header)
                         source_match_number = _integer_field(
                             record, "match_number", f"match record in {study.path}"
                         )
@@ -391,7 +396,7 @@ def extract_tournament(
             "game": game_name,
             **({"game_params": game_parameters(game)} if game_parameters(game) else {}),
             "tournament_schema_version": 1,
-            "analysis_schema_version": 9,
+            "analysis_schema_version": 10,
             "decision_timing_scope": timing_scope,
             "declared_matches": declared_matches,
             "processed_matches": processed_matches,
@@ -512,6 +517,7 @@ def _extract_common_match(
             "winner_player": "" if winner_player is None else winner_player,
             "winner_agent": winner_agent,
             "plies": plies,
+            "termination": MatchTermination.from_result(raw_result).value,
             "utility_0": utilities[0],
             "utility_1": utilities[1],
         }
@@ -587,7 +593,7 @@ def _extract_generic_match(
                     sort_keys=True,
                     separators=(",", ":"),
                 ),
-                "terminal_after": ply == context.plies,
+                "terminal_after": ply == context.plies and context.termination is MatchTermination.GAME_TERMINAL,
             }
         )
         row_counts["moves"] += 1
@@ -595,7 +601,9 @@ def _extract_generic_match(
 def _extract_chance_events(context, writers, row_counts, game):
     """Preserve explicit environment outcomes separately from player move metrics."""
     from ..matches.trace import _validate_splendor_result
-    _validate_splendor_result(context.raw_result)
+    from ..lost_cities import validate_trace_result as _validate_lost_cities_result
+    validator = _validate_lost_cities_result if isinstance(game, LostCities) else _validate_splendor_result
+    validator(context.raw_result)
     for index, event in enumerate(context.raw_result["chance_events"], 1):
         writers["chance_events"].writerow({
             "match_number": context.match_number,
@@ -630,7 +638,7 @@ def _validate_generic_result(context: _MatchContext, game: ConnectFour | TicTacT
             raise ValueError(f"{where}: {error}") from error
         moves.append(Move(player=raw["player"], action=typed_action))
     try:
-        analysis = _analyze_trace(game, tuple(moves), seed=context.seed)
+        analysis = _analyze_trace(game, tuple(moves), seed=context.seed, termination=context.termination.value)
     except (ValueError, OverflowError) as error:
         raise ValueError(f"match {context.match_number}: {error}") from error
     if analysis["winner"] != context.winner_player:

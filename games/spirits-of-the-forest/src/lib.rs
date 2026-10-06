@@ -11,6 +11,7 @@ mod analysis;
 pub use analysis::{
     CategoryScoreAnalysis, ScoringCategory, SpiritsPlayerStateMetrics, SpiritsReplayAnalysis,
     SpiritsReplayError, SpiritsStateMetrics, SpiritsTurnAnalysis, TileTakeAnalysis, analyze_replay,
+    analyze_replay_prefix,
 };
 
 pub const ROWS: usize = 4;

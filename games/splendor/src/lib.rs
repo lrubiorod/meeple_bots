@@ -789,6 +789,7 @@ mod tests {
         let config = MatchConfig {
             seed: 42,
             max_plies: NonZeroU32::new(10000).unwrap(),
+            draw_on_ply_limit: false,
         };
         let a = play_match_with_trace(&g, &mut RandomAgent, &mut RandomAgent, config).unwrap();
         let b = play_match_with_trace(&g, &mut RandomAgent, &mut RandomAgent, config).unwrap();
@@ -853,6 +854,7 @@ mod search_tests {
                     MatchConfig {
                         seed: 42,
                         max_plies: NonZeroU32::new(3000).unwrap(),
+                        draw_on_ply_limit: false,
                     },
                 )
                 .unwrap();
@@ -883,6 +885,7 @@ mod search_tests {
         let cfg = MatchConfig {
             seed: 42,
             max_plies: NonZeroU32::new(10000).unwrap(),
+            draw_on_ply_limit: false,
         };
         let run = |count| {
             play_match_with_trace(

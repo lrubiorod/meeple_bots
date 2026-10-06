@@ -16,11 +16,18 @@ use meeple_bots_core::{
 pub struct MatchConfig {
     pub seed: u64,
     pub max_plies: NonZeroU32,
+    /// Adjudicate a nonterminal position as a draw at the player-decision limit.
+    /// Chance-loop safeguards and other execution errors remain errors.
+    pub draw_on_ply_limit: bool,
 }
 
 impl MatchConfig {
     pub const fn new(seed: u64, max_plies: NonZeroU32) -> Self {
-        Self { seed, max_plies }
+        Self {
+            seed,
+            max_plies,
+            draw_on_ply_limit: false,
+        }
     }
 }
 
@@ -29,6 +36,35 @@ impl Default for MatchConfig {
         Self {
             seed: 0,
             max_plies: NonZeroU32::new(10_000).expect("constant is non-zero"),
+            draw_on_ply_limit: false,
+        }
+    }
+}
+
+/// Why a completed match stopped. Administrative draws do not change game rules.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatchTermination {
+    GameTerminal,
+    PlyLimit,
+}
+
+impl MatchTermination {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::GameTerminal => "game_terminal",
+            Self::PlyLimit => "ply_limit",
+        }
+    }
+
+    /// Validate the replay endpoint separately from action/chance legality.
+    pub fn validate_status(self, status: PositionStatus) -> Result<(), &'static str> {
+        match (self, status) {
+            (Self::GameTerminal, PositionStatus::Terminal)
+            | (Self::PlyLimit, PositionStatus::PlayerTurn(_)) => Ok(()),
+            (Self::GameTerminal, _) => Err("trace does not end in a terminal position"),
+            (Self::PlyLimit, _) => {
+                Err("ply-limit trace must end at a resolved nonterminal position")
+            }
         }
     }
 }
@@ -38,6 +74,14 @@ pub struct MatchResult {
     pub seed: u64,
     pub plies: u32,
     pub utilities: Vec<f32>,
+    /// Distinguishes authoritative completion from administrative adjudication.
+    pub termination: MatchTermination,
+}
+
+impl MatchResult {
+    pub fn ply_limit_reached(&self) -> bool {
+        self.termination == MatchTermination::PlyLimit
+    }
 }
 
 #[derive(Debug)]
@@ -47,6 +91,7 @@ pub enum MatchError {
     UnexpectedChance,
     Chance(IllegalAction),
     PlyLimitExceeded(u32),
+    ChanceLimitExceeded,
     Agent {
         player: PlayerId,
         source: AgentError,
@@ -69,6 +114,7 @@ impl fmt::Display for MatchError {
             Self::UnexpectedChance => {
                 formatter.write_str("a deterministic game requested a chance transition")
             }
+            Self::ChanceLimitExceeded => formatter.write_str("chance-only safety limit exceeded"),
             Self::PlyLimitExceeded(limit) => {
                 write!(formatter, "the match exceeded its {limit}-ply limit")
             }
@@ -407,7 +453,7 @@ where
     let mut first_rng = SplitMix64::new(config.seed ^ 0xA076_1D64_78BD_642F);
     let mut second_rng = SplitMix64::new(config.seed ^ 0xE703_7ED1_A0B4_28DB);
     let mut chance_rng = SplitMix64::new(config.seed ^ 0x8EBC_6AF0_9C88_C6E3);
-    let mut chance_events = 0_u32;
+    let mut consecutive_chance_events = 0_u32;
     let mut plies = 0;
     let timed = observer.measures_decision_time();
     let mut pending_maintenance = [
@@ -422,7 +468,7 @@ where
     ];
     observer.on_start(game, &state);
 
-    loop {
+    let result = loop {
         match game.status(&state) {
             PositionStatus::Terminal => {
                 let utilities = [PlayerId::FIRST, PlayerId::SECOND]
@@ -432,21 +478,24 @@ where
                             .ok_or(MatchError::MissingTerminalUtility(player))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let result = MatchResult {
+                break MatchResult {
                     seed: config.seed,
                     plies,
                     utilities,
+                    termination: MatchTermination::GameTerminal,
                 };
-                pending_maintenance[0] += measure(timed, || first.on_match_end(game, &state)).1;
-                pending_maintenance[1] += measure(timed, || second.on_match_end(game, &state)).1;
-                for player in [PlayerId::FIRST, PlayerId::SECOND] {
-                    observer.on_remaining_maintenance(player, pending_maintenance[player.index()]);
-                }
-                observer.on_finish(game, &state, &result);
-                return Ok(result);
             }
             PositionStatus::PlayerTurn(player) => {
+                consecutive_chance_events = 0;
                 if plies >= config.max_plies.get() {
+                    if config.draw_on_ply_limit {
+                        break MatchResult {
+                            seed: config.seed,
+                            plies,
+                            utilities: vec![0.0, 0.0],
+                            termination: MatchTermination::PlyLimit,
+                        };
+                    }
                     return Err(MatchError::PlyLimitExceeded(config.max_plies.get()));
                 }
 
@@ -489,15 +538,15 @@ where
             }
             PositionStatus::Chance => {
                 // Also bound chance-only loops from a broken or unlucky game.
-                if chance_events >= config.max_plies.get() {
-                    return Err(MatchError::PlyLimitExceeded(config.max_plies.get()));
+                if consecutive_chance_events >= 10_000 {
+                    return Err(MatchError::ChanceLimitExceeded);
                 }
                 let event = game
                     .sample_chance(&state, &mut chance_rng)
                     .map_err(MatchError::Chance)?;
                 game.apply_chance_outcome(&mut state, &event)
                     .map_err(MatchError::Chance)?;
-                chance_events += 1;
+                consecutive_chance_events += 1;
                 pending_maintenance[0] +=
                     measure(timed, || first.on_chance_applied(game, &state, &event)).1;
                 pending_maintenance[1] +=
@@ -506,7 +555,14 @@ where
             }
             _ => return Err(MatchError::UnexpectedChance),
         }
+    };
+    pending_maintenance[0] += measure(timed, || first.on_match_end(game, &state)).1;
+    pending_maintenance[1] += measure(timed, || second.on_match_end(game, &state)).1;
+    for player in [PlayerId::FIRST, PlayerId::SECOND] {
+        observer.on_remaining_maintenance(player, pending_maintenance[player.index()]);
     }
+    observer.on_finish(game, &state, &result);
+    Ok(result)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -656,6 +712,33 @@ mod tests {
     }
 
     #[test]
+    fn completion_policy_is_separate_from_replay_legality() {
+        assert!(
+            MatchTermination::GameTerminal
+                .validate_status(PositionStatus::Terminal)
+                .is_ok()
+        );
+        assert!(
+            MatchTermination::PlyLimit
+                .validate_status(PositionStatus::PlayerTurn(PlayerId::FIRST))
+                .is_ok()
+        );
+        assert!(
+            MatchTermination::GameTerminal
+                .validate_status(PositionStatus::PlayerTurn(PlayerId::FIRST))
+                .is_err()
+        );
+        assert!(
+            MatchTermination::PlyLimit
+                .validate_status(PositionStatus::Terminal)
+                .is_err()
+        );
+        for reason in [MatchTermination::GameTerminal, MatchTermination::PlyLimit] {
+            assert!(reason.validate_status(PositionStatus::Chance).is_err());
+        }
+    }
+
+    #[test]
     fn split_mix_is_reproducible_and_streams_differ() {
         let mut first = SplitMix64::new(42);
         let mut repeated = SplitMix64::new(42);
@@ -663,6 +746,46 @@ mod tests {
 
         assert_eq!(first.next_u64(), repeated.next_u64());
         assert_ne!(first.next_u64(), other.next_u64());
+    }
+
+    #[test]
+    fn ply_limit_draw_is_opt_in_and_preserves_trace_and_lifecycle() {
+        let mut config = MatchConfig::new(4, NonZeroU32::new(1).unwrap());
+        assert!(matches!(
+            play_match(
+                &LifecycleGame::default(),
+                &mut LifecycleAgent::default(),
+                &mut LifecycleAgent::default(),
+                config,
+            ),
+            Err(MatchError::PlyLimitExceeded(1))
+        ));
+        config.draw_on_ply_limit = true;
+        let mut first = LifecycleAgent::default();
+        let mut second = LifecycleAgent::default();
+        let traced =
+            play_match_with_trace(&LifecycleGame::default(), &mut first, &mut second, config)
+                .unwrap();
+        assert_eq!(traced.result.plies, 1);
+        assert_eq!(traced.result.utilities, vec![0.0, 0.0]);
+        assert_eq!(traced.result.termination, MatchTermination::PlyLimit);
+        assert_eq!(traced.actions.len(), 1);
+        assert!(first.ended && second.ended);
+    }
+
+    #[test]
+    fn terminal_on_last_allowed_ply_has_priority_over_adjudication() {
+        let mut config = MatchConfig::new(4, NonZeroU32::new(2).unwrap());
+        config.draw_on_ply_limit = true;
+        let result = play_match(
+            &LifecycleGame::default(),
+            &mut LifecycleAgent::default(),
+            &mut LifecycleAgent::default(),
+            config,
+        )
+        .unwrap();
+        assert_eq!(result.plies, 2);
+        assert_eq!(result.termination, MatchTermination::GameTerminal);
     }
 
     #[test]

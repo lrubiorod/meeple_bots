@@ -23,7 +23,7 @@ use meeple_bots_catalog::{
     CatalogSpirit, CatalogSpiritsAction, CatalogTraceAnalysis, CatalogTurnPhase, ConfiguredAgent,
     ConfiguredRolloutPolicy, ConfiguredSelectionBias, EvaluationConfig, EvaluatorConfig, GameId,
     MatchConfig, MctsAgentConfig, MctsConfig, RecordedMove, RolloutConditionConfig,
-    RolloutPolicyConfig, SearchBudget, analyze_seeded_trace, benchmark_mcts_agent,
+    RolloutPolicyConfig, SearchBudget, analyze_completed_trace, benchmark_mcts_agent,
     configured_boop_mcts, configured_connect_four_mcts, configured_spirits_of_the_forest_mcts,
     configured_tic_tac_toe_mcts, evaluate_game, run_boop_match_with_observer,
     run_boop_match_with_trace, run_connect_four_match_with_observer,
@@ -35,7 +35,7 @@ use meeple_bots_connect_four::{ConnectFour, ConnectFourAction};
 use meeple_bots_core::{
     Agent, AgentDecisionStats, AgentError, DecisionContext, Game, PlayerId, RandomSource,
 };
-use meeple_bots_simulation::{DecisionTiming, MatchObserver};
+use meeple_bots_simulation::{DecisionTiming, MatchObserver, MatchTermination};
 use meeple_bots_spirits_of_the_forest::{
     ForestPosition, GemstoneSacrifice, PowerSource, ScoringCategory, Spirit, SpiritsOfTheForest,
     SpiritsOfTheForestAction, SpiritsOfTheForestState, SpiritsReplayAnalysis, SpiritsStateMetrics,
@@ -1372,7 +1372,7 @@ impl Agent<SpiritsOfTheForest> for PythonHumanAgent<'_> {
 
 #[allow(clippy::too_many_arguments)]
 #[pyfunction(name = "run_match")]
-#[pyo3(signature = (game, first, second, seed=0, max_plies=10_000, observer=None, game_params=None))]
+#[pyo3(signature = (game, first, second, seed=0, max_plies=10_000, observer=None, game_params=None, draw_on_ply_limit=false))]
 fn py_run_match(
     py: Python<'_>,
     game: &str,
@@ -1382,11 +1382,13 @@ fn py_run_match(
     max_plies: u32,
     observer: Option<Py<PyAny>>,
     game_params: Option<BTreeMap<String, i64>>,
+    draw_on_ply_limit: bool,
 ) -> PyResult<Py<PyDict>> {
     let game = parse_configured_game(game, game_params)?;
     let max_plies = NonZeroU32::new(max_plies)
         .ok_or_else(|| PyValueError::new_err("max_plies must be greater than zero"))?;
-    let config = MatchConfig::new(seed, max_plies);
+    let mut config = MatchConfig::new(seed, max_plies);
+    config.draw_on_ply_limit = draw_on_ply_limit;
     if let Some(observer) = observer.as_ref()
         && !observer.bind(py).is_callable()
     {
@@ -1401,6 +1403,8 @@ fn py_run_match(
     let result = PyDict::new(py);
     result.set_item("seed", report.seed)?;
     result.set_item("plies", report.plies)?;
+    result.set_item("termination", report.termination.as_str())?;
+    result.set_item("ply_limit_reached", report.ply_limit_reached())?;
     result.set_item("utilities", PyList::new(py, report.utilities)?)?;
     result.set_item("winner", report.winner)?;
 
@@ -1710,14 +1714,20 @@ fn run_python_match(
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
 
-#[pyfunction(name = "analyze_trace", signature = (game, moves, seed=0, game_params=None))]
+#[pyfunction(name = "analyze_trace", signature = (game, moves, seed=0, game_params=None, termination="game_terminal"))]
 fn py_analyze_trace(
     py: Python<'_>,
     game: &str,
     moves: &Bound<'_, PyAny>,
     seed: u64,
     game_params: Option<BTreeMap<String, i64>>,
+    termination: &str,
 ) -> PyResult<Py<PyDict>> {
+    let termination = match termination {
+        "game_terminal" => MatchTermination::GameTerminal,
+        "ply_limit" => MatchTermination::PlyLimit,
+        _ => return Err(PyValueError::new_err("invalid match termination")),
+    };
     let game = parse_configured_game(game, game_params)?;
     let recorded = match game {
         GameId::Connect6(_) => moves
@@ -1763,9 +1773,9 @@ fn py_analyze_trace(
             })
             .collect(),
     };
-    let analysis = analyze_seeded_trace(game, &recorded, seed)
+    let analysis = analyze_completed_trace(game, &recorded, seed, termination)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
-    match analysis {
+    let result = match analysis {
         CatalogTraceAnalysis::Generic { utilities } => {
             let result = PyDict::new(py);
             result.set_item("utilities", utilities)?;
@@ -1779,7 +1789,11 @@ fn py_analyze_trace(
         CatalogTraceAnalysis::SpiritsOfTheForest(analysis) => {
             serialize_spirits_analysis(py, analysis)
         }
-    }
+    }?;
+    result
+        .bind(py)
+        .set_item("termination", termination.as_str())?;
+    Ok(result)
 }
 
 fn replay_record(player: u8, action: CatalogAction) -> RecordedMove {
@@ -1800,7 +1814,7 @@ fn replay_record(player: u8, action: CatalogAction) -> RecordedMove {
 
 fn serialize_boop_analysis(py: Python<'_>, analysis: BoopReplayAnalysis) -> PyResult<Py<PyDict>> {
     let result = PyDict::new(py);
-    result.set_item("winner", analysis.winner.index())?;
+    result.set_item("winner", analysis.winner.map(PlayerId::index))?;
     result.set_item("winner_has_cat_line", analysis.winner_has_cat_line)?;
     result.set_item("winner_has_eight_cats", analysis.winner_has_eight_cats)?;
 

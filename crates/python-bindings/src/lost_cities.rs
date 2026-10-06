@@ -187,7 +187,13 @@ pub struct PyLostCitiesPosition {
 #[pymethods]
 impl PyLostCitiesPosition {
     #[staticmethod]
-    fn replay(py: Python<'_>, moves: Vec<Py<PyDict>>, events: Vec<Py<PyDict>>) -> PyResult<Self> {
+    #[pyo3(signature = (moves, events, allow_partial=false))]
+    fn replay(
+        py: Python<'_>,
+        moves: Vec<Py<PyDict>>,
+        events: Vec<Py<PyDict>>,
+        allow_partial: bool,
+    ) -> PyResult<Self> {
         let mut state = LostCities.initial_state();
         let mut pending = events.iter().peekable();
         for i in 0..=moves.len() {
@@ -212,7 +218,9 @@ impl PyLostCitiesPosition {
                     .map_err(error)?;
             }
         }
-        if pending.next().is_some() || LostCities.status(&state) != PositionStatus::Terminal {
+        if pending.next().is_some()
+            || (!allow_partial && LostCities.status(&state) != PositionStatus::Terminal)
+        {
             return Err(error("missing or extra transitions"));
         }
         LostCities.validate_state(&state).map_err(error)?;
@@ -230,6 +238,12 @@ impl PyLostCitiesPosition {
                 .map_err(error)?;
         }
         Ok(Self { state })
+    }
+    fn utilities(&self) -> Vec<Option<f32>> {
+        [PlayerId::FIRST, PlayerId::SECOND]
+            .into_iter()
+            .map(|player| LostCities.terminal_utility(&self.state, player))
+            .collect()
     }
     fn snapshot(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         snapshot(py, &self.state)

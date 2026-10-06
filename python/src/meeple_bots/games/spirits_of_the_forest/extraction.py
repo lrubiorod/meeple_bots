@@ -6,7 +6,7 @@ from ...game_types import (
     EndSpiritCollection, ForestPosition, MoveSpiritGemstone, PlaceSpiritGemstone,
     SkipSpiritGemstone, SpiritGemstoneSacrifice, SpiritsOfTheForest, TakeSpiritTile,
 )
-from ...matches.models import Move
+from ...matches.models import Move, MatchTermination
 from ...native_bridge import _analyze_trace
 from ...extraction.schema import (
     _CsvWriter, _MatchContext, _integer_field, _trace_root_actions,
@@ -112,6 +112,7 @@ _ROOT_ACTION_FIELDS = (
 
 _PLAYER_TURN_FIELDS = (
     "match_number",
+    "turn_completed_after",
     "physical_turn",
     "player",
     "agent",
@@ -236,7 +237,7 @@ def _extract_spotf_match(
         _trace_spotf_move(raw, context.match_number, index)
         for index, raw in enumerate(context.raw_moves, 1)
     )
-    analysis = _analyze_trace(game, moves, seed=context.seed)
+    analysis = _analyze_trace(game, moves, seed=context.seed, termination=context.termination.value)
     if analysis["winner"] != context.winner_player:
         raise ValueError(
             f"match {context.match_number} replay winner does not match its result"
@@ -253,6 +254,7 @@ def _extract_spotf_match(
     physical_turns = turns[-1]["physical_turn"]
     final_players = final_state["players"]
     win_reason = (
+        "ply_limit" if context.termination is MatchTermination.PLY_LIMIT else
         "draw"
         if context.winner_player is None
         else "score"
@@ -320,7 +322,9 @@ def _extract_spotf_match(
             _write_spotf_player_turn(context, writers, row_counts, physical_turn)
             physical_turn = []
     if physical_turn:
-        raise ValueError(f"match {context.match_number} ends inside a physical turn")
+        if context.termination is MatchTermination.GAME_TERMINAL:
+            raise ValueError(f"match {context.match_number} ends inside a physical turn")
+        _write_spotf_player_turn(context, writers, row_counts, physical_turn)
 
     for category in analysis["categories"]:
         counts = category["counts"]
@@ -542,6 +546,7 @@ def _write_spotf_player_turn(
         {
             "match_number": context.match_number,
             "physical_turn": final_turn["physical_turn"],
+            "turn_completed_after": final_turn["turn_completed_after"],
             "player": player,
             "agent": context.players[player],
             "outcome": _player_outcome(player, context.winner_player),
@@ -559,7 +564,7 @@ def _write_spotf_player_turn(
             "used_end_collection": any(
                 isinstance(move.action, EndSpiritCollection) for move, _ in actions
             ),
-            "gemstone_action": gemstone_actions[-1] if gemstone_actions else "terminal",
+            "gemstone_action": gemstone_actions[-1] if gemstone_actions else "terminal" if final_turn["terminal_after"] else "unfinished",
             "remaining_tiles_after": final_turn["after"]["remaining_tiles"],
             "score_before": before["score"],
             "score_after": after["score"],

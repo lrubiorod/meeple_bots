@@ -10,7 +10,7 @@ mod analysis;
 pub use analysis::{
     BoardZone, BoopInteraction, BoopInteractionOutcome, BoopReplayAnalysis, BoopReplayError,
     BoopResolutionAnalysis, BoopStateMetrics, BoopTurnAnalysis, LineOrientation,
-    PlayerStateMetrics, StrategicPhase, WinningLineAnalysis, analyze_replay,
+    PlayerStateMetrics, StrategicPhase, WinningLineAnalysis, analyze_replay, analyze_replay_prefix,
 };
 
 pub const ROWS: usize = 6;

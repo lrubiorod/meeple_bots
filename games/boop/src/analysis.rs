@@ -105,7 +105,8 @@ pub struct WinningLineAnalysis {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoopReplayAnalysis {
     pub turns: Vec<BoopTurnAnalysis>,
-    pub winner: PlayerId,
+    pub winner: Option<PlayerId>,
+    pub final_status: PositionStatus,
     pub winner_has_cat_line: bool,
     pub winner_has_eight_cats: bool,
     pub winning_lines: Vec<WinningLineAnalysis>,
@@ -159,6 +160,17 @@ impl fmt::Display for BoopReplayError {
 impl Error for BoopReplayError {}
 
 pub fn analyze_replay(
+    recorded_actions: &[(PlayerId, BoopAction)],
+) -> Result<BoopReplayAnalysis, BoopReplayError> {
+    let analysis = analyze_replay_prefix(recorded_actions)?;
+    if analysis.final_status != PositionStatus::Terminal {
+        return Err(BoopReplayError::NonTerminalTrace);
+    }
+    Ok(analysis)
+}
+
+/// Analyze a legal prefix without imposing a match completion policy.
+pub fn analyze_replay_prefix(
     recorded_actions: &[(PlayerId, BoopAction)],
 ) -> Result<BoopReplayAnalysis, BoopReplayError> {
     let game = Boop;
@@ -216,15 +228,15 @@ pub fn analyze_replay(
         state = next_state;
     }
 
-    if !matches!(game.status(&state), PositionStatus::Terminal) {
-        return Err(BoopReplayError::NonTerminalTrace);
-    }
-    let winner = state.winner().expect("terminal boop state has a winner");
-    let (winner_has_cat_line, winner_has_eight_cats, winning_lines) = winner_facts(&state, winner);
+    let winner = state.winner();
+    let (winner_has_cat_line, winner_has_eight_cats, winning_lines) = winner
+        .map(|winner| winner_facts(&state, winner))
+        .unwrap_or_default();
 
     Ok(BoopReplayAnalysis {
         turns,
         winner,
+        final_status: game.status(&state),
         winner_has_cat_line,
         winner_has_eight_cats,
         winning_lines,

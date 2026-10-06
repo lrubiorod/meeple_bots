@@ -99,6 +99,22 @@ pub fn replay(
     moves: &[RecordedMove],
     events: &[meeple_bots_simulation::TracedChance<CatalogAction>],
 ) -> Result<meeple_bots_splendor::SplendorState, CatalogError> {
+    let state = replay_prefix(seed, moves, events)?;
+    if game(seed).status(&state) != PositionStatus::Terminal {
+        return Err(CatalogError::InvalidTrace {
+            game: crate::GameId::Splendor,
+            message: "missing terminal transitions".into(),
+        });
+    }
+    Ok(state)
+}
+
+/// Replay a legal trace prefix for an administratively adjudicated match.
+pub fn replay_prefix(
+    seed: u64,
+    moves: &[RecordedMove],
+    events: &[meeple_bots_simulation::TracedChance<CatalogAction>],
+) -> Result<meeple_bots_splendor::SplendorState, CatalogError> {
     let invalid = |message: String| CatalogError::InvalidTrace {
         game: crate::GameId::Splendor,
         message,
@@ -130,7 +146,7 @@ pub fn replay(
                 .map_err(|e| invalid(e.to_string()))?;
         }
     }
-    if pending.next().is_some() || g.status(&state) != PositionStatus::Terminal {
+    if pending.next().is_some() {
         return Err(invalid("missing or extra transitions".into()));
     }
     Ok(state)
@@ -163,12 +179,17 @@ pub fn report(
             event: CatalogAction::Splendor(e.event),
         })
         .collect();
-    let state = replay(traced.result.seed, &moves, &chance_events)?;
+    let state = if traced.result.ply_limit_reached() {
+        replay_prefix(traced.result.seed, &moves, &chance_events)?
+    } else {
+        replay(traced.result.seed, &moves, &chance_events)?
+    };
     let winner = traced.result.utilities.iter().position(|&v| v > 0.0);
     let scores = state.players.each_ref().map(|p| i16::from(p.prestige));
     Ok(CatalogMatchReport {
         seed: traced.result.seed,
         plies: traced.result.plies,
+        termination: traced.result.termination,
         utilities: traced.result.utilities,
         winner,
         moves,

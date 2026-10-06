@@ -68,6 +68,8 @@ def _print_tournament_summary(summary: dict[str, object]) -> None:
     print(f"Matches: {summary['matches']}")
     print(f"Workers: {summary['workers']}")
     print(f"Total time: {summary['elapsed_seconds']:.3f}s")
+    if summary.get('ply_limit_draws', 0):
+        print(f"Ply-limit draws: {summary['ply_limit_draws']}")
     print(f"Trace output: {summary['output']}")
     print()
     print("Standings (self-play excluded):")

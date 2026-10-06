@@ -75,6 +75,21 @@ pub fn replay(
     moves: &[RecordedMove],
     events: &[TracedChance<CatalogAction>],
 ) -> Result<LostCitiesState, CatalogError> {
+    let state = replay_prefix(moves, events)?;
+    if LostCities.status(&state) != PositionStatus::Terminal {
+        return Err(CatalogError::InvalidTrace {
+            game: crate::GameId::LostCities,
+            message: "missing terminal transitions".into(),
+        });
+    }
+    Ok(state)
+}
+
+/// Replay a legal trace prefix without requiring a scored terminal position.
+pub fn replay_prefix(
+    moves: &[RecordedMove],
+    events: &[TracedChance<CatalogAction>],
+) -> Result<LostCitiesState, CatalogError> {
     let invalid = |message: String| CatalogError::InvalidTrace {
         game: crate::GameId::LostCities,
         message,
@@ -109,7 +124,7 @@ pub fn replay(
                 .map_err(|e| invalid(e.to_string()))?;
         }
     }
-    if pending.next().is_some() || LostCities.status(&state) != PositionStatus::Terminal {
+    if pending.next().is_some() {
         return Err(invalid("missing or extra transitions".into()));
     }
     LostCities
@@ -145,11 +160,16 @@ pub fn report(
             event: CatalogAction::LostCities(e.event),
         })
         .collect();
-    let state = replay(&moves, &chance_events)?;
+    let state = if traced.result.ply_limit_reached() {
+        replay_prefix(&moves, &chance_events)?
+    } else {
+        replay(&moves, &chance_events)?
+    };
     let scores = state.scores();
     Ok(CatalogMatchReport {
         seed: traced.result.seed,
         plies: traced.result.plies,
+        termination: traced.result.termination,
         winner: traced.result.utilities.iter().position(|&v| v > 0.),
         utilities: traced.result.utilities,
         moves,
@@ -170,6 +190,28 @@ pub fn report(
 mod tests {
     use super::*;
     use crate::{GameId, game_search_capabilities, run_match_with_trace};
+    #[test]
+    fn limited_match_reports_nonterminal_draw_with_replayable_prefix() {
+        let mut config = MatchConfig::new(42, std::num::NonZeroU32::new(32).unwrap());
+        config.draw_on_ply_limit = true;
+        let report = run_match_with_trace(
+            GameId::LostCities,
+            AgentConfig::Random,
+            AgentConfig::Random,
+            config,
+        )
+        .unwrap();
+        assert!(report.ply_limit_reached());
+        assert_eq!(report.plies, 32);
+        assert_eq!(report.utilities, vec![0.0, 0.0]);
+        assert_eq!(report.winner, None);
+        let state = replay_prefix(&report.moves, &report.chance_events).unwrap();
+        assert_ne!(LostCities.status(&state), PositionStatus::Terminal);
+        assert_eq!(report.lost_cities_state, Some(state));
+        assert!(replay(&report.moves, &report.chance_events).is_err());
+        assert!(replay_prefix(&report.moves, &report.chance_events[1..]).is_err());
+    }
+
     #[test]
     fn registration_replay_and_search_rejection() {
         let caps = game_search_capabilities(GameId::LostCities);

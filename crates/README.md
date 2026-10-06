@@ -170,8 +170,12 @@ Rebuild the extension after changing a game's schema or catalog registration.
 `Game` replay for Connect6, Connect Four and tic-tac-toe. Stochastic replay for
 Splendor and Lost Cities additionally applies recorded setup/draw outcomes rather
 than resampling them; Python extraction support is registered separately by game. Generic replay checks the active player before
-each accepted transition, rejects actions after termination and requires a terminal final state.
-Its terminal utilities are returned to the extractor, which checks the declared outcome.
+each accepted transition and rejects actions after termination. Match completion is checked
+separately: `MatchTermination::GameTerminal` requires a terminal endpoint;
+`MatchTermination::PlyLimit` requires a resolved nonterminal endpoint and yields zero utilities.
+The simulation runner resolves pending chance events before adjudication, gives real terminal
+results priority and keeps its chance-only safety limit separate from the player-action cap.
+Extractors and resume readers check the declared reason and outcome.
 The binding only converts actions; legality remains in the Rust game implementation.
 
 ## Where changes belong

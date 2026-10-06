@@ -7,7 +7,7 @@ from ...matches.models import Move
 from ...native_bridge import _analyze_trace
 from ...extraction.schema import (
     _CsvWriter, _MatchContext, _integer_field, _string_field,
-    _trace_root_actions, _trace_tree_reuse, _tree_reuse_row, _TREE_REUSE_FIELDS,
+    _player_outcome, _trace_root_actions, _trace_tree_reuse, _tree_reuse_row, _TREE_REUSE_FIELDS,
 )
 
 _BOOP_OUTPUT_FILES = {
@@ -150,9 +150,9 @@ def _extract_boop_match(
         _trace_move(raw, context.match_number, index)
         for index, raw in enumerate(context.raw_moves, 1)
     )
-    analysis = _analyze_trace(game, moves)
+    analysis = _analyze_trace(game, moves, seed=context.seed, termination=context.termination.value)
     winner_player = context.winner_player
-    if winner_player is None or analysis["winner"] != winner_player:
+    if analysis["winner"] != winner_player:
         raise ValueError(
             f"match {context.match_number} replay winner does not match its result"
         )
@@ -216,7 +216,7 @@ def _write_turn(
     match_number: int,
     total_plies: int,
     players: list[str],
-    winner_player: int,
+    winner_player: int | None,
     move: Move,
     turn: dict[str, object],
 ) -> None:
@@ -287,7 +287,7 @@ def _write_turn(
         "total_plies": total_plies,
         "player": move.player,
         "agent": players[move.player],
-        "outcome": "win" if move.player == winner_player else "loss",
+        "outcome": _player_outcome(move.player, winner_player),
         "decision_seconds": move.decision_seconds,
         "search_iterations": move.search_iterations,
         "search_nodes": move.search_nodes,

@@ -27,7 +27,7 @@ from ..splendor import Splendor, SplendorChanceOutcome, ChanceEvent, SplendorSta
 from .human import Agent, HumanAgent, _native_agent
 from .models import (
     BatchMatchResult, BatchProgress, BatchProgressCallback, BatchProgressStatus,
-    BatchResult, MatchResult, Move, RootActionDiagnostic, TreeReuseDiagnostic,
+    BatchResult, MatchResult, MatchTermination, Move, RootActionDiagnostic, TreeReuseDiagnostic,
     _BatchJob, _BatchMatchOutcome,
 )
 
@@ -43,6 +43,7 @@ class Match:
     seed: int = 0
     max_plies: int = 10_000
     observe_move: MatchMoveObserver | None = None
+    draw_on_ply_limit: bool = field(default=False, kw_only=True)
 
     def __post_init__(self) -> None:
         if not isinstance(self.game, (TicTacToe, ConnectFour, Boop, SpiritsOfTheForest, Splendor, LostCities, Connect6)):
@@ -60,6 +61,8 @@ class Match:
         if not 0 <= self.seed <= _MAX_U64:
             raise ValueError(f"seed must be between 0 and {_MAX_U64}")
         _positive_u32("max_plies", self.max_plies)
+        if type(self.draw_on_ply_limit) is not bool:
+            raise TypeError("draw_on_ply_limit must be a boolean")
         if self.observe_move is not None:
             if not callable(self.observe_move):
                 raise TypeError("observe_move must be callable")
@@ -75,6 +78,7 @@ class Match:
             self.max_plies,
             _match_move_observer(self.observe_move, self.game),
             game_params=game_parameters(self.game),
+            draw_on_ply_limit=self.draw_on_ply_limit,
         )
         moves = tuple(
             Move(
@@ -113,6 +117,7 @@ class Match:
             game_params=game_parameters(self.game),
             seed=raw["seed"],
             plies=raw["plies"],
+            termination=MatchTermination.from_result(raw),
             utilities=tuple(raw["utilities"]),
             winner=raw["winner"],
             moves=moves,

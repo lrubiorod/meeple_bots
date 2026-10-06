@@ -45,6 +45,7 @@ class TournamentConfig:
     max_plies: int
     workers: WorkerSetting
     agents: tuple[TournamentAgent, ...]
+    draw_on_ply_limit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +79,7 @@ class _TournamentPairingStats:
     agent_a_wins: int = 0
     agent_b_wins: int = 0
     draws: int = 0
+    ply_limit_draws: int = 0
     total_plies: int = 0
     started_at: float | None = None
     finished_at: float | None = None
@@ -87,6 +89,7 @@ def run_match(
     job: MatchJob,
     game: Game,
     max_plies: int,
+    draw_on_ply_limit: bool = False,
 ) -> MatchOutcome:
     first, second = (
         (job.agent_a.agent, job.agent_b.agent)
@@ -100,6 +103,7 @@ def run_match(
         second=second,
         seed=job.seed,
         max_plies=max_plies,
+        draw_on_ply_limit=draw_on_ply_limit,
     ).run()
     return MatchOutcome(
         result=result,
@@ -152,6 +156,8 @@ def _tournament_pairing_result(
         "agent_a_wins": stats.agent_a_wins,
         "agent_b_wins": stats.agent_b_wins,
         "draws": stats.draws,
+        "ply_limit_draws": stats.ply_limit_draws,
+        "game_terminal_matches": config.matches_per_pair - stats.ply_limit_draws,
         "average_plies": stats.total_plies / config.matches_per_pair,
         "elapsed_seconds": stats.finished_at - stats.started_at,
     }
@@ -227,6 +233,7 @@ def tournament_header(config: TournamentConfig, output: Path, workers: int) -> d
         "output": str(output), "pairing_mode": config.pairing_mode,
         "seat_mode": config.seat_mode, "matches_per_pair": config.matches_per_pair,
         "seed": config.seed, "max_plies": config.max_plies, "workers": workers,
+        **({"draw_on_ply_limit": True} if config.draw_on_ply_limit else {}),
         "pairings": [[a.name, b.name] for a, b in pairings],
         "total_pairings": len(pairings),
         "total_matches": len(pairings) * config.matches_per_pair,
@@ -242,10 +249,11 @@ def run_matches(
     *,
     max_plies: int,
     workers: WorkerSetting = 1,
+    draw_on_ply_limit: bool = False,
 ) -> Iterator[tuple[MatchJob, MatchOutcome]]:
     """Execute caller-ordered jobs; study scripts can interleave their own plans."""
     def execute(job: MatchJob) -> MatchOutcome:
-        return run_match(job, game, max_plies)
+        return run_match(job, game, max_plies, draw_on_ply_limit)
 
     yield from ordered_parallel_map(execute, jobs, resolve_workers(workers))
 
@@ -271,6 +279,8 @@ def run_tournament(
         raise ValueError("tournament output is required in the config or with --output")
     if config.matches_per_pair < 1 or config.max_plies < 1:
         raise ValueError("matches_per_pair and max_plies must be positive")
+    if type(config.draw_on_ply_limit) is not bool:
+        raise TypeError("tournament draw_on_ply_limit must be a boolean")
     if config.seat_mode not in {"paired", "alternating"}:
         raise ValueError("tournament seat_mode must be alternating or paired")
     if config.seat_mode == "paired" and config.matches_per_pair % 2:
@@ -295,11 +305,13 @@ def run_tournament(
         on_start(header)
     with TournamentTrace(output_path, header, overwrite=overwrite) as trace:
         for job, outcome in run_matches(
-            config.game, match_jobs(pairings, config), max_plies=config.max_plies, workers=worker_count
+            config.game, match_jobs(pairings, config), max_plies=config.max_plies,
+            workers=worker_count, draw_on_ply_limit=config.draw_on_ply_limit
         ):
             row = trace.write(job, outcome)
             pairing = stats[job.pairing_number - 1]
             pairing.total_plies += outcome.result.plies
+            pairing.ply_limit_draws += int(outcome.result.ply_limit_reached)
             pairing.started_at = outcome.started_at if pairing.started_at is None else min(pairing.started_at, outcome.started_at)
             pairing.finished_at = outcome.finished_at if pairing.finished_at is None else max(pairing.finished_at, outcome.finished_at)
             winner = row["winner"]
@@ -320,6 +332,8 @@ def run_tournament(
         "pairing_mode": config.pairing_mode, "seat_mode": config.seat_mode,
         "pairings": len(pairings), "matches": total_matches, "workers": worker_count,
         "matches_per_pair": config.matches_per_pair, "seed": config.seed,
+        "ply_limit_draws": sum(pairing.ply_limit_draws for pairing in stats),
+        "game_terminal_matches": total_matches - sum(pairing.ply_limit_draws for pairing in stats),
         "output": str(output_path), "elapsed_seconds": perf_counter() - started,
         "standings": standings,
         "pairing_results": [_tournament_pairing_result(pairing, config) for pairing in stats],
