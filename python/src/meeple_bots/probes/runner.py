@@ -25,6 +25,18 @@ def observation_search(agent, observation, legal_actions, *, seed):
             'root_actions': root['edges'], 'diagnostics': result['diagnostics']}
 
 
+def _decision_budgets(seconds):
+    """Accept the existing scalar API or a sequence of independent time budgets."""
+    if seconds is None:
+        return None
+    budgets = (seconds,) if isinstance(seconds, (int, float)) else tuple(seconds)
+    if (not budgets or any(isinstance(s, bool) or not isinstance(s, (int, float))
+                           or not isfinite(s) or s <= 0 for s in budgets)
+            or len(set(budgets)) != len(budgets)):
+        raise ValueError('decision times must be distinct finite positive budgets')
+    return budgets
+
+
 def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
                progress=print, search=observation_search, decision_seconds=None, variant_name="probe"):
     cases, iterations = tuple(cases), tuple(iterations)
@@ -34,11 +46,10 @@ def run_probes(cases, agent, *, iterations=(1000,), seeds=32, seed=0, output,
         raise ValueError('iterations must be distinct positive u32 budgets')
     if type(seeds) is not int or seeds < 1 or type(seed) is not int or not 0 <= seed <= 2**64-seeds:
         raise ValueError('search seeds must form a nonempty u64 range')
-    if decision_seconds is not None and (not isfinite(decision_seconds) or decision_seconds <= 0):
-        raise ValueError('decision time must be finite and positive')
+    decision_seconds = _decision_budgets(decision_seconds)
     if search is observation_search and not callable(getattr(agent, 'search', None)) and any(c.search is None for c in cases):
         raise ValueError('this agent needs an observation-only probe search adapter')
-    configs = ([replace(agent, iterations=None, time_budget=decision_seconds)] if decision_seconds is not None else
+    configs = ([replace(agent, iterations=None, time_budget=seconds) for seconds in decision_seconds] if decision_seconds is not None else
                [replace(agent, iterations=n, time_budget=None) for n in iterations])
     output = Path(output)
     if output.exists():
@@ -103,6 +114,8 @@ def run_variants(cases, variants, *, output, **kwargs):
     output = Path(output)
     if not variants or any(not name or not all(c.isalnum() or c in '_-' for c in name) for name in variants):
         raise ValueError('variant names must contain only letters, numbers, _ or -')
+    if 'decision_seconds' in kwargs:
+        kwargs['decision_seconds'] = _decision_budgets(kwargs['decision_seconds'])
     output.mkdir(parents=True, exist_ok=False)
     summaries = []
     for name, agent in variants.items():

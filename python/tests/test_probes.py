@@ -15,7 +15,7 @@ from meeple_bots.probes import select_cases, run_probes
 from meeple_bots.probes.core import action_dict
 from meeple_bots.probes.games.lost_cities import CASES, build_state
 from meeple_bots.probes.report import aggregate, render
-from meeple_bots.probes.runner import observation_search
+from meeple_bots.probes.runner import observation_search, run_variants
 
 GAME = LostCities()
 FULL_DECK = Counter((c, v) for c in range(5) for v in [0, 0, 0, *range(2, 11)])
@@ -182,6 +182,72 @@ class ProbeFrameworkTests(unittest.TestCase):
     def run_case(self, output, **kwargs):
         return run_probes((CASES[0],), SoIsmctsAgent(iterations=2), output=output,
                           progress=lambda _: None, **kwargs)
+
+    def test_multiple_decision_times_preserve_budgets_seeds_and_capture(self):
+        calls = []
+
+        def search(agent, observation, legal, *, seed):
+            calls.append((agent.time_budget, seed, observation))
+            self.assertIsNone(agent.iterations)
+            return {'action': legal[0], 'root_visits': 10,
+                    'diagnostics': {'completed_iterations': 10},
+                    'root_actions': [{'action': a, 'visits': 10 if i == 0 else 0,
+                                     'q': 0.0} for i, a in enumerate(legal)]}
+
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / 'timed'
+            summaries = self.run_case(output, decision_seconds=(.01, .05), seeds=2,
+                                      seed=9, search=search)
+            self.assertEqual([(t, s) for t, s, _ in calls],
+                             [(.01, 9), (.01, 10), (.05, 9), (.05, 10)])
+            self.assertTrue(all(o == calls[0][2] for _, _, o in calls))
+            metadata = json.loads((output / 'metadata.json').read_text())
+            self.assertEqual(metadata['decision_time_budgets'], [.01, .05])
+            self.assertEqual(metadata['iterations'], [])
+            self.assertEqual([s['decision_seconds'] for s in summaries], [.01, .05])
+            rows = [json.loads(line) for line in (output / 'runs.jsonl').read_text().splitlines()]
+            self.assertEqual([r['decision_seconds'] for r in rows], [.01, .01, .05, .05])
+            self.assertTrue(all(r['iterations'] is None for r in rows))
+            self.assertIn('0.01s', (output / 'report.txt').read_text())
+            self.assertIn('0.05s', (output / 'report.txt').read_text())
+            scalar = Path(tmp) / 'scalar'
+            self.run_case(scalar, decision_seconds=.01, seeds=1, search=search)
+            self.assertEqual(json.loads((scalar / 'metadata.json').read_text())['decision_seconds'], .01)
+
+    def test_invalid_time_budgets_do_not_create_capture_directories(self):
+        invalid = ((), (0,), (-1,), (float('nan'),), (float('inf'),), (.01, .01), (True,))
+        with TemporaryDirectory() as tmp:
+            for index, times in enumerate(invalid):
+                for variants in (False, True):
+                    output = Path(tmp) / f'{index}-{variants}'
+                    with self.assertRaisesRegex(ValueError, 'decision times'):
+                        if variants:
+                            run_variants(CASES[:1], {'baseline': SoIsmctsAgent(2)},
+                                         decision_seconds=times, output=output)
+                        else:
+                            self.run_case(output, decision_seconds=times)
+                    self.assertFalse(output.exists())
+
+    def test_cli_multiple_times_in_one_named_variant_capture(self):
+        from meeple_bots.probes.compare import compare_captures
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / 'agent.toml'
+            profile.write_text('agent = "so_ismcts"\niterations = 2\nrollout_depth = 0\n')
+            output = root / 'capture'
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                result = main(['probe', '--game', 'lost_cities',
+                               '--probe', 'avoid-large-irreversible-jump',
+                               '--variant', f'a={profile}', '--variant', f'b={profile}',
+                               '--decision-time', '0.002, 0.004', '--seeds', '2',
+                               '--output', str(output)])
+            self.assertEqual(result, 0)
+            summaries = json.loads((output / 'summary.json').read_text())
+            self.assertEqual({(s['variant'], s['decision_seconds']) for s in summaries},
+                             {('a', .002), ('a', .004), ('b', .002), ('b', .004)})
+            self.assertTrue(all(s['runs'] == 2 for s in summaries))
+            comparison = compare_captures({'a': output / 'a', 'b': output / 'b'})
+            self.assertEqual([g['decision_seconds'] for g in comparison['groups']], [.002, .004])
 
     def test_registration_and_filters(self):
         self.assertEqual(len(select_cases(game='lost_cities')), 16)

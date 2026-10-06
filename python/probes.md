@@ -171,14 +171,21 @@ The built-in adapter reconstructs a perfect-information position through Rust
 rules and calls the normal configured agent; no game branch was added to MCTS.
 
 Repeat `--variant NAME=PROFILE.toml` to capture named configs and a cross-config
-selection-share table. `--decision-time SECONDS` is mutually exclusive with
-`--iterations` and measures throughput at a fixed decision budget. Each native
+selection-share table. `--decision-time SECONDS[,SECONDS...]` is mutually exclusive with
+`--iterations` and measures throughput at each fixed decision budget. A single value
+remains supported; a comma-separated list runs every budget with the same search
+seeds in one capture per variant. Each native
 SPOTF run records search seconds, completed iterations and existing root H0/bias
 statistics. Reports include iteration throughput and median decision latency.
 Time-budget runs are not deterministic in iteration counts; fixed-iteration
 searches remain the mode for reproducibility checks. MCTS has no availability
 statistic, shown as `—`. All legal actions, including unexpanded ones, remain in
 raw/aggregate output.
+
+Timed capture metadata records the full list in `decision_time_budgets`. The legacy
+`decision_seconds` metadata field retains its scalar for a single budget and is null
+for multiple budgets. Each raw run and summary always has its own scalar
+`decision_seconds`, so reporting and offline comparison keep budgets separate.
 
 
 ## Comparing saved captures
@@ -220,3 +227,32 @@ Fixed-iteration probes diagnose behavior and sample complexity. Latency describe
 the capture environment and may differ across machines/builds. These comparisons
 are not competitive evidence: use fresh equal-time tournaments for strength.
 Focus annotations never restrict search. Historical captures are not rewritten.
+
+### Lost Cities cutoff comparisons
+
+Create separate local SO profiles with the same selector, exploration and rollout
+policy. Full-depth omits `rollout_depth`; neutral cutoff supplies a depth and a
+neutral evaluator. V0/V1 use the profile format below (index 0/1 respectively):
+
+```toml
+name = "v1"
+agent = "so_ismcts"
+iterations = 1000
+rollout_depth = 8
+cutoff_evaluator = { kind = "game_heuristic", index = 1, params = { tau = 40.0 } }
+```
+
+```bash
+.venv/bin/python -m meeple_bots probe --game lost_cities \
+  --probe avoid-large-irreversible-jump --iterations 1000,5000 --seeds 16 \
+  --variant full=local/full.toml --variant neutral=local/neutral.toml \
+  --variant v0=local/v0.toml --variant v1=local/v1.toml \
+  --output results/probes/lost-cities-cutoff-comparison
+```
+
+Replace `--iterations` with `--decision-time 0.01,0.05,0.1,0.5` to compare all four
+time budgets in one capture, or `--decision-time 0.1` for a single budget.
+Q now mixes authoritative terminal utilities with normalized heuristic values;
+it is not measured terminal win/loss utility alone and is not calibrated probability.
+Read `heuristic_evaluations` and `safety_cutoff_simulations` alongside terminal/cutoff
+counts. Use complete paired matches for strength claims.

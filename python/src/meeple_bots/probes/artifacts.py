@@ -15,7 +15,10 @@ def capture_metadata(cases, positions, agent, iterations, decision_seconds, vari
     native_path = Path(_native.__file__)
     return {'version': 1, 'created_utc': datetime.now(timezone.utc).isoformat(),
             'native_sha256': sha256(native_path.read_bytes()).hexdigest(),
-            'iterations': list(iterations) if decision_seconds is None else [], 'decision_seconds': decision_seconds, 'variant': variant_name, 'search_seeds': list(range(seed, seed+seeds)),
+            'iterations': list(iterations) if decision_seconds is None else [],
+            'decision_seconds': decision_seconds[0] if decision_seconds is not None and len(decision_seconds) == 1 else None,
+            'decision_time_budgets': list(decision_seconds) if decision_seconds is not None else [],
+            'variant': variant_name, 'search_seeds': list(range(seed, seed+seeds)),
             'agent': agent_dict('probe', agent), 'q_orientation': 'root_player',
             'fresh_search_per_run': True,
             'probes': [{'id': c.id, 'game': c.game, 'description': c.description, 'tags': c.tags,

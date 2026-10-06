@@ -3,6 +3,10 @@ from pathlib import Path
 import sys
 
 
+def _decision_times(value):
+    return tuple(float(seconds.strip()) for seconds in value.split(','))
+
+
 def add_parser(subparsers):
     parser = subparsers.add_parser('probe', help='measure search behavior at fixed positions')
     parser.add_argument('operation', nargs='?', choices=('compare',))
@@ -17,7 +21,8 @@ def add_parser(subparsers):
     parser.add_argument('--agent-config', type=Path, help='normal search-agent TOML profile')
     parser.add_argument('--variant', action='append', default=[], metavar='NAME=PATH', help='repeat for named agent TOML profiles')
     budgets = parser.add_mutually_exclusive_group()
-    budgets.add_argument('--decision-time', type=float, help='fixed seconds/decision for throughput measurements')
+    budgets.add_argument('--decision-time', type=_decision_times, metavar='SECONDS[,SECONDS...]',
+                         help='comma-separated independent seconds/decision budgets')
     budgets.add_argument('--iterations', default='1000', help='comma-separated independent iteration budgets')
     parser.add_argument('--seeds', type=int, default=32, help='number of search seeds')
     parser.add_argument('--seed', type=int, default=0, help='first search seed; never changes fixtures')

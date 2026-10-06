@@ -32,7 +32,8 @@ def render(summaries):
                          ', '.join(f'{a["label"]} ({a["selected_percentage"]:.1f}%)' for a in leaders))
         if len(budgets) > 1:
             lines.append('  Selection share across budgets (all seeds):')
-            lines.append('  ' + f'{"Action":<30}' + ''.join(f'{r["iterations"]:>10,}' for r in budgets))
+            labels = [f'{r["iterations"]:,}' if r['iterations'] is not None else f'{r["decision_seconds"]:g}s' for r in budgets]
+            lines.append('  ' + f'{"Action":<30}' + ''.join(f'{label:>10}' for label in labels))
             for a in important_actions(budgets):
                 shares = [next((e['selected_percentage'] for e in r['actions'] if action_key(e['action']) == action_key(a['action'])), 0) for r in budgets]
                 lines.append('  ' + f'{a["label"]:<30}' + ''.join(f'{s:>9.1f}%' for s in shares))
