@@ -33,8 +33,16 @@ class SoIsmctsAgent:
     time_budget: float | None = None
     selection_policy: str = "uct"
     tree_reuse: bool = False
+    rollout_depth: int | None = None
+    cutoff_evaluator: StateEvaluator = field(default_factory=lambda: NeutralEvaluator())
 
     def __post_init__(self) -> None:
+        if self.rollout_depth is not None:
+            _non_negative_u32("rollout_depth", self.rollout_depth)
+        _validate_state_evaluator("cutoff_evaluator", self.cutoff_evaluator)
+        if isinstance(self.cutoff_evaluator, GameHeuristic):
+            if self.rollout_depth is None:
+                raise ValueError("game heuristic requires rollout_depth")
         if not isinstance(self.tree_reuse, bool):
             raise TypeError("tree_reuse must be a boolean")
         if self.selection_policy not in ("uct", "ucb1_tuned"):
@@ -66,6 +74,7 @@ class SoIsmctsAgent:
         return _so_ismcts_search(
             observation, legal_actions, self.iterations, self.exploration,
             seed, self.time_budget, self.selection_policy, self.tree_reuse,
+            self.rollout_depth, self.cutoff_evaluator,
         )
 
 

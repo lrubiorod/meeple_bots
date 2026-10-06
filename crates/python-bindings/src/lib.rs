@@ -62,26 +62,36 @@ struct PyAgentConfig {
 #[pymethods]
 impl PyAgentConfig {
     #[staticmethod]
-    #[pyo3(signature = (iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None, selection_policy="uct", tree_reuse=false))]
+    #[pyo3(signature = (iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None, selection_policy="uct", tree_reuse=false, rollout_depth=None, cutoff_evaluator="neutral", cutoff_heuristic=None, cutoff_params=None))]
+    #[allow(clippy::too_many_arguments)]
     fn so_ismcts(
         iterations: Option<u32>,
         exploration: f64,
         time_budget: Option<f64>,
         selection_policy: &str,
         tree_reuse: bool,
+        rollout_depth: Option<u32>,
+        cutoff_evaluator: &str,
+        cutoff_heuristic: Option<u32>,
+        cutoff_params: Option<BTreeMap<String, f64>>,
     ) -> PyResult<Self> {
         let config = meeple_bots_so_ismcts::SoIsmctsConfig {
             budget: parse_search_budget(iterations, time_budget)?,
             exploration,
             tree_reuse,
-            rollout_depth: None,
+            rollout_depth,
             selection_policy: parse_bandit_policy(selection_policy)?,
         };
+        let config = meeple_bots_catalog::SoIsmctsAgentConfig {
+            search: config,
+            cutoff_evaluator: parse_evaluator(cutoff_evaluator, cutoff_heuristic, cutoff_params)?,
+        };
         config
+            .search
             .validate()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
-            inner: PythonAgentConfig::Automated(Box::new(AgentConfig::SoIsmcts(config.into()))),
+            inner: PythonAgentConfig::Automated(Box::new(AgentConfig::SoIsmcts(config))),
         })
     }
     #[staticmethod]

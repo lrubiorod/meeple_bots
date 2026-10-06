@@ -44,12 +44,15 @@ def load_named_search_profile(path):
 
 
 def so_from_values(values):
-    unknown = values.keys() - {'agent', 'name', 'iterations', 'time_budget', 'exploration', 'rollout', 'root_selection', 'selection_policy', 'tree_reuse'}
+    unknown = values.keys() - {'agent', 'name', 'iterations', 'time_budget', 'exploration', 'rollout', 'root_selection', 'selection_policy', 'tree_reuse', 'rollout_depth', 'cutoff_evaluator'}
     if unknown:
         raise ValueError(f'unsupported SO-ISMCTS fields: {sorted(unknown)}')
     if values.get('rollout', 'uniform') != 'uniform' or values.get('root_selection', 'most_visited') != 'most_visited':
         raise ValueError('SO-ISMCTS requires uniform rollout and most_visited root selection')
-    return SoIsmctsAgent(iterations=values.get('iterations'), time_budget=values.get('time_budget'),
+    from ._mcts_profiles import _configured_cutoff_evaluator
+    evaluator = _configured_cutoff_evaluator(values, 'SO-ISMCTS')
+    return SoIsmctsAgent(rollout_depth=values.get('rollout_depth'), cutoff_evaluator=evaluator,
+                         iterations=values.get('iterations'), time_budget=values.get('time_budget'),
                          exploration=values.get('exploration', 2**.5),
                          selection_policy=values.get('selection_policy', 'uct'), tree_reuse=values.get('tree_reuse', False))
 

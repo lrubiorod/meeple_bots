@@ -85,8 +85,8 @@ GUI supports human, random and SO-ISMCTS players (see below). `study` generates 
 normal HTML report, and `analyze` provides structural/search-cost output. Tournament
 artifacts include summaries and validated JSON traces, but no Lost Cities tournament
 HTML report or extraction analysis is provided. Python `Batch` and `TournamentAgent`
-accept SO-ISMCTS; the CLI batch options and tournament TOML parser still accept only
-MCTS/random profiles, leaving Random as their compatible Lost Cities agent.
+accept SO-ISMCTS; batch profile loading and tournament TOML entries also accept
+observation-safe cutoff evaluator parameters.
 
 ```bash
 .venv/bin/python -m meeple_bots match --game lost_cities \

@@ -10,14 +10,17 @@ from . import _native
 
 def _so_ismcts_search(
     observation, legal_actions, iterations, exploration, seed,
-    time_budget, selection_policy, tree_reuse,
+    time_budget, selection_policy, tree_reuse, rollout_depth, cutoff_evaluator,
 ):
     """Adapt an observation-only Lost Cities search request to the native API."""
     if not isinstance(observation, LostCitiesObservation):
         raise TypeError("search requires a LostCitiesObservation")
+    from .native_config import _native_evaluator
+    kind, index, params = _native_evaluator(cutoff_evaluator)
     result = _native.lost_cities_so_ismcts_search(
         observation.to_dict(), [action.to_dict() for action in legal_actions],
         iterations, exploration, seed, time_budget, selection_policy, tree_reuse,
+        rollout_depth, kind, index, params,
     )
     result["action"] = LostCitiesAction.from_dict(result["action"])
     return result

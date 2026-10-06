@@ -203,8 +203,8 @@ as a search target. See [analysis](../../crates/evaluation/README.md) and
 [study/local retuning](../../python/studies.md#lost-cities-and-the-so-ismcts-study-profile).
 
 Python `Batch` and `TournamentAgent` also accept `SoIsmctsAgent`; the CLI tournament
-TOML parser and batch profile loader retain their existing MCTS/random configuration
-formats. Administrative match traces still contain real private draws and must not
+TOML parser and batch profile loader also support SO-ISMCTS profiles, including cutoff
+parameters. Administrative match traces still contain real private draws and must not
 be supplied to search agents.
 
 ## Observation-safe cutoff evaluation
@@ -223,3 +223,31 @@ remains unchanged for state-based MCTS. The independent 10,000-action safety cap
 still returns neutral utility. Standalone diagnostics distinguish
 `terminal_simulations`, `cutoff_simulations` (all nonterminal completions),
 `heuristic_evaluations` and `safety_cutoff_simulations`.
+
+Lost Cities catalog profiles reuse the existing evaluator configuration format:
+
+```toml
+name = "lost-cities-v1"
+agent = "so_ismcts"
+iterations = 1000
+rollout_depth = 8
+cutoff_evaluator = { kind = "game_heuristic", index = 1, params = { tau = 40.0 } }
+```
+
+Use index `0` for V0 public score, index `1` for V1 known continuation, or
+`cutoff_evaluator = { kind = "neutral" }` to measure cutoff alone. Omit
+`rollout_depth` and use neutral to retain the full-depth baseline. Non-neutral
+configuration requires a depth; only finite positive `tau` is accepted (default
+40). Other rollout and selection mechanisms remain unchanged. Evaluators are
+fixed for a reused tree's lifetime; constructing a new participant resets it.
+
+```python
+from meeple_bots import SoIsmctsAgent, GameHeuristic, NeutralEvaluator
+full_depth = SoIsmctsAgent(iterations=1000)
+neutral = SoIsmctsAgent(iterations=1000, rollout_depth=8,
+                       cutoff_evaluator=NeutralEvaluator())
+v0 = SoIsmctsAgent(iterations=1000, rollout_depth=8,
+                  cutoff_evaluator=GameHeuristic(0, {"tau": 40.0}))
+v1 = SoIsmctsAgent(iterations=1000, rollout_depth=8,
+                  cutoff_evaluator=GameHeuristic(1, {"tau": 40.0}))
+```

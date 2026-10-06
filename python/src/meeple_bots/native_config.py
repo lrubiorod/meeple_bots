@@ -79,7 +79,10 @@ def native_agent_config(agent: RandomAgent | SoIsmctsAgent | MctsAgent):
     if isinstance(agent, RandomAgent):
         return _native.AgentConfig.random()
     if isinstance(agent, SoIsmctsAgent):
-        return _native.AgentConfig.so_ismcts(agent.iterations, agent.exploration, agent.time_budget, agent.selection_policy, agent.tree_reuse)
+        kind, index, params = _native_evaluator(agent.cutoff_evaluator)
+        return _native.AgentConfig.so_ismcts(agent.iterations, agent.exploration, agent.time_budget,
+                                           agent.selection_policy, agent.tree_reuse,
+                                           agent.rollout_depth, kind, index, params)
     if isinstance(agent, MctsAgent):
         (
             policy,
