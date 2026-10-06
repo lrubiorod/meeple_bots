@@ -49,8 +49,9 @@ pub struct ReuseSearchResult<A, O> {
 /// One owner's current history subtree. G is rules/configuration, never G::State.
 /// Start/end delimit a match; cloning carries configuration only.
 /// Standalone SoIsmctsAgent::search remains fresh, even with tree_reuse=true.
-pub struct ReusableSoIsmcts<G: Game, O> {
+pub struct ReusableSoIsmcts<G: Game, O, E = NeutralObservationEvaluator> {
     agent: SoIsmctsAgent,
+    evaluator: E,
     game: Option<G>,
     owner: Option<PlayerId>,
     observation: Option<O>,
@@ -58,15 +59,21 @@ pub struct ReusableSoIsmcts<G: Game, O> {
     pending: TreeReuseStats,
     timing: ReuseTiming,
 }
-impl<G: Game, O> Clone for ReusableSoIsmcts<G, O> {
+impl<G: Game, O, E: Clone> Clone for ReusableSoIsmcts<G, O, E> {
     fn clone(&self) -> Self {
-        Self::new(self.agent.config.clone())
+        Self::with_evaluator(self.agent.config.clone(), self.evaluator.clone())
     }
 }
 impl<G: Game, O> ReusableSoIsmcts<G, O> {
     pub fn new(config: SoIsmctsConfig) -> Self {
+        Self::with_evaluator(config, NeutralObservationEvaluator)
+    }
+}
+impl<G: Game, O, E> ReusableSoIsmcts<G, O, E> {
+    pub fn with_evaluator(config: SoIsmctsConfig, evaluator: E) -> Self {
         Self {
             agent: SoIsmctsAgent { config },
+            evaluator,
             game: None,
             owner: None,
             observation: None,
@@ -114,7 +121,7 @@ impl<G: Game, O> ReusableSoIsmcts<G, O> {
         }
     }
 }
-impl<G: Game + Clone + Eq, O: Clone + Eq> ReusableSoIsmcts<G, O>
+impl<G: Game + Clone + Eq, O: Clone + Eq, E: ObservationEvaluator<O>> ReusableSoIsmcts<G, O, E>
 where
     G::Action: Clone + Eq,
 {
@@ -241,6 +248,7 @@ where
             rng,
             nodes,
             Some(&mut self.timing),
+            &self.evaluator,
         );
         match result {
             Ok(search) => {

@@ -379,6 +379,7 @@ mod so_ismcts_tests {
         AgentConfig::SoIsmcts(SoIsmctsConfig {
             selection_policy: meeple_bots_core::BanditPolicy::Uct,
             tree_reuse: false,
+            rollout_depth: None,
             budget: meeple_bots_core::SearchBudget::Iterations(NonZeroU32::new(2).unwrap()),
             exploration: 1.0,
         })
@@ -417,6 +418,7 @@ mod so_ismcts_tests {
                     config: SoIsmctsConfig {
                         selection_policy: meeple_bots_core::BanditPolicy::Uct,
                         tree_reuse: false,
+                        rollout_depth: None,
                         budget: meeple_bots_core::SearchBudget::Iterations(
                             NonZeroU32::new(2).unwrap(),
                         ),

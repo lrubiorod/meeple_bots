@@ -84,6 +84,10 @@ pub trait DeterminizedWorld {
     type Action: Clone + Eq;
     type Observation: Clone + Eq;
     fn status(&self) -> crate::PositionStatus;
+    /// One-action turns by default; multi-decision games must delegate their boundary.
+    fn is_turn_boundary(&self) -> bool {
+        matches!(self.status(), crate::PositionStatus::PlayerTurn(_))
+    }
     fn observation(&self, observer: PlayerId) -> Self::Observation;
     fn legal_actions(&self) -> Vec<Self::Action>;
     fn apply_action(&mut self, action: &Self::Action) -> Result<(), crate::IllegalAction>;

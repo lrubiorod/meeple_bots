@@ -12,7 +12,8 @@ with Lost Cities.
 
 Every iteration samples a **fresh complete determinization** from the same root
 observation. Selection and expansion traverse a shared tree, then a uniform random
-rollout finishes that same world. Terminal root utility (+1 win, 0 draw, -1 loss)
+rollout continues that same world to terminal or an optional observation-safe cutoff.
+Terminal root utility (+1 win, 0 draw, -1 loss), or normalized cutoff evaluation,
 is backed up along the traversed path. The temporary world is dropped at iteration
 end; only statistics and observable distinctions survive. By default each real
 decision starts a new tree, with the acting player as the fixed observer.
@@ -98,7 +99,7 @@ Configuration consists of positive `iterations` **or** positive `time_budget`
 the core `SearchBudget` type. Search uses the caller's seeded RNG. Timed search
 checks the deadline between iterations and completes at least one; one simulation
 may overrun the deadline. Fixed-iteration mode retains deterministic seeded behavior.
-Uniform rollout and MostVisited are fixed. Unsupported MCTS options are rejected.
+Uniform rollout and MostVisited are fixed; optional observation-safe cutoff evaluation is described below. Unsupported MCTS options are rejected.
 A simulation safety cap of 10,000 actions handles cycles with neutral cutoff utility;
 it is **not** a game horizon or a scored game termination.
 
@@ -205,3 +206,20 @@ Python `Batch` and `TournamentAgent` also accept `SoIsmctsAgent`; the CLI tourna
 TOML parser and batch profile loader retain their existing MCTS/random configuration
 formats. Administrative match traces still contain real private draws and must not
 be supplied to search agents.
+
+## Observation-safe cutoff evaluation
+
+Full-depth uniform rollout remains the default (`rollout_depth = None` in Python).
+An optional `rollout_depth` counts player decisions **after tree traversal**, not
+physical turns or environment chance. At the nominal limit, complete the current
+physical turn using `DeterminizedWorld::is_turn_boundary`. Lost Cities delegates
+this to its existing rules. A zero limit evaluates the expanded leaf after any
+pending turn is completed. Terminal utility always takes precedence.
+
+`ObservationEvaluator<O>` receives only the fixed root observer's observation and
+player ID. It receives no game, authoritative state, world, deck order or RNG.
+Opponent turns still evaluate the root player's observation. `StateEvaluator`
+remains unchanged for state-based MCTS. The independent 10,000-action safety cap
+still returns neutral utility. Standalone diagnostics distinguish
+`terminal_simulations`, `cutoff_simulations` (all nonterminal completions),
+`heuristic_evaluations` and `safety_cutoff_simulations`.

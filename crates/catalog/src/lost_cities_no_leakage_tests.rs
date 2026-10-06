@@ -11,6 +11,7 @@ fn config(iterations: u32, tree_reuse: bool, selection_policy: BanditPolicy) -> 
         budget: SearchBudget::Iterations(NonZeroU32::new(iterations).unwrap()),
         exploration: 1.,
         tree_reuse,
+        rollout_depth: None,
         selection_policy,
     })
 }

@@ -74,6 +74,7 @@ impl PyAgentConfig {
             budget: parse_search_budget(iterations, time_budget)?,
             exploration,
             tree_reuse,
+            rollout_depth: None,
             selection_policy: parse_bandit_policy(selection_policy)?,
         };
         config

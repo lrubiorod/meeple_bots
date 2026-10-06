@@ -519,6 +519,9 @@ impl meeple_bots_core::DeterminizedWorld for LostCitiesSimulationWorld {
     fn status(&self) -> PositionStatus {
         self.status()
     }
+    fn is_turn_boundary(&self) -> bool {
+        LostCities.is_turn_boundary(&self.state)
+    }
     fn observation(&self, observer: PlayerId) -> Self::Observation {
         self.observation(observer)
     }

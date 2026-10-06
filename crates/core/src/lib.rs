@@ -16,7 +16,7 @@ pub use capabilities::{
     HeuristicParameters, ImperfectInformationGame, PerfectInformationGame, TwoPlayerZeroSumGame,
 };
 pub use error::{AgentError, IllegalAction};
-pub use evaluation::StateEvaluator;
+pub use evaluation::{NeutralObservationEvaluator, ObservationEvaluator, StateEvaluator};
 pub use game::{Game, PositionStatus, validate_chance_probabilities};
 pub use player::PlayerId;
 pub use random::RandomSource;

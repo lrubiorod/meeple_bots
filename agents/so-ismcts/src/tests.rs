@@ -107,6 +107,7 @@ fn agent(n: u32) -> SoIsmctsAgent {
         config: SoIsmctsConfig {
             selection_policy: meeple_bots_core::BanditPolicy::Uct,
             tree_reuse: false,
+            rollout_depth: None,
             budget: meeple_bots_core::SearchBudget::Iterations(NonZeroU32::new(n).unwrap()),
             exploration: 1.,
         },
@@ -593,4 +594,133 @@ fn tuned_selection_uses_availability_not_node_visits() {
         };
         assert!(score(1) > score(0));
     }
+}
+
+struct ObservedValue {
+    calls: Cell<u32>,
+    value: f64,
+}
+impl ObservationEvaluator<u8> for ObservedValue {
+    fn evaluate(&self, observation: &u8, observer: PlayerId) -> Result<f64, AgentError> {
+        assert_eq!(observer, PlayerId::FIRST); // Actor is SECOND at this leaf.
+        assert_eq!(*observation, 1);
+        self.calls.set(self.calls.get() + 1);
+        Ok(self.value)
+    }
+}
+#[test]
+fn observation_cutoff_keeps_root_perspective_and_validates_value() {
+    for value in [0.375, f64::NAN, 1.1] {
+        let game = Toy {
+            samples: Cell::new(0),
+        };
+        let evaluator = ObservedValue {
+            calls: Cell::new(0),
+            value,
+        };
+        let mut search = agent(1);
+        search.config.rollout_depth = Some(0);
+        let result = search.search_with_evaluator(
+            &game,
+            &0,
+            PlayerId::FIRST,
+            &[A::Wait],
+            &mut SplitMix64::new(2),
+            &evaluator,
+        );
+        assert_eq!(evaluator.calls.get(), 1);
+        if value == 0.375 {
+            let result = result.unwrap();
+            assert_eq!(result.nodes[0].edges[0].mean_utility(), value);
+            assert_eq!(result.diagnostics.heuristic_evaluations, 1);
+            assert_eq!(result.diagnostics.cutoff_simulations, 1);
+            assert_eq!(result.diagnostics.safety_cutoff_simulations, 0);
+        } else {
+            assert!(result.is_err());
+        }
+    }
+}
+#[test]
+fn terminal_overrides_cutoff_and_disabled_cutoff_preserves_full_depth() {
+    let evaluator = ObservedValue {
+        calls: Cell::new(0),
+        value: f64::NAN,
+    };
+    for depth in [None, Some(1)] {
+        let game = Toy {
+            samples: Cell::new(0),
+        };
+        let mut search = agent(30);
+        search.config.rollout_depth = depth;
+        let result = search
+            .search_with_evaluator(
+                &game,
+                &0,
+                PlayerId::FIRST,
+                &[A::Wait],
+                &mut SplitMix64::new(2),
+                &evaluator,
+            )
+            .unwrap();
+        assert_eq!(result.diagnostics.terminal_simulations, 30);
+        assert_eq!(result.diagnostics.cutoff_simulations, 0);
+        assert_eq!(result.nodes[0].edges[0].mean_utility(), 1.0);
+        if depth.is_none() {
+            let baseline = agent(30)
+                .search(
+                    &Toy {
+                        samples: Cell::new(0),
+                    },
+                    &0,
+                    PlayerId::FIRST,
+                    &[A::Wait],
+                    &mut SplitMix64::new(2),
+                )
+                .unwrap();
+            assert_eq!(result.action, baseline.action);
+            assert_eq!(result.diagnostics, baseline.diagnostics);
+            assert_eq!(
+                format!("{:?}", result.nodes),
+                format!("{:?}", baseline.nodes)
+            );
+        }
+    }
+    assert_eq!(evaluator.calls.get(), 0);
+}
+#[test]
+fn cutoff_completes_lost_cities_turn_before_evaluation() {
+    use meeple_bots_lost_cities::{LostCities, LostCitiesObservation, Phase};
+    struct Boundary(Cell<u32>);
+    impl ObservationEvaluator<LostCitiesObservation> for Boundary {
+        fn evaluate(&self, o: &LostCitiesObservation, root: PlayerId) -> Result<f64, AgentError> {
+            assert_eq!(o.observer, root);
+            assert_eq!(o.phase, Phase::Play);
+            assert_eq!(o.hand.len(), 8);
+            self.0.set(self.0.get() + 1);
+            Ok(0.25)
+        }
+    }
+    let game = LostCities;
+    let mut state = game.initial_state();
+    let mut env = SplitMix64::new(19);
+    while matches!(game.status(&state), PositionStatus::Chance) {
+        let event = game.sample_chance(&state, &mut env).unwrap();
+        game.apply_chance_outcome(&mut state, &event).unwrap();
+    }
+    let observer = PlayerId::FIRST;
+    let evaluator = Boundary(Cell::new(0));
+    let mut search = agent(8);
+    search.config.rollout_depth = Some(0);
+    let result = search
+        .search_with_evaluator(
+            &game,
+            &game.observation(&state, observer),
+            observer,
+            &game.legal_actions(&state).collect::<Vec<_>>(),
+            &mut SplitMix64::new(2),
+            &evaluator,
+        )
+        .unwrap();
+    assert_eq!(evaluator.0.get(), 8);
+    assert_eq!(result.diagnostics.heuristic_evaluations, 8);
 }

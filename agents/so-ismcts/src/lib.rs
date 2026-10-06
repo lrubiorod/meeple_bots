@@ -2,8 +2,8 @@
 //! No lifecycle implementation: the catalog adapter must not forward hidden callbacks.
 use meeple_bots_core::SelectionStats;
 use meeple_bots_core::{
-    AgentError, DeterminizedWorld, Game, ImperfectInformationGame, PlayerId, PositionStatus,
-    RandomSource, TwoPlayerZeroSumGame,
+    AgentError, DeterminizedWorld, Game, ImperfectInformationGame, NeutralObservationEvaluator,
+    ObservationEvaluator, PlayerId, PositionStatus, RandomSource, TwoPlayerZeroSumGame,
 };
 pub use meeple_bots_core::{BanditPolicy, SearchBudget};
 use std::time::Instant;
@@ -18,6 +18,8 @@ pub struct SoIsmctsConfig {
     pub exploration: f64,
     pub selection_policy: BanditPolicy,
     pub tree_reuse: bool,
+    /// Rollout decisions, completing the current physical turn. None keeps full-depth.
+    pub rollout_depth: Option<u32>,
 }
 impl Default for SoIsmctsConfig {
     fn default() -> Self {
@@ -26,6 +28,7 @@ impl Default for SoIsmctsConfig {
             exploration: std::f64::consts::SQRT_2,
             selection_policy: BanditPolicy::Uct,
             tree_reuse: false,
+            rollout_depth: None,
         }
     }
 }
@@ -53,6 +56,8 @@ pub struct Diagnostics {
     pub rollout_count: u64,
     pub terminal_simulations: u64,
     pub cutoff_simulations: u64,
+    pub heuristic_evaluations: u64,
+    pub safety_cutoff_simulations: u64,
 }
 /// Tree types deliberately have NO world/state type parameter or field.
 /// Observations live only on outcomes of a specific history edge, never in a global map.
@@ -229,6 +234,36 @@ impl SoIsmctsAgent {
         G::Action: Clone + Eq,
         R: RandomSource + ?Sized,
     {
+        self.search_with_evaluator(
+            game,
+            observation,
+            observer,
+            root_legal,
+            rng,
+            &NeutralObservationEvaluator,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_with_evaluator<G, W, O, R, E>(
+        &self,
+        game: &G,
+        observation: &O,
+        observer: PlayerId,
+        root_legal: &[G::Action],
+        rng: &mut R,
+        evaluator: &E,
+    ) -> Result<SearchResult<G::Action, O>, AgentError>
+    where
+        G: TwoPlayerZeroSumGame
+            + ImperfectInformationGame<Determinization = W>
+            + for<'a> Game<Observation<'a> = O>
+            + 'static,
+        W: DeterminizedWorld<Action = G::Action, Observation = O>,
+        O: Clone + Eq,
+        G::Action: Clone + Eq,
+        R: RandomSource + ?Sized,
+        E: ObservationEvaluator<O>,
+    {
         self.search_with_nodes(
             game,
             observation,
@@ -240,10 +275,11 @@ impl SoIsmctsAgent {
                 edges: vec![],
             }],
             None,
+            evaluator,
         )
     }
     #[allow(clippy::too_many_arguments)]
-    fn search_with_nodes<G, W, O, R>(
+    fn search_with_nodes<G, W, O, R, E>(
         &self,
         game: &G,
         observation: &O,
@@ -252,6 +288,7 @@ impl SoIsmctsAgent {
         rng: &mut R,
         mut nodes: Vec<Node<G::Action, O>>,
         mut timing: Option<&mut reuse::ReuseTiming>,
+        evaluator: &E,
     ) -> Result<SearchResult<G::Action, O>, AgentError>
     where
         G: TwoPlayerZeroSumGame
@@ -262,6 +299,7 @@ impl SoIsmctsAgent {
         O: Clone + Eq,
         G::Action: Clone + Eq,
         R: RandomSource + ?Sized,
+        E: ObservationEvaluator<O>,
     {
         self.config.validate()?;
         if game.player_count() != 2 || observer.index() >= 2 {
@@ -346,7 +384,18 @@ impl SoIsmctsAgent {
                 }
             }
             diagnostics.rollout_count += 1;
+            let mut rollout_steps = 0_u32;
+            let mut heuristic_cutoff = false;
             while world.status() != PositionStatus::Terminal && steps < MAX_SIMULATION_ACTIONS {
+                if self
+                    .config
+                    .rollout_depth
+                    .is_some_and(|depth| rollout_steps >= depth)
+                    && world.is_turn_boundary()
+                {
+                    heuristic_cutoff = true;
+                    break;
+                }
                 if !matches!(world.status(), PositionStatus::PlayerTurn(_)) {
                     return Err(error("SO-ISMCTS does not support chance nodes"));
                 }
@@ -354,6 +403,7 @@ impl SoIsmctsAgent {
                 let index = rng.index(legal.len()).ok_or(AgentError::NoLegalActions)?;
                 world.apply_action(&legal[index]).map_err(error)?;
                 steps += 1;
+                rollout_steps += 1;
             }
             let utility = if world.status() == PositionStatus::Terminal {
                 diagnostics.terminal_simulations += 1;
@@ -362,10 +412,16 @@ impl SoIsmctsAgent {
                     .ok_or_else(|| error("missing terminal utility"))? as f64
             } else {
                 diagnostics.cutoff_simulations += 1;
-                0.
+                if heuristic_cutoff {
+                    diagnostics.heuristic_evaluations += 1;
+                    evaluator.evaluate(&world.observation(observer), observer)?
+                } else {
+                    diagnostics.safety_cutoff_simulations += 1;
+                    0.
+                }
             };
             if !utility.is_finite() || !(-1. ..=1.).contains(&utility) {
-                return Err(error("invalid terminal utility"));
+                return Err(error("invalid evaluation utility"));
             }
             for n in visited {
                 nodes[n].visits += 1;

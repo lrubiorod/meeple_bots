@@ -96,6 +96,10 @@ validation, rollout policies and selection mechanisms such as Progressive Bias, 
 MCTS expresses its supported domain through these trait bounds. An incompatible Rust game cannot
 silently enter a search that assumes determinism or full state access.
 
+`ObservationEvaluator<O>` is the separate observation-only scalar contract used by
+SO-ISMCTS cutoffs. It accepts no game, state or sampled world; Lost Cities owns its
+handcrafted implementations. `StateEvaluator` remains unchanged.
+
 ## Agent contract
 
 `Agent<G>` selects one `G::Action` from a `DecisionContext`. Every agent can access the game, legal

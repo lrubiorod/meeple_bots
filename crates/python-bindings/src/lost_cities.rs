@@ -356,6 +356,7 @@ pub fn lost_cities_so_ismcts_search(
             budget: super::parse_search_budget(iterations, time_budget)?,
             exploration,
             tree_reuse,
+            rollout_depth: None,
             selection_policy: super::parse_bandit_policy(selection_policy)?,
         },
     };
