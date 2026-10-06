@@ -56,9 +56,13 @@ def _mcts_timings(game, agent, depth, seed):
 
 
 def _so_timings(game, agent, depth, seed):
+    from ..native_config import _native_evaluator
+    kind, index, params = _native_evaluator(agent.cutoff_evaluator)
     return _native.benchmark_so_ismcts(_native_game(game), depth, seed,
                                       iterations=agent.iterations, exploration=agent.exploration,
-                                      time_budget=agent.time_budget, selection_policy=agent.selection_policy, tree_reuse=agent.tree_reuse)
+                                      time_budget=agent.time_budget, selection_policy=agent.selection_policy, tree_reuse=agent.tree_reuse,
+                                      rollout_depth=agent.rollout_depth, cutoff_evaluator=kind,
+                                      cutoff_heuristic=index, cutoff_params=params)
 
 
 # Family-specific measurement only. Report construction and operating points are shared.

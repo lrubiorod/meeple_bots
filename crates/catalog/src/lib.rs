@@ -456,17 +456,24 @@ pub fn analyze_structure(
 /// Concrete registration for the generic observation-only calibration backend.
 pub fn benchmark_so_ismcts(
     game: GameId,
-    config: meeple_bots_so_ismcts::SoIsmctsConfig,
+    config: impl Into<SoIsmctsAgentConfig>,
     median_depth: u32,
     seed: u64,
 ) -> Result<Vec<meeple_bots_evaluation::so_ismcts::SoIsmctsTiming>, CatalogError> {
     match game {
-        GameId::LostCities => Ok(meeple_bots_evaluation::so_ismcts::benchmark(
-            &meeple_bots_lost_cities::LostCities,
-            config,
-            median_depth,
-            seed,
-        )?),
+        GameId::LostCities => {
+            let config = config.into();
+            let evaluator = config
+                .lost_cities_evaluator()
+                .map_err(|_| CatalogError::InvalidMctsConfig("invalid Lost Cities evaluator"))?;
+            Ok(meeple_bots_evaluation::so_ismcts::benchmark_with_evaluator(
+                &meeple_bots_lost_cities::LostCities,
+                config.search,
+                median_depth,
+                seed,
+                &evaluator,
+            )?)
+        }
         _ => Err(CatalogError::AnalysisUnavailable(game)),
     }
 }

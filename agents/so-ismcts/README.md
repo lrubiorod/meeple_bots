@@ -251,3 +251,8 @@ v0 = SoIsmctsAgent(iterations=1000, rollout_depth=8,
 v1 = SoIsmctsAgent(iterations=1000, rollout_depth=8,
                   cutoff_evaluator=GameHeuristic(1, {"tau": 40.0}))
 ```
+
+Profiles, probe captures, tournament agent records and Study exports preserve depth
+and evaluator parameters. Analyze benchmarks consume the configured evaluator too.
+Study can preserve these settings while tuning existing dimensions; it does not
+optimize evaluator parameters or depth automatically.

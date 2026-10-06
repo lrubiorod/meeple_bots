@@ -1,7 +1,8 @@
 //! Observation-only calibration; sampled worlds never enter a report.
 use super::{EvaluationError, sample_calibration_states};
 use meeple_bots_core::{
-    DeterminizedWorld, Game, ImperfectInformationGame, PositionStatus, TwoPlayerZeroSumGame,
+    DeterminizedWorld, Game, ImperfectInformationGame, NeutralObservationEvaluator,
+    ObservationEvaluator, PositionStatus, TwoPlayerZeroSumGame,
 };
 use meeple_bots_simulation::SplitMix64;
 use meeple_bots_so_ismcts::{SoIsmctsAgent, SoIsmctsConfig};
@@ -41,6 +42,33 @@ where
     W: DeterminizedWorld<Action = G::Action, Observation = O>,
     O: Clone + Eq,
 {
+    benchmark_with_evaluator(
+        game,
+        config,
+        median_depth,
+        seed,
+        &NeutralObservationEvaluator,
+    )
+}
+
+pub fn benchmark_with_evaluator<G, W, O, E>(
+    game: &G,
+    config: SoIsmctsConfig,
+    median_depth: u32,
+    seed: u64,
+    evaluator: &E,
+) -> Result<Vec<SoIsmctsTiming>, EvaluationError>
+where
+    G: TwoPlayerZeroSumGame
+        + ImperfectInformationGame<Determinization = W>
+        + for<'a> Game<Observation<'a> = O>
+        + 'static,
+    G::State: Clone,
+    G::Action: Clone + Eq,
+    W: DeterminizedWorld<Action = G::Action, Observation = O>,
+    O: Clone + Eq,
+    E: ObservationEvaluator<O>,
+{
     let agent = SoIsmctsAgent { config };
     let states = sample_calibration_states(game, median_depth, seed ^ 0xD1B5_4A32_D192_ED03)?;
     let mut timings = Vec::new();
@@ -54,7 +82,14 @@ where
         let mut search_rng = SplitMix64::new(seed.wrapping_add(i as u64) ^ 0x94D0_49BB_1331_11EB);
         let started = Instant::now();
         let result = agent
-            .search(game, &observation, observer, &legal, &mut search_rng)
+            .search_with_evaluator(
+                game,
+                &observation,
+                observer,
+                &legal,
+                &mut search_rng,
+                evaluator,
+            )
             .map_err(EvaluationError::Agent)?;
         let milliseconds = started.elapsed().as_secs_f64() * 1000.;
         // Independent microbenchmark stream: does not change search samples or environment.

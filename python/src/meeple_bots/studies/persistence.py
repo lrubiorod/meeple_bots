@@ -37,6 +37,9 @@ def profile_values(agent: MctsAgent | SoIsmctsAgent) -> dict:
     if isinstance(agent, SoIsmctsAgent):
         return {"agent": "so_ismcts", "exploration": agent.exploration, "selection_policy": agent.selection_policy, "tree_reuse": agent.tree_reuse,
                 "rollout": "uniform", "root_selection": "most_visited",
+                **({"rollout_depth": agent.rollout_depth,
+                    "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator)}
+                   if agent.rollout_depth is not None else {}),
                 **({"iterations": agent.iterations} if agent.iterations is not None else {"time_budget": agent.time_budget})}
     values = {"iterations": agent.iterations} if agent.iterations is not None else {"time_budget": agent.time_budget}
     values.update(exploration=agent.exploration, rollout_depth=agent.rollout_depth,

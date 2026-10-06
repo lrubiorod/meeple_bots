@@ -950,8 +950,10 @@ Full study and local retune use the same exploration generator and comparisons.
 Only C changes in local mode: iterations/time, uniform rollout, MostVisited, and
 game configuration remain frozen. The target match time remains a reporting
 reference for an explicit baseline budget, not a budget replacement. Selection and
-tree reuse have separate tuners; RAVE, widening, transpositions and heuristics
-remain unsupported by this family.
+tree reuse have separate tuners; RAVE, widening, transpositions and automatic
+heuristic/depth tuning remain unsupported by this family. Supplied SO profiles can
+freeze `rollout_depth` and an observation-safe `cutoff_evaluator` (Lost Cities V0/V1)
+while the existing tuner varies only its requested dimension.
 
 `candidates/best_agent.toml` is directly usable, for example:
 

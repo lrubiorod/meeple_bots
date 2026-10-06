@@ -11,6 +11,20 @@ from meeple_bots.studies.persistence import export_profile
 
 
 class SoIsmctsCutoffTests(unittest.TestCase):
+    def test_profiles_roundtrip_and_tournament_configs(self):
+        for evaluator in (NeutralEvaluator(), GameHeuristic(0, {'tau': 20}), GameHeuristic(1, {'tau': 40})):
+            agent = SoIsmctsAgent(iterations=8, rollout_depth=0, cutoff_evaluator=evaluator)
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'agent.toml'
+                export_profile(path, 'cutoff', agent)
+                self.assertEqual(load_search_profile(path), agent)
+            wire = agent_dict('cutoff', agent)
+            self.assertEqual(wire['rollout_depth'], 0)
+            self.assertIn('cutoff_evaluator', wire)
+            (entry,) = _load_tournament_agents(dict(name='cutoff', kind='so_ismcts', iterations=8,
+                rollout_depth=0, cutoff_evaluator=wire['cutoff_evaluator']), 1, LostCities())
+            self.assertEqual(entry.agent, agent)
+
     def test_observation_search_and_hidden_world_invariance(self):
         game = LostCities()
         state = game.initial_state(42)

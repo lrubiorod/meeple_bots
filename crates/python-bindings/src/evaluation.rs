@@ -121,7 +121,7 @@ pub fn analyze_structure(
 }
 
 #[pyfunction]
-#[pyo3(signature = (game, median_depth, seed=0, iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None, selection_policy="uct", tree_reuse=false))]
+#[pyo3(signature = (game, median_depth, seed=0, iterations=None, exploration=std::f64::consts::SQRT_2, time_budget=None, selection_policy="uct", tree_reuse=false, rollout_depth=None, cutoff_evaluator="neutral", cutoff_heuristic=None, cutoff_params=None))]
 #[allow(clippy::too_many_arguments)] // Python API keeps existing positional parameters compatible.
 pub fn benchmark_so_ismcts(
     py: Python<'_>,
@@ -133,6 +133,10 @@ pub fn benchmark_so_ismcts(
     time_budget: Option<f64>,
     selection_policy: &str,
     tree_reuse: bool,
+    rollout_depth: Option<u32>,
+    cutoff_evaluator: &str,
+    cutoff_heuristic: Option<u32>,
+    cutoff_params: Option<std::collections::BTreeMap<String, f64>>,
 ) -> PyResult<Py<PyList>> {
     let game = parse_configured_game(game, None)?;
     if !meeple_bots_catalog::game_search_capabilities(game)
@@ -145,9 +149,20 @@ pub fn benchmark_so_ismcts(
         budget: parse_search_budget(iterations, time_budget)?,
         exploration,
         tree_reuse,
-        rollout_depth: None,
+        rollout_depth,
         selection_policy: super::parse_bandit_policy(selection_policy)?,
     };
+    let config = meeple_bots_catalog::SoIsmctsAgentConfig {
+        search: config,
+        cutoff_evaluator: super::parse_evaluator(
+            cutoff_evaluator,
+            cutoff_heuristic,
+            cutoff_params,
+        )?,
+    };
+    config
+        .lost_cities_evaluator()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
     let timings = py
         .detach(|| meeple_bots_catalog::benchmark_so_ismcts(game, config, median_depth, seed))
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;

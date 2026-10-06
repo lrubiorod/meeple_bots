@@ -550,7 +550,9 @@ def _agent_dict(name: str, agent) -> dict[str, object]:
     if isinstance(agent, SoIsmctsAgent):
         return {"type": "so_ismcts", "iterations": agent.iterations, "exploration": agent.exploration,
                 "selection_policy": agent.selection_policy, "tree_reuse": agent.tree_reuse,
-                "rollout_policy": "uniform", "root_selection": "most_visited"}
+                "rollout_policy": "uniform", "root_selection": "most_visited",
+                **({"rollout_depth": agent.rollout_depth, "cutoff_evaluator": _evaluator_dict(agent.cutoff_evaluator)}
+                   if agent.rollout_depth is not None else {})}
     cutoff_evaluator = agent.cutoff_evaluator if isinstance(agent, MctsAgent) else None
     rollout_evaluator = (
         _rollout_policy_evaluator(agent.rollout_policy)
